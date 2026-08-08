@@ -463,6 +463,29 @@ the liability.
   duplicate a secret can replace the imported literal with `$(op read ...)`. That's their
   choice to make later, not a question to ask during setup.
 
+### 6.10 Keeping the machine awake
+
+A turn can run for minutes. If the laptop idle-sleeps partway through, the turn dies and the
+user comes back to a broken session. Claude Code solves this with `caffeinate -i -t 300`,
+re-armed — verified by observation, not documentation.
+
+- **MUST** hold a system-idle-sleep inhibitor **only while a turn is running**, released as
+  soon as it completes. Holding it for the whole session means leaving rasp open overnight
+  keeps the machine awake, which is behaviour people uninstall software over.
+- **MUST** use a bounded assertion that is periodically re-armed, not an indefinite one, so a
+  crash or `kill -9` leaks at most one interval. 300s, matching Claude Code.
+- **MUST** inhibit *idle system sleep only* — never display sleep, never sleep-on-battery. The
+  screen must still dim and lock normally.
+- **MUST** be best-effort. A missing `caffeinate`, absent systemd, or any platform error is
+  logged at debug level and ignored. A turn **WON'T** ever fail because the machine might sleep.
+- **MUST** be disableable in config, defaulting to on.
+- **SHOULD** do nothing at all where the concept doesn't apply — a headless Linux server that
+  never idle-sleeps needs no inhibitor and should not log warnings about it.
+
+Platform mechanisms: `caffeinate -i -t 300` (macOS), `systemd-inhibit --what=idle` (Linux, via
+logind), `SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED)` (Windows). See
+[design.md](design.md) for the interface and the Go-specific thread-affinity trap on Windows.
+
 ---
 
 ## 7. User experience

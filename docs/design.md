@@ -98,6 +98,7 @@ internal/
     edit/              The four-rung match ladder (own package — it's the hard part)
   mcp/                 stdio client manager: spawn, initialize, tools/list, proxy, reap
   workspace/           os.Root confinement, path resolution, read-before-edit tracker
+  wakelock/            per-platform idle-sleep inhibitor, held only during a turn
   permission/          The approval ladder, modes, presets, glob resolution
   session/             JSONL append store, atomic writes, resume
   compact/             Token estimation, tool-output pruning, LLM summarization
@@ -123,6 +124,7 @@ internal/
 | `tool/edit` | The match ladder and re-indentation | File I/O — a pure string function, which is why it's fuzzable |
 | `mcp` | Subprocess lifecycle, JSON-RPC over stdio, tool discovery, call proxying | Permission decisions. Schema *interpretation*. Any transport but stdio. **And: no MCP type, error code or protocol concept may leave this package — see §8.0** |
 | `workspace` | `os.Root` handle, path resolution, mtime tracking | Tool logic; permission decisions |
+| `wakelock` | Holding an idle-sleep inhibitor for the duration of a turn | Deciding *when* a turn runs; any UI or logging beyond debug |
 | `permission` | The ladder, session grants, **the four modes and their presets**, glob resolution, the yolo short-circuit | Any rendering. It publishes a request; someone else draws it |
 | `session` | JSONL read/append, atomic write, listing | Compaction. Message semantics |
 | `compact` | Estimation, pruning, summarization | Storage. It transforms `[]Entry` and returns a new one |
@@ -857,6 +859,46 @@ goroutine never holds a lock on it — it took its snapshot at step 4 of §5 and
 slice thereafter.
 
 **10. Mode is read by the permission service, written by `Update`.** See §7.4.
+
+### 6.1 Keeping the machine awake for the duration of a turn
+
+A turn can run for minutes. If the machine idle-sleeps partway through, the turn dies. The
+inhibitor is therefore scoped to exactly the `[turn]` goroutine's lifetime — acquired when a
+turn starts, released in a `defer`.
+
+```go
+// internal/wakelock
+type Lock interface{ Release() }
+
+// Acquire returns a Lock that inhibits idle system sleep until released.
+// It never returns an error: on any platform failure it returns a no-op Lock
+// and logs at debug. A turn must never fail because the machine might sleep.
+func Acquire(ctx context.Context, reason string) Lock
+```
+
+| Platform | Mechanism |
+|---|---|
+| macOS | `caffeinate -i -t 300` as a child process, re-armed while held |
+| Linux | `systemd-inhibit --what=idle --who=rasp --why=… --mode=block`, via logind. Absent systemd → no-op |
+| Windows | `SetThreadExecutionState(ES_CONTINUOUS \| ES_SYSTEM_REQUIRED)`; release with `ES_CONTINUOUS` alone |
+
+Four properties, each of which is a bug if missed:
+
+1. **Bounded and re-armed, never indefinite.** The macOS assertion is taken with `-t 300` and
+   renewed on a ticker while the turn runs. A crash or `kill -9` then leaks at most five
+   minutes instead of keeping the machine awake until the user notices a stray process. This is
+   Claude Code's observed behaviour (`caffeinate -i -t 300`, confirmed via `pmset -g
+   assertions`) and it's worth copying exactly.
+2. **Idle *system* sleep only.** Not display sleep (`-d`), not sleep-on-battery (`-s`). The
+   screen still dims and locks normally — inhibiting that would be user-hostile.
+3. **Best-effort everywhere.** Missing binary, no systemd, unexpected syscall error: return the
+   no-op lock. Headless Linux that never idle-sleeps needs nothing and should not warn.
+4. **Windows needs `runtime.LockOSThread()`.** `SetThreadExecutionState` is *thread*-scoped, so
+   without pinning, the Go scheduler can migrate the goroutine and the assertion silently
+   evaporates. This is the single easiest way to ship a version that appears to work and
+   doesn't.
+
+Disableable via config (`"keep_awake": false`), default on.
 
 ---
 
