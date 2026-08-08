@@ -27,6 +27,7 @@ Two reasons, and the project only succeeds if both hold:
 | [docs/design.md](docs/design.md) | How it's built — architecture, interfaces, concurrency, storage |
 | [docs/internals.md](docs/internals.md) | How it *works* — the mechanics, taught from first principles |
 | [docs/scope.md](docs/scope.md) | MVP versus later versus never |
+| [docs/backlog.md](docs/backlog.md) | The work, decomposed — 90 MVP items with dependencies and acceptance criteria |
 | [docs/research/](docs/research/) | Source-level teardowns of five existing agents |
 
 New to this? Read [docs/internals.md](docs/internals.md). It explains what a coding agent is
