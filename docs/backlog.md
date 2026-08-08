@@ -38,7 +38,14 @@ author can check them. Where a criterion is a test, it should end up as an actua
 | **M4** | MCP | 9 | A real `.mcp.json` server works with zero rasp config; killing it degrades gracefully |
 | **M5** | Ship | 8 | `brew install`, then a full working day |
 
-MVP total: **90 items.** Future phases are epics, not tickets — see the end.
+MVP total: **90 items**, plus **15 epics** across the four future phases — 105 in all. Future
+phases are epics, not tickets; see the end.
+
+> **These exist in Linear** as [project Rasp](https://linear.app/theocod3s/project/rasp-be0653f32d76),
+> one milestone per row above plus one per future phase. Issue titles carry the ID
+> (`M1-21 · Per-file mutation mutex`), so that is the handle between the two. **This file stays
+> authoritative** — dependencies were deliberately not encoded as Linear blocking relations, so
+> the `deps` field here is the only machine-readable ordering.
 
 ---
 
@@ -100,12 +107,14 @@ message model.
 - [ ] a test drives a scripted failure and asserts it arrives as a terminal `EventError`
 
 ### M0-07 · Anthropic adapter — streaming text
-**M** · deps: M0-06 · spec: design §3.1
+**M** · deps: M0-06 · spec: design §3.1, internals §4.2
 
-Text streaming only. Tools land in M1-06.
+Text streaming only. Tool dispatch lands in M1-04.
 
 - [ ] `messages.NewStreaming` deltas map onto the event union
 - [ ] `Message.Accumulate` builds `Partial` correctly across every event type
+- [ ] the neutral message is allocated **outside** the stream loop, so `Partial` is a stable
+      pointer rather than a fresh allocation per token
 - [ ] `stream.Err()` becomes a terminal `EventError`, never a returned error
 - [ ] usage numbers are captured from the final event
 
