@@ -366,6 +366,29 @@ rasp takes both from pi verbatim.
 
 **Every event carries the full accumulated message, not just the delta.**
 
+To see why this matters, look at what a stream actually delivers. Here's Anthropic sending
+*"I'll read it."* followed by a tool call:
+
+```
+content_block_start   index=0  type=text
+content_block_delta   index=0  text_delta="I'll"
+content_block_delta   index=0  text_delta=" read"
+content_block_delta   index=0  text_delta=" it."
+content_block_stop    index=0
+content_block_start   index=1  type=tool_use  name=read  id=toolu_01A9
+content_block_delta   index=1  input_json_delta="{\"pa"
+content_block_delta   index=1  input_json_delta="th\": \"au"
+content_block_delta   index=1  input_json_delta="th.go\"}"
+content_block_stop    index=1
+message_delta         stop_reason=tool_use
+```
+
+**Fragments**, tagged with a block index, where the tool arguments are one JSON object split at
+arbitrary byte boundaries. `{"pa` is not valid JSON. Neither is `th": "au`.
+
+Somebody has to glue that back together. **The contract is about who** — and the answer is the
+provider layer, never the consumer:
+
 ```go
 type Event struct {
     Type    EventType
@@ -375,10 +398,44 @@ type Event struct {
 }
 ```
 
-The UI renders `Partial`. It never reassembles fragments. This deletes an entire class of bug
-— interleaved content blocks, tool arguments arriving as partial JSON in the wrong order,
-off-by-one in delta accumulation. Reassembly happens once, in the provider layer, where the
-provider-specific quirks already live.
+If events carried only `Delta`, every consumer would need a block table, a partial-JSON buffer
+per block, and knowledge of when a fragment stream becomes parseable. Worse, **OpenAI's wire
+shape is different** — tool calls arrive as a `tool_calls[]` array where the function name
+appears only on the first fragment, and there's no per-block stop event at all. So each
+consumer would grow a branch per provider, and the provider abstraction would have leaked into
+the view layer, which is the one thing it exists to prevent.
+
+Instead the UI is one line:
+
+```go
+case agent.Event:
+    m.current = ev.Partial      // that's the entire UI logic
+```
+
+No accumulation state anywhere above the provider. The UI is a pure function of the last event
+it saw, so resize, re-render and replay-from-log are all trivially correct.
+
+> **"Isn't sending the whole message every delta wasteful?"** No — `Partial` is a *pointer*.
+> The provider mutates one message in place and hands back the same address each time. Eight
+> bytes per event, no copying. The contract costs nothing; it only decides where complexity is
+> allowed to live.
+
+**In practice both SDKs do the gluing for us**, which means what we write per provider is the
+*projection*, not the reassembly:
+
+```go
+acc := anthropic.Message{}      // or openai.ChatCompletionAccumulator{}
+msg := &Message{}               // OUR neutral message — allocated once, mutated in place
+
+for stream.Next() {
+    acc.Accumulate(stream.Current())   // openai: acc.AddChunk(...)
+    project(msg, &acc)                 // ← the only part we write: their shape → ours
+    yield(Event{Type: …, Delta: …, Partial: msg})
+}
+```
+
+Roughly 60 lines per provider family. Note `msg` is allocated *outside* the loop — that's what
+makes `Partial` a stable pointer rather than a fresh allocation per token.
 
 **The stream never returns a Go error for model failures.**
 
@@ -473,6 +530,27 @@ A 200-message conversation re-rendered on every cursor blink is unusable. Two ca
 opencode keys its cache on a hash of `(id, full text, width, …)`, which is simpler but means
 the streaming message re-renders fully on every delta. That's precisely what Crush's
 stable-prefix boundary avoids — and plausibly part of why opencode found Go+Bubble Tea slow.
+
+**What this means for one arriving token**, in a 200-message conversation. `View()` is called
+and does rebuild the whole frame string — but almost none of that is real work:
+
+| Work | Cost |
+|---|---|
+| 199 finished messages | **Cache hit.** Return a stored string. No markdown parsing at all |
+| The streaming message's stable prefix | **Cache hit.** Reused verbatim (§4.4) |
+| The streaming message's unstable tail | **Real work** — Glamour renders ~200 characters |
+| Assembling the frame | String concatenation of pre-rendered pieces. Microseconds |
+| Writing to the terminal | Bubble Tea diffs against the last frame; only changed lines are written |
+
+Three layers, each removing a different cost: the frame diff means unchanged messages produce
+zero terminal output, the item cache means finished messages never re-render, and the
+stable-prefix boundary means even the *streaming* message only re-renders its tail. The
+expensive operation — parsing and styling markdown — runs on a couple hundred characters
+rather than the whole conversation.
+
+Remove the item cache and you re-render 200 messages through Glamour and Chroma thirty times a
+second, which is visibly unusable. Remove the stable-prefix boundary and the streaming message
+alone becomes O(n²) as it grows.
 
 ### 4.6 Guarding the loop
 

@@ -303,10 +303,17 @@ Whitespace-normalized match with re-indentation, and the diagnostic on total fai
 - [ ] a test completes tools in reverse order and asserts `tool_result` order matches `tool_use` order
 
 ### M1-23 · OpenAI-compatible adapter
-**M** · deps: M0-06 · spec: design §3.1, scope
+**M** · deps: M0-06 · spec: design §3.1, internals §4.2
+
+Uses the **official `openai/openai-go`**, not `sashabaranov/go-openai` — the official SDK ships
+`ChatCompletionAccumulator`, and the community one leaves fragment reassembly to you.
 
 - [ ] one adapter with a swappable base URL
-- [ ] tool calls and results normalize to the same event union as Anthropic
+- [ ] fragment reassembly uses `acc.AddChunk` + `JustFinishedToolCall`/`JustFinishedContent`;
+      we write only the projection onto the neutral message
+- [ ] `Partial` is a stable pointer — the neutral message is allocated **outside** the stream loop
+- [ ] tool calls normalize to the same event union as Anthropic despite having no per-block
+      stop event and carrying the function name only on the first fragment
 - [ ] verified against at least two endpoints (e.g. OpenRouter and a local Ollama)
 
 ### M1-24 · Two-tier retry

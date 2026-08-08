@@ -14,7 +14,8 @@ libraries (notably `mattn/go-sqlite3`) and is the reason for some non-obvious pi
 | Library | Version | For | Why |
 |---|---|---|---|
 | Go | 1.23+ | — | minimum required by `anthropic-sdk-go` (we have 1.26.5) |
-| `anthropics/anthropic-sdk-go` | **v1.62.0** | Claude API | official, streaming, tool use, prompt caching, very active |
+| `anthropics/anthropic-sdk-go` | **v1.62.0** | Claude API | official, streaming, tool use, prompt caching, very active. `Message.Accumulate` glues stream fragments |
+| `openai/openai-go` | v3 | every OpenAI-compatible endpoint | **official**, base-URL swappable, and ships `ChatCompletionAccumulator` — the community `sashabaranov/go-openai` does not, and hand-rolling that reassembly is the leak we're avoiding |
 | `charmbracelet/bubbletea/v2` | **v2.0.8** | TUI framework | Elm architecture maps onto an agent loop; `Program.Send` bridges goroutines into the UI |
 | `charmbracelet/bubbles/v2` | **v2.1.1** | components | `viewport`, `textarea`, `spinner`, `list`, `help` |
 | `charmbracelet/lipgloss/v2` | **v2.0.5** | styling/layout | composable styles, `JoinHorizontal/Vertical`, ANSI-aware measurement |
@@ -303,10 +304,43 @@ gives us the integration points we need for streaming into Bubble Tea.
 ### Multi-provider
 
 Anthropic's API is not OpenAI-wire-compatible, so there's no drop-in swap. For everything
-else, **`sashabaranov/go-openai`** (10.7k ★, active, streaming + tool calling) works against
-any OpenAI-compatible endpoint by overriding the base URL — Groq, OpenRouter, DeepSeek,
+else, use the **official [`openai/openai-go`](https://pkg.go.dev/github.com/openai/openai-go)**
+against any OpenAI-compatible endpoint by overriding the base URL — Groq, OpenRouter, DeepSeek,
 Together, xAI, Mistral, Ollama, LM Studio, vLLM. That plus the native Anthropic SDK is the
-pragmatic two-adapter shape.
+two-adapter shape. Crush uses `openai-go/v3`.
+
+> **Corrected.** An earlier draft recommended `sashabaranov/go-openai` (10.7k ★, active). It
+> works, but it has **no streaming accumulator** — you hand-roll fragment reassembly, including
+> tracking `tool_calls[]` by index, remembering the function name that appears only on the
+> first fragment, buffering argument strings, and deciding when they're parseable. The official
+> SDK ships `ChatCompletionAccumulator` for exactly this:
+>
+> ```go
+> acc := openai.ChatCompletionAccumulator{}
+> for stream.Next() {
+>     acc.AddChunk(stream.Current())
+>     if tc, ok := acc.JustFinishedToolCall(); ok { /* name + arguments complete */ }
+>     if c, ok := acc.JustFinishedContent(); ok  { /* text block complete */ }
+> }
+> ```
+>
+> `JustFinishedToolCall` matters more than it looks: unlike Anthropic, the OpenAI wire format
+> has **no per-block completion signal** — there's no `content_block_stop`, only a
+> `finish_reason` at the end of the whole response. Without the accumulator you have to infer
+> completion yourself, and that inference is exactly the leaky state that must not end up in
+> the UI (see internals §4.2).
+
+**What we actually write is the projection, not the gluing.** Both SDKs accumulate; each
+adapter maps its SDK's accumulated state onto rasp's neutral `*Message`. Roughly 60 lines per
+provider family, and the only place the wire-shape asymmetry is visible:
+
+| | Anthropic | OpenAI |
+|---|---|---|
+| Structure | `content_block_start/delta/stop`, explicit index and type | `choices[0].delta` with `.content` and `.tool_calls[]` |
+| Tool args | `input_json_delta` on a typed block | `.tool_calls[i].function.arguments` string fragments |
+| Tool identity | `id`/`name` on `content_block_start` | `id`/`name` usually only on the **first** fragment for that index |
+| Block completion | explicit `content_block_stop` | none — inferred from `finish_reason` |
+| Stop reason | `tool_use`, `end_turn`, `max_tokens` | `tool_calls`, `stop`, `length` |
 
 Unified-abstraction libraries surfaced (`any-llm-go` from Mozilla, GoAI SDK, `gollm`) but
 production maturity was not verified — and a thin interface of our own teaches more.
