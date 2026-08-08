@@ -2119,7 +2119,9 @@ who produced a message. What is *not* small is the trust model. Text arriving fr
 session is untrusted input, structurally indistinguishable from a prompt-injection payload, and
 if session A can send text that session B acts on, A has acquired a lever on B's tools.
 
-Two rules make it defensible, and both are design work rather than assumptions:
+Five rules make it defensible, and all are design work rather than assumptions. The first two
+are ours; the rest are adopted from Claude Code's shipped implementation, which converged on
+the same architecture and worked out failure modes worth not rediscovering:
 
 1. An inbound message enters as **user-role content, subject to the receiving session's own
    permission gate and mode.** Never as an instruction that bypasses either. A message must not
@@ -2127,6 +2129,23 @@ Two rules make it defensible, and both are design work rather than assumptions:
 2. **Provenance is rendered.** The transcript always shows that a given instruction arrived
    from another agent rather than from the user, because a message that looks like the user
    typed it is exactly the failure this feature would otherwise create.
+3. **Inbound admission is a separate axis from permissions** — `accept` / `hold` / `refuse`,
+   decided before the message reaches the model at all. "Should this arrive" and "what may it
+   cause" are different questions and conflating them loses one of them.
+4. **The default is derived from both sessions' modes, asymmetrically.** A session in `yolo`
+   *holds* messages from a gated session and accepts only from another ungated one. This looks
+   backwards until you see it: the ungated session is precisely the one that will act on a
+   message without asking, so it is the one that must not receive silently.
+5. **Laundering is blocked in the sending direction too.** A session must never ask a peer to
+   perform an action its own gate refused. The obvious threat is inbound injection; this is the
+   outbound mirror, and it is equally real.
+
+Plus two operational guards without which the feature misbehaves rather than being insecure:
+**loop throttling** (rate-limit per sender, drop identical repeats within a window, cap pending
+messages — otherwise two agents reply to each other indefinitely), and a **capability floor**
+stated as rules rather than left to model judgement: a message never counts as user consent for
+a permission prompt, never changes configuration, and any slash command in its text arrives as
+inert plain text.
 
 The seam's existence is what makes this deferrable without regret. The trust model is why it is
 deferred rather than cheap.

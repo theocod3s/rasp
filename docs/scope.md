@@ -282,13 +282,35 @@ socket per session; named pipes on Windows), and two tools — `list_agents` and
 **The security question is the hard part, and it's the reason this isn't a small feature.**
 A message from another agent is *untrusted input*, indistinguishable from a prompt-injection
 payload. If agent A can send text that agent B acts on, A has effectively gained a lever on B's
-tools. Two rules make it defensible, and both need designing rather than assuming:
+tools.
 
-- An inbound message arrives as **user-role content, subject to B's own permission gate and
-  mode** — never as an instruction that bypasses either. A message cannot make a session in
-  plan mode write a file.
-- The receiving session shows message provenance in the transcript, so it's always visible that
-  a given instruction came from another agent rather than from you.
+Claude Code shipped this feature ([docs](https://code.claude.com/docs/en/cross-session-messaging))
+and arrived at the same architecture — per-session Unix socket, discovery via files on disk,
+`ListAgents`/`SendMessage`, delivery between tool calls mid-turn or a fresh turn when idle. That
+independent convergence is worth something. More usefully, they worked out operational detail we
+should adopt rather than rediscover:
+
+- **Inbound control is a separate axis from permissions.** `accept` / `hold` / `refuse`, decided
+  before the message ever reaches the model. Held messages get an approval dialog that expires
+  and then drops. "Should this arrive at all" and "what may it cause" are different questions.
+- **The default is computed from *both* sessions' modes, asymmetrically.** A session that
+  bypasses prompts *holds* messages from an ordinary session, and accepts only from another
+  bypassing one. Non-obvious and correct: a yolo-mode session is precisely the one that must not
+  silently take instruction from elsewhere, because it will act without asking.
+- **Block permission laundering in the sending direction too.** A sender must never ask another
+  session to perform something its *own* gate refused. The obvious threat is A→B injection; this
+  is A being denied and routing the work through B, and it's just as real.
+- **Throttle loops.** Rate-limit per sender, drop identical repeats inside a window, cap pending
+  messages. Two agents politely replying to each other forever is a genuine failure mode that
+  ends only if you design for it.
+- **A capability floor, stated as rules rather than left to judgement.** A message can never
+  count as user consent for a permission prompt, never change configuration, and a slash command
+  in its text arrives as plain text and is never executed.
+- Socket restricted to the OS user, so other users on a shared machine can't reach it.
+
+Two limitations to inherit knowingly: filesystem-scoped discovery means a session in a container
+and one on the host cannot see each other, and native Windows has no Unix-socket equivalent
+(named pipes would need separate work — Claude Code simply doesn't support it there).
 
 Deferred deliberately: it multiplies the surface of both the concurrency model and the trust
 model, and neither is worth destabilising before the single-session path is proven.
