@@ -1,0 +1,1826 @@
+# rasp — system design
+
+How rasp is built. The [PRD](prd.md) covers what and why; [scope.md](scope.md) draws the v1
+line; this document is architecture — boundaries, interfaces, data flow, concurrency.
+
+Design choices that rest on evidence cite [research/findings.md](research/findings.md) and the
+per-project reports beside it.
+
+---
+
+## 1. Architecture at a glance
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ cmd/rasp                          CLI entry. Cobra. Wires everything.    │
+└───────────────┬──────────────────────────────────┬───────────────────────┘
+                │                                  │
+      ┌─────────▼──────────┐            ┌──────────▼──────────┐
+      │ internal/tui       │            │ internal/headless   │
+      │ Bubble Tea v2      │            │ rasp run -p "..."   │
+      │ chat-first, one    │            │ prints to stdout    │
+      │ scrolling column   │            │                     │
+      └─────────┬──────────┘            └──────────┬──────────┘
+                │  consumes agent.Event            │  consumes agent.Event
+                └────────────────┬─────────────────┘
+                                 │
+┌────────────────────────────────▼─────────────────────────────────────────┐
+│ internal/agent          THE CORE. Knows nothing about terminals.         │
+│                         Owns the step loop. Emits typed agent.Event.     │
+│                         Enforces every correctness invariant.            │
+└──┬──────────┬──────────┬───────────┬───────────┬───────────┬─────────────┘
+   │          │          │           │           │           │
+┌──▼───┐ ┌────▼────┐ ┌───▼─────┐ ┌───▼──────┐ ┌──▼──────┐ ┌──▼─────────┐
+│ llm  │ │ tool    │ │ session │ │ compact  │ │ prompt  │ │ permission │
+│      │ │ registry│ │ JSONL   │ │ prune +  │ │ system  │ │ ladder +   │
+│ prov │ │ +7 built│ │ append  │ │ summarize│ │ prompt  │ │ MODES      │
+│ -ider│ │ +N mcp  │ │ -only   │ │          │ │ AGENTS  │ │            │
+└──┬───┘ └──┬───┬──┘ └─────────┘ └──────────┘ └─────────┘ └────────────┘
+   │        │   │
+┌──▼─────┐ ┌▼───▼──────┐  ┌──────────┐  ┌────────┐
+│anthropic│ │ mcp      │  │ workspace│  │ auth   │
+│oaicompat│ │ stdio    │  │ os.Root  │  │ Cred   │
+└─────────┘ │ manager  │  └──────────┘  └────────┘
+            └────┬─────┘
+                 │ one goroutine + subprocess per server
+        ┌────────▼────────┐
+        │ mcp servers     │
+        │ (child procs)   │
+        └─────────────────┘
+```
+
+**Four layers, one process.**
+
+**The core (`internal/agent`)** owns the loop and nothing else. It has no import of
+`bubbletea`, `lipgloss`, or anything terminal-shaped — enforced by a lint rule, not by
+discipline. It receives a user message, drives the loop to completion, and emits `agent.Event`
+values. Every correctness invariant lives here: `tool_use`/`tool_result` pairing, the
+truncated-tool-call guard, loop detection, panic recovery.
+
+**The frontends** consume that event stream. The TUI is primary; the headless runner is a
+twenty-line consumer that prints and exits. Neither reaches into agent state — they see
+events, and they call methods (`Send`, `Cancel`, `Steer`, `SetMode`). This is the seam Crush
+and opencode both paid for and then benefited from: opencode replaced its entire client, in a
+different language, without touching the server contract ([opencode.md §2](research/opencode.md)).
+We get the same seam in-process, for free.
+
+**The services** are leaf packages. They do not import each other except through interfaces
+defined in `llm` and `tool`. `agent` is the only package that composes them.
+
+**Two things worth calling out in the diagram.** The tool registry holds both built-in tools
+and MCP tools — the model sees one flat list and cannot tell them apart, which is the whole
+point. And the permission service owns **modes**; the loop does not know modes exist.
+
+---
+
+## 2. Package layout
+
+Modelled on neo's tree (25k LOC, readable end to end), not Crush's (145k LOC). The "does
+**not** contain" column is the load-bearing half.
+
+```
+cmd/rasp/
+  main.go              Cobra root; flag parsing; wiring
+  run.go               `rasp run -p "..."` headless
+  session.go           `rasp session list|show`
+  mcp.go               `rasp mcp list|check`
+  config.go            `rasp config path|check`
+
+internal/
+  agent/               The loop. Step state. Event emission. Invariants.
+  llm/                 Provider-neutral types + the Provider interface
+    anthropic/         Native adapter (caching, thinking, tool_use)
+    openaicompat/      Base-URL-swappable adapter
+    retry/             Two-tier retry, shared by both adapters
+    fake/              Deterministic scripted provider for tests
+  tool/                Tool interface, reflection schema gen, registry + snapshots
+    builtin/           read, write, edit, bash, grep, find, ls
+    edit/              The four-rung match ladder (own package — it's the hard part)
+  mcp/                 stdio client manager: spawn, initialize, tools/list, proxy, reap
+  workspace/           os.Root confinement, path resolution, read-before-edit tracker
+  permission/          The approval ladder, modes, presets, glob resolution
+  session/             JSONL append store, atomic writes, resume
+  compact/             Token estimation, tool-output pruning, LLM summarization
+  prompt/              System prompt assembly, AGENTS.md discovery, cache breakpoints
+  config/              Load, merge, validate; shell expansion for secrets
+  auth/                Credential interface and its implementations
+  tui/                 Bubble Tea v2 root model
+    chat/              Message list, per-item render cache, streaming markdown
+    diffview/          Unified diff renderer
+    dialog/            Permission prompt, model picker, session picker, help
+    styles/            Semantic colour tokens
+  headless/            Event consumer that prints and exits
+  logx/                slog to a file (stdout belongs to the TUI)
+```
+
+| Package | Owns | Does **not** contain |
+|---|---|---|
+| `agent` | The loop, step state, invariants, event emission | Any terminal code. Any HTTP. Any filesystem syscall. **Any knowledge of modes** |
+| `llm` | Neutral `Message`/`Block`/`Event` types, `Provider` | Provider-specific structs; those live in the adapters |
+| `llm/anthropic` | Anthropic wire translation, cache breakpoints | Retry policy (`llm/retry`); tool semantics |
+| `tool` | The interface, schema reflection, the registry, per-turn snapshots | Any actual tool. Any UI. Any MCP protocol |
+| `tool/builtin` | The seven tools | Path validation (`workspace`); approval (`permission`) |
+| `tool/edit` | The match ladder and re-indentation | File I/O — a pure string function, which is why it's fuzzable |
+| `mcp` | Subprocess lifecycle, JSON-RPC over stdio, tool discovery, call proxying | Permission decisions. Schema *interpretation*. Any transport but stdio. **And: no MCP type, error code or protocol concept may leave this package — see §8.0** |
+| `workspace` | `os.Root` handle, path resolution, mtime tracking | Tool logic; permission decisions |
+| `permission` | The ladder, session grants, **the four modes and their presets**, glob resolution, the yolo short-circuit | Any rendering. It publishes a request; someone else draws it |
+| `session` | JSONL read/append, atomic write, listing | Compaction. Message semantics |
+| `compact` | Estimation, pruning, summarization | Storage. It transforms `[]Entry` and returns a new one |
+| `prompt` | Assembling ordered blocks with cache flags | Provider-specific cache syntax; the adapter applies that |
+| `tui` | All rendering and input | Any business logic. If it needs a decision, it asks `agent` or `permission` |
+
+**The warning worth heeding:** pi's `agent-session.ts` is 3,342 lines — a carefully layered
+codebase that collapsed into one file where the product gets assembled
+([findings.md](research/findings.md)). Our equivalent risk is `internal/agent/agent.go`. When
+it passes ~800 lines, split by concern (`step.go`, `tools.go`, `invariants.go`) before it
+becomes the file nobody wants to open.
+
+---
+
+## 3. Core interfaces
+
+### 3.1 Provider and the stream contract
+
+```go
+package llm
+
+// StreamResponse is a pull-based iterator over stream events.
+//
+// CONTRACT — both halves matter:
+//
+//  1. It MUST NOT return a Go error for model, request or runtime failures.
+//     Those arrive as a terminal Event{Type: EventError}. One error path,
+//     not two, which is why the retry classifier can be a pure function
+//     over a Message instead of a tangle of error-type switches.
+//
+//  2. Every event carries Partial — the FULL accumulated message so far,
+//     not just the delta. Consumers render Partial. They never reassemble
+//     deltas themselves. This deletes an entire class of interleaving bug.
+type StreamResponse = iter.Seq[Event]
+
+type Provider interface {
+    // ID is the stable identifier: "anthropic", "openrouter", "ollama".
+    ID() string
+
+    // Stream runs exactly one model call. See the StreamResponse contract.
+    Stream(ctx context.Context, req Request) StreamResponse
+}
+```
+
+Both contracts come from pi verbatim, and both are cheap up front and painful to retrofit
+([findings.md](research/findings.md)).
+
+```go
+type Request struct {
+    Model     string
+    System    []SystemBlock // ordered; see §11 for cache breakpoints
+    Messages  []Message
+    Tools     []ToolSpec    // from a per-turn snapshot; see §3.3
+    MaxTokens int
+    Thinking  ThinkingConfig
+}
+
+type EventType string
+
+const (
+    EventMessageStart   EventType = "message_start"
+    EventTextDelta      EventType = "text_delta"
+    EventThinkingDelta  EventType = "thinking_delta"
+    EventToolInputStart EventType = "tool_input_start"
+    EventToolInputDelta EventType = "tool_input_delta"
+    EventToolCall       EventType = "tool_call" // arguments complete and parsed
+    EventDone           EventType = "done"
+    EventError          EventType = "error"
+)
+
+type Event struct {
+    Type EventType
+
+    Delta   string   // only the newly-arrived text; never authoritative
+    Partial *Message // FULL accumulated message. ALWAYS populated.
+
+    ToolCall *ToolCall // EventToolCall only
+
+    StopReason StopReason // EventDone / EventError
+    Err        error      // EventError; informational, not a control path
+}
+```
+
+The neutral message model is Anthropic-shaped, because Anthropic's block model is the more
+expressive of the two and translating down to OpenAI is easier than the reverse — the same
+call neo made.
+
+```go
+type BlockType string
+
+const (
+    BlockText       BlockType = "text"
+    BlockThinking   BlockType = "thinking"
+    BlockToolUse    BlockType = "tool_use"
+    BlockToolResult BlockType = "tool_result"
+)
+
+type Block struct {
+    Type BlockType
+
+    Text string // BlockText, BlockThinking
+
+    ID    string          // BlockToolUse — provider-assigned call id
+    Name  string          // BlockToolUse
+    Input json.RawMessage // BlockToolUse
+
+    ToolUseID string // BlockToolResult — MUST match a BlockToolUse.ID
+    Content   string // BlockToolResult
+    IsError   bool   // BlockToolResult
+}
+
+type Message struct {
+    Role       Role
+    Content    []Block
+    StopReason StopReason
+    Usage      Usage
+    Model      string
+    Provider   string
+}
+
+type StopReason string
+
+const (
+    StopEndTurn   StopReason = "end_turn"
+    StopToolUse   StopReason = "tool_use"
+    StopMaxTokens StopReason = "max_tokens" // TRUNCATION — see the guard in §4
+    StopRefusal   StopReason = "refusal"
+    StopAborted   StopReason = "aborted"
+    StopError     StopReason = "error"
+)
+```
+
+`StopMaxTokens` is called out because it is not merely informational — it triggers the
+truncated-tool-call guard, and getting that wrong silently corrupts files.
+
+### 3.2 Tool — one interface, two producers
+
+MCP forces a decision here, and it is a better decision than we would have made without it.
+Built-in tools derive their schema by reflection from a tagged Go struct. MCP tools receive a
+JSON Schema from a server at runtime. **Both must satisfy the same interface**, so `Schema()`
+returns a decoded JSON Schema object rather than anything Go-type-derived:
+
+```go
+package tool
+
+type Tool interface {
+    Name() string
+    Description() string
+
+    // Schema is a JSON Schema object describing the tool's input.
+    //
+    // map[string]any rather than a Go type is deliberate and load-bearing:
+    // it is the only representation both a reflected Go struct and a
+    // server-supplied schema can produce. It also lets provider adapters
+    // strip keywords a given API rejects without re-deriving anything.
+    //
+    // For MCP tools this value is OPAQUE and passed through untouched. As of
+    // MCP revision 2026-07-28, inputSchema/outputSchema accept the full
+    // JSON Schema 2020-12 keyword set including $ref composition — so any
+    // code assuming a flat object schema will break on a conforming server.
+    // We do not normalize, validate or re-derive it. Ever.
+    Schema() map[string]any
+
+    Run(ctx context.Context, raw json.RawMessage) (Result, error)
+}
+
+// Parallel is optional. A tool that does not implement it is serial.
+// Fail-closed, and the RUNTIME decides — never the model (neo's rule; it
+// removes an entire trust question).
+type Parallel interface {
+    ParallelSafe() bool
+}
+```
+
+**Producer 1 — reflection, for built-ins.** This was the one recommendation the research
+reversed: neo hand-writes `map[string]any` literals, but Crush derives the schema from the Go
+type, removing any possibility of drift between what the model was told and what we unmarshal
+([findings.md §1](research/findings.md)).
+
+```go
+// New builds a Tool from a typed handler. TIn's struct tags produce the JSON
+// Schema at construction time; TIn is also the unmarshal target.
+// It is ONE WAY to produce a Tool, not the definition of one.
+func New[TIn any](name, description string, run func(context.Context, TIn) (Result, error)) Tool
+```
+
+```go
+type EditInput struct {
+    Path       string `json:"path"                  desc:"Path to the file, relative to the workspace root"`
+    OldString  string `json:"old_string"            desc:"Exact text to find. Must appear exactly once unless replace_all is set. Include enough surrounding context to be unambiguous."`
+    NewString  string `json:"new_string"            desc:"Replacement text"`
+    ReplaceAll bool   `json:"replace_all,omitempty" desc:"Replace every occurrence instead of requiring a unique match"`
+}
+
+var Edit = tool.New("edit", editDescription,
+    func(ctx context.Context, in EditInput) (tool.Result, error) { /* ... */ })
+```
+
+The `desc` tags are prompt text and get hand-tuned like prompt text — but they live beside the
+field they describe instead of in a parallel map that rots.
+
+**Producer 2 — pass-through, for MCP.** See §8. The server's schema is used verbatim; we do
+not attempt to validate or re-derive it.
+
+### 3.3 The registry and per-turn snapshots
+
+Built-in tools are static. MCP tools appear and disappear as servers connect, crash, or are
+reconfigured. The registry must therefore be safe to mutate while the agent goroutine reads —
+and, more subtly, **the tool list must stay byte-identical for the whole of one turn**,
+because it sits inside the cached prompt prefix (§11).
+
+Copy-on-write snapshots solve both at once:
+
+```go
+// Registry is mutable and concurrency-safe. It is written by the MCP manager
+// and read only via Snapshot.
+type Registry struct {
+    mu      sync.RWMutex
+    builtin []Tool
+    dynamic map[string][]Tool // source ("mcp:github") → its tools
+    version uint64
+}
+
+func (r *Registry) Replace(source string, tools []Tool) // MCP manager calls this
+func (r *Registry) Remove(source string)
+
+// Snapshot returns an immutable view. The agent takes exactly ONE per Send and
+// holds it for every step of that turn. Consequences:
+//
+//   - the agent goroutine reads with no lock and no risk of the list shifting
+//     under it mid-turn;
+//   - the tool list — part of the cached prompt prefix — is stable, so a server
+//     connecting mid-session costs one cache miss at the next turn rather
+//     than a miss on every request;
+//   - a crashed server's tools remain callable for the rest of the current
+//     turn and fail as ordinary tool errors, which is exactly right.
+func (r *Registry) Snapshot() *Set
+
+type Set struct {
+    tools   []Tool // ALWAYS sorted by name — see below
+    byName  map[string]Tool
+    version uint64
+}
+
+func (s *Set) Specs() []llm.ToolSpec // what goes into the request
+func (s *Set) Get(name string) (Tool, bool)
+```
+
+**Ordering is not cosmetic.** `Set` sorts by name, and `Specs()` preserves that order, because
+the tool list sits inside the cached prompt prefix (§11). An unstable order silently destroys
+the cache on *every request* — expensive, and invisible until you look at
+`cache_read_input_tokens` and find it pinned at zero. MCP revision 2026-07-28 now recommends
+servers return `tools/list` in deterministic order for exactly this reason, but we sort anyway
+rather than trusting every server to comply.
+
+**Snapshot freshness** uses the `CacheableResult` fields the same revision made required on
+`tools/list` (`ttlMs`, `cacheScope`). The MCP manager refreshes a server's tool list when its
+TTL expires and calls `Replace`; the change becomes visible at the next turn's snapshot,
+never mid-turn.
+
+### 3.4 Result — data, never presentation
+
+```go
+// Result is what a tool returns. Content is what the MODEL sees. Details is an
+// optional typed payload the UI may render richly. A tool never imports lipgloss.
+//
+// pi returns terminal components directly from its tools and flags this in its
+// own analysis as a mistake — the tools become unusable by any other frontend.
+// Crush does the opposite, with a separate renderer per tool family.
+type Result struct {
+    Content string // fed back to the model as a tool_result block
+    IsError bool   // sets is_error; the model sees it and adapts
+    Title   string // one-line summary for a collapsed tool card
+    Details any    // *DiffDetails | *BashDetails | *SearchDetails | nil
+}
+
+type DiffDetails struct {
+    Path                 string
+    Unified              string // produced by go-udiff
+    Additions, Deletions int
+    Fuzzy                bool // matched via a normalized rung, not byte-exact
+}
+
+type BashDetails struct {
+    Command   string
+    ExitCode  int
+    Duration  time.Duration
+    Truncated bool
+    SpillPath string // full output when Truncated
+}
+```
+
+**A failing tool is not a Go error.** A test that fails, a file that doesn't exist, a command
+that exits non-zero — all are information the model needs, so they come back as
+`Result{IsError: true}` with `err == nil`. The Go `error` return is reserved for "the tool
+itself could not run," which the loop also converts into an error result rather than
+propagating.
+
+### 3.5 The agent event union
+
+The entire public surface between core and frontends.
+
+```go
+package agent
+
+type EventKind string
+
+const (
+    EventStepStart      EventKind = "step_start"
+    EventAssistantDelta EventKind = "assistant_delta" // Message = full partial
+    EventAssistantEnd   EventKind = "assistant_end"
+    EventToolStart      EventKind = "tool_start"
+    EventToolProgress   EventKind = "tool_progress" // streaming bash output
+    EventToolEnd        EventKind = "tool_end"
+    EventPermission     EventKind = "permission"
+    EventModeChange     EventKind = "mode_change"
+    EventCompaction     EventKind = "compaction"
+    EventTurnEnd    EventKind = "turn_end"
+    EventError          EventKind = "error"
+)
+
+type Event struct {
+    Kind      EventKind
+    SessionID string
+
+    Message *llm.Message // assistant_delta / assistant_end — full accumulation
+
+    CallID string
+    Tool   string
+    Input  json.RawMessage
+    Result *tool.Result
+    Output string // tool_progress — accumulated so far
+
+    Mode  permission.Mode // mode_change
+    Usage llm.Usage       // turn_end
+    Err   error
+}
+```
+
+### 3.6 Credential
+
+**API keys only in the MVP.** OAuth is phase 2 ([scope.md](scope.md)) — but the interface is
+built refresh-capable now, because that is the single decision that makes OAuth additive
+rather than a rewrite.
+
+```go
+package auth
+
+// Credential resolves to a usable secret.
+//
+// Resolve is called before EVERY model call — never cached across a turn.
+// A token that expires during a long tool phase gets refreshed instead of
+// killing the turn. That is pi's rule. Today every implementation is
+// effectively static; the call site is what matters.
+type Credential interface {
+    Resolve(ctx context.Context) (string, error)
+}
+
+// StaticKey — a literal, or the value of an environment variable.
+type StaticKey string
+
+func (k StaticKey) Resolve(context.Context) (string, error) { return string(k), nil }
+
+// ShellKey runs a command and takes its trimmed stdout. This is how a user
+// points at 1Password, pass, or gopass without us building keyring support:
+//     "api_key": "$(op read op://vault/anthropic/key)"
+type ShellKey struct {
+    Command string
+    ttl     time.Duration // small cache; forking per model call is too slow
+}
+```
+
+### 3.7 Session storage
+
+```go
+package session
+
+type EntryKind string
+
+const (
+    EntryMessage     EntryKind = "message"
+    EntryModelChange EntryKind = "model_change"
+    EntryModeChange  EntryKind = "mode_change"
+    EntryCompaction  EntryKind = "compaction"
+    EntryMeta        EntryKind = "meta"
+)
+
+type Entry struct {
+    ID       string    `json:"id"`        // uuidv7 — lexically sorts by time
+    ParentID string    `json:"parent_id"` // predecessor; reserved for /fork
+    Kind     EntryKind `json:"kind"`
+    Time     time.Time `json:"time"`
+
+    Message  *llm.Message `json:"message,omitempty"`
+    Model    string       `json:"model,omitempty"`
+    Provider string       `json:"provider,omitempty"`
+    Mode     string       `json:"mode,omitempty"`    // EntryModeChange
+    Summary  string       `json:"summary,omitempty"` // EntryCompaction
+    Replaced int          `json:"replaced,omitempty"`
+}
+```
+
+`ParentID` ships in v1 even though branching does not. It costs one field now and makes
+`/fork` a feature rather than a migration.
+
+---
+
+## 4. The agent loop
+
+One `Send` drives the loop until the model stops asking for tools. Each iteration is a
+**step** — one model call plus its tool execution. The whole `Send` is a **turn**.
+
+```
+Send(ctx, text)
+  │
+  ├─ tools := registry.Snapshot()          ← ONCE per turn. Stable for caching (§3.3)
+  ├─ append user message; persist EntryMessage
+  │
+  └─ for step := 0; step < MaxSteps; step++ {        ← MaxSteps = 100, a fuse
+       │
+   (1) ├─ compact.MaybeReduce(transcript)            ← §11; emits EventCompaction
+       │
+   (2) ├─ cred.Resolve(ctx)                          ← every call, never cached
+       │
+   (3) ├─ stream := provider.Stream(ctx, req)
+       │
+   (4) ├─ for ev := range stream {                   ← consume to completion
+       │     accumulate into `msg`
+       │     EventTextDelta → emit EventAssistantDelta{Message: ev.Partial}
+       │     EventToolCall  → BUFFER into pending[]        ← do NOT dispatch yet
+       │     EventDone/Error → record stop reason
+       │   }
+       │
+   (5) ├─ if stopReason == StopMaxTokens && len(pending) > 0 {
+       │     fail EVERY pending call — truncated args may parse AND validate
+       │     while being semantically wrong
+       │   }
+       │
+   (6) ├─ if len(pending) == 0 {
+       │     commit assistant message; emit EventTurnEnd; return
+       │   }
+       │
+   (7) ├─ results := dispatch(pending, tools)        ← §6 for parallelism
+       │     per call: resolve from snapshot → permission → panic guard → run
+       │
+   (8) ├─ COMMIT assistant message AND results together, or neither
+       │
+   (9) ├─ if loopDetector.Repeating() { halt with a message to the user }
+       │
+       └─ continue
+     }
+```
+
+### Why tool calls are buffered before dispatch (step 4 → 7)
+
+Crush's comment says it plainly: *"Buffer dispatch until stream is fully consumed so that all
+OnToolCall callbacks complete before any tool result is written."* Draining the stream first
+guarantees the assistant message is complete before any result exists, which makes ordering
+deterministic and makes opt-in parallelism a single flag rather than a redesign
+([crush.md §3](research/crush.md)).
+
+### Invariant 1 — `tool_use` never exists without `tool_result`
+
+The most important thing in this document. An orphaned `tool_use` causes every provider to
+reject the request — **permanently**, because the bad message is now in the history. The
+session is bricked.
+
+Three of the four reference projects solve this differently. We take two, because they cover
+different failure modes:
+
+**Prevent-on-write** (neo). The assistant message and its results are appended together or not
+at all — step 8. On mid-turn cancellation, synthetic results are emitted for calls that
+never ran:
+
+```go
+for i, call := range pending {
+    if results[i] == nil {
+        results[i] = &tool.Result{
+            Content: "tool call was interrupted and did not produce a result; " +
+                     "you may retry it if the result is still needed",
+            IsError: true,
+        }
+    }
+}
+```
+
+**Repair-on-read** (Crush). Prevent-on-write handles cancellation. It does not handle a
+`SIGKILL`, a full disk, or a partial write. So the transcript is repaired every time it loads:
+
+```go
+// session.Sanitize runs on every Load. Bidirectional.
+//   a) drop tool_results whose tool_use is missing
+//   b) inject a synthetic error tool_result for every unanswered tool_use
+func Sanitize(msgs []llm.Message) []llm.Message
+```
+
+About 40 lines. It makes the bricked-session bug structurally impossible rather than merely
+unlikely.
+
+### Invariant 2 — the truncated-tool-call guard (step 5)
+
+If the model hit its output-token limit mid-emission, the JSON arguments of *every* tool call
+in that message may be truncated. Truncated JSON can still parse and still validate against
+the schema while being semantically wrong — an `edit` with a truncated `new_string` silently
+destroys code. pi refuses to execute any of them.
+
+### Invariant 3 — loop detection (step 9)
+
+```go
+// ~30 lines. neo's only runaway guard is MaxTurns=500; pi has none.
+func (d *LoopDetector) Observe(name string, input json.RawMessage, output string) bool {
+    sig := sha256.Sum256(slices.Concat([]byte(name), input, []byte(output)))
+    d.recent = append(d.recent, sig)
+    if len(d.recent) > 10 {
+        d.recent = d.recent[1:]
+    }
+    return countOf(d.recent, sig) > 5
+}
+```
+
+opencode's variant — three *consecutive* identical calls — is simpler and probably enough. We
+take the windowed version because it also catches A-B-A-B oscillation.
+
+### Invariant 4 — panic recovery per tool
+
+```go
+func runSafely(ctx context.Context, t Tool, raw json.RawMessage) (res Result, err error) {
+    defer func() {
+        if r := recover(); r != nil {
+            res = Result{
+                Content: fmt.Sprintf("tool panicked: %v\n\n%s", r, debug.Stack()),
+                IsError: true,
+            }
+            err = nil // the model sees it and adapts; the process survives
+        }
+    }()
+    return t.Run(ctx, raw)
+}
+```
+
+This matters more with MCP in scope: a third-party server is code we did not write.
+
+### Termination
+
+| Condition | Behaviour |
+|---|---|
+| `StopEndTurn` / `StopRefusal`, no tool calls | Normal completion |
+| `StopMaxTokens`, no tool calls | Complete; warn the reply was cut off |
+| `StopAborted` | User interrupt; commit what exists, emit `EventTurnEnd` |
+| `StopError` | Retry per §12, then surface to the user |
+| Loop detector fires | Halt, tell the user what repeated |
+| `step == MaxSteps` | Halt. A fuse, not a feature — reaching it is a bug |
+
+---
+
+## 5. Data flow: one turn, end to end
+
+Tracing `> fix the failing auth test` from keystroke to rendered diff. Goroutine in brackets.
+
+| # | Where | What happens |
+|---|---|---|
+| 1 | **[bubbletea]** | `tea.KeyPressMsg` → `Update` appends to the textarea. UI state mutates only here |
+| 2 | **[bubbletea]** | Enter → append a user bubble optimistically, set `busy`, return a `tea.Cmd` |
+| 3 | **[turn]** | Bubble Tea runs the `Cmd` on a fresh goroutine → `agent.Send(ctx, text)`. `ctx` carries the cancel func stored on the model for Esc |
+| 4 | **[turn]** | `registry.Snapshot()` — one immutable tool set for the whole turn |
+| 5 | **[turn]** | `compact.MaybeReduce` — usually a no-op |
+| 6 | **[turn]** | `cred.Resolve` → API key. `prompt.Build` → ordered system blocks |
+| 7 | **[turn]** | `provider.Stream(ctx, req)` opens the HTTP connection |
+| 8 | **[sdk]** | SSE frames decoded on the SDK's own goroutine |
+| 9 | **[turn]** | The `range` accumulates into `msg` and emits `EventAssistantDelta{Message: partial}` |
+| 10 | **[pump]** | One goroutine drains the event channel, applies a 33ms debounce, calls `program.Send(agentEventMsg{ev})` |
+| 11 | **[bubbletea]** | `Update` replaces the last assistant item's content, marks it dirty |
+| 12 | **[bubbletea]** | `View` re-renders. The streaming item uses stable-prefix markdown; finished items above hit their cache and are skipped |
+| 13 | **[turn]** | Stream ends `stop_reason: tool_use`, one buffered call: `edit(internal/auth/check.go, …)` |
+| 14 | **[turn]** | Guards pass. `permission.Ask` consults the **mode's** preset (§7). Mode is `manual`, `edit` is `ask` → publishes `EventPermission`, **blocks on a channel** |
+| 15 | **[bubbletea]** | Overlay renders. User presses `a`. `Update` calls `perms.Resolve(callID, DecisionAllowAlways)` |
+| 16 | **[turn]** | `Ask` unblocks, returns nil |
+| 17 | **[turn]** | `workspace.Resolve` validates the path through `os.Root`. The read-before-edit tracker confirms this session read the file and its mtime is unchanged |
+| 18 | **[turn]** | Per-file mutex acquired (realpath-keyed). `tool/edit` runs the match ladder — a pure string function. Rung 1 hits |
+| 19 | **[turn]** | Returns `Result{Content: "edited …", Details: &DiffDetails{Unified: …}}`; emits `EventToolEnd` |
+| 20 | **[pump]** → **[bubbletea]** | `Update` appends a tool-call item carrying `*DiffDetails`. `diffview` renders it green/red. **The tool never knew a terminal existed** |
+| 21 | **[turn]** | Assistant message + tool result committed together (§4). Appended to JSONL. Loop continues |
+| 22 | **[turn]** | Second step returns text, `stop_reason: end_turn`. `EventTurnEnd` with usage |
+| 23 | **[bubbletea]** | `busy = false`; status line updates tokens, cost and mode; the last item freezes its render cache forever |
+
+**No state is shared between [turn] and [bubbletea].** The only channel between them is
+`agent.Event` in one direction and method calls in the other.
+
+---
+
+## 6. Concurrency model
+
+Go's concurrency is a reason to build this in Go, and also the easiest way to build something
+subtly broken. The rule is single ownership.
+
+| Goroutine | Owns | Lifetime |
+|---|---|---|
+| **[bubbletea]** `Update` | All UI state. The **only** goroutine that mutates it | Program lifetime |
+| **[turn]** | The transcript, in-flight step state, the tool snapshot | One `Send`, spawned as a `tea.Cmd` |
+| **[pump]** | Nothing. Drains the event channel → `program.Send` | Program lifetime |
+| **[sdk]** | HTTP/SSE decoding | One stream |
+| **[tool]** | One tool's execution | One call; spawned only when parallel-safe |
+| **[bash-pump]** | Throttled output snapshots | One bash call |
+| **[mcp-server]** | One MCP subprocess and its JSON-RPC framing | Program lifetime, one per configured server |
+
+### The rules
+
+**1. UI state mutates only in `Update`.** A `tea.Cmd` that writes model fields is a data race —
+`View` reads the model concurrently. Anything a background goroutine wants to say becomes a
+`tea.Msg`.
+
+**2. Long-lived streams use `Program.Send`, not a blocking `tea.Cmd`.** A `Cmd` is
+`func() tea.Msg` — one value, one time. Wrong shape for hundreds of deltas. neo's comment
+notes they moved to direct `p.Send()` specifically to escape the backpressure of a hand-rolled
+pump ([neo.md §7](research/neo.md)).
+
+```go
+// The entire agent → UI bridge.
+go func() {
+    for ev := range ag.Events() {
+        program.Send(agentEventMsg{ev})
+    }
+}()
+```
+
+**3. Debounce below the UI, not inside it.** Crush coalesces streaming deltas in a 33ms window
+at the persistence layer, so the UI never sees a per-token message. Terminal events (turn
+end, error, tool end) bypass the debounce and flush immediately. Throttling lives where the
+data is.
+
+**4. Parallel tool execution is opt-in and runtime-owned.** For v1, only tools implementing
+`Parallel` and returning true run concurrently — in practice `read`, `grep`, `find`, `ls`.
+`write`, `edit`, `bash` are always serial. **MCP tools are always serial**: we have no idea
+what a third-party server does, so it fails closed. Crush marks only its sub-agent tool
+parallel; that conservatism is right for v1.
+
+The model never chooses. Unknown tools fail closed to serial.
+
+```go
+sem := make(chan struct{}, MaxParallelTools) // 4
+var wg sync.WaitGroup
+for i, call := range parallelSafe {
+    wg.Add(1)
+    go func(i int, call pendingCall) {
+        defer wg.Done()
+        select {
+        case sem <- struct{}{}:
+            defer func() { <-sem }()
+            results[i] = runSafely(ctx, call)
+        case <-ctx.Done():
+            results[i] = interruptedResult()
+        }
+    }(i, call)
+}
+wg.Wait()
+```
+
+Results are written by index into a pre-sized slice — no ordering race — and fed back in the
+order the model emitted the calls, which providers require.
+
+**5. Per-file mutation mutex.** Parallel reads are safe; two writes to the same file are not.
+A realpath-keyed mutex serializes same-file mutations while different files stay parallel —
+pi's `file-mutation-queue`, about 30 lines.
+
+```go
+func (l *FileLocks) With(path string, fn func() error) error {
+    real, err := filepath.EvalSymlinks(path)
+    if err != nil { real = path }
+    mu, _ := l.m.LoadOrStore(real, &sync.Mutex{})
+    m := mu.(*sync.Mutex)
+    m.Lock()
+    defer m.Unlock()
+    return fn()
+}
+```
+
+**6. Cancellation is one `context.CancelFunc` per turn**, stored on the TUI model. Esc is
+two-stage — first press arms, second cancels (Crush's anti-fat-finger detail). The context
+threads into the provider stream, every tool, the bash process group, the MCP call, and the
+retry sleep, so an interrupt during a backoff sleep actually interrupts.
+
+**7. Steering and follow-up are separate queues.** "Interrupt now" and "queue until done" are
+different operations, and conflating them races the tool executor. Steering drains at step
+boundaries; follow-ups only when the loop would otherwise stop.
+
+**8. The tool registry is read via snapshot, written by the MCP manager.** The `[turn]`
+goroutine never holds a lock on it — it took its snapshot at step 4 of §5 and reads a frozen
+slice thereafter.
+
+**9. Mode is read by the permission service, written by `Update`.** See §7.4.
+
+---
+
+## 7. Permissions and modes
+
+Four modes ship in the MVP. The design constraint is the interesting part:
+
+> **Modes are not a special case in the agent loop.** The loop does not know they exist.
+
+They are permission presets. This is opencode's design, and it is the most elegant thing in
+that report: their `plan` and `build` agents register identically and differ *only* in a
+default permission map ([opencode.md §10](research/opencode.md)). "Modes" therefore cost zero
+branches in the loop, and custom user-defined modes become nearly free later (§15).
+
+| Mode | edit / write | bash | Gate |
+|---|---|---|---|
+| `plan` | deny | read-only patterns only | active |
+| `manual` *(default)* | ask | ask | active |
+| `auto` | allow | allow-listed, else ask | active |
+| `yolo` | allow | allow | **short-circuited before every other check** |
+
+`yolo` is not merely the most permissive preset — it is a different mechanism, and §7.7 shows
+why that distinction matters.
+
+### 7.1 Types
+
+```go
+package permission
+
+type Mode string
+
+const (
+    ModePlan   Mode = "plan"
+    ModeManual Mode = "manual" // default
+    ModeAuto   Mode = "auto"
+    ModeYolo   Mode = "yolo"   // NOT in the Shift+Tab cycle — see below
+)
+
+// cycleModes is the Shift+Tab rotation. ModeYolo is deliberately ABSENT from
+// this array, which is what makes it structurally unreachable by cycling
+// rather than merely discouraged. Reaching yolo requires --yolo or /yolo.
+var cycleModes = [...]Mode{ModePlan, ModeManual, ModeAuto}
+
+// Next advances the cycle. Cycling FROM yolo drops to manual — leaving yolo
+// should always be easy, and landing somewhere safe is the right default.
+func Next(m Mode) Mode {
+    for i, c := range cycleModes {
+        if c == m {
+            return cycleModes[(i+1)%len(cycleModes)]
+        }
+    }
+    return ModeManual
+}
+
+type Rule string
+
+const (
+    RuleAllow Rule = "allow"
+    RuleAsk   Rule = "ask"
+    RuleDeny  Rule = "deny"
+)
+
+// PatternRules maps a glob to a rule. Matched against a literal string —
+// the whole bash command line, or "server__tool" for MCP.
+type PatternRules map[string]Rule
+
+type PermissionSet struct {
+    Read  Rule // read, grep, find, ls
+    Write Rule
+    Edit  Rule
+    Fetch Rule // reserved for phase-2 web tools
+    Bash  PatternRules
+    MCP   PatternRules
+}
+```
+
+### 7.2 The presets, as data
+
+```go
+var Presets = map[Mode]PermissionSet{
+    ModePlan: {
+        Read: RuleAllow, Write: RuleDeny, Edit: RuleDeny, Fetch: RuleAsk,
+        Bash: PatternRules{
+            "*":               RuleDeny,   // deny by default...
+            "git status*":     RuleAllow,  // ...allow the read-only verbs
+            "git diff*":       RuleAllow,
+            "git log*":        RuleAllow,
+            "git show*":       RuleAllow,
+            "ls*":             RuleAllow,
+            "cat*":            RuleAllow,
+            "rg*":             RuleAllow,
+            "find *":          RuleAllow,
+            "find * -delete*": RuleDeny,   // ...but not the destructive flags
+            "find * -exec*":   RuleDeny,
+            "go test*":        RuleAsk,
+        },
+        MCP: PatternRules{"*": RuleAsk},
+    },
+
+    ModeManual: {
+        Read: RuleAllow, Write: RuleAsk, Edit: RuleAsk, Fetch: RuleAsk,
+        Bash: PatternRules{
+            "*":           RuleAsk,
+            "git status*": RuleAllow,
+            "git diff*":   RuleAllow,
+            "git log*":    RuleAllow,
+            "ls*":         RuleAllow,
+            "rg*":         RuleAllow,
+        },
+        MCP: PatternRules{"*": RuleAsk},
+    },
+
+    ModeAuto: {
+        Read: RuleAllow, Write: RuleAllow, Edit: RuleAllow, Fetch: RuleAllow,
+        Bash: PatternRules{
+            "*":         RuleAllow,
+            "rm -rf*":   RuleAsk, // auto is not reckless
+            "sudo*":     RuleAsk,
+            "git push*": RuleAsk,
+            "* | sh*":   RuleAsk,
+        },
+        MCP: PatternRules{"*": RuleAllow},
+    },
+
+    // ModeYolo is listed for completeness and for `rasp config check` output.
+    // It is never consulted at runtime — the short-circuit in §7.7 answers
+    // first, so no pattern in this set is ever evaluated.
+    ModeYolo: allowEverything(),
+}
+```
+
+Auto still asks for a handful of genuinely destructive patterns. That is deliberate and worth
+keeping honest — "auto" means "don't interrupt me for ordinary work," not "never stop." That
+distinction is precisely what `yolo` gives up, and why it is a separate mode rather than a
+looser `auto`.
+
+### 7.3 Glob resolution — specificity, not map order
+
+Several patterns will match one command. Go map iteration order is randomized, so leaving this
+to chance would make permission decisions nondeterministic. The rule is explicit:
+
+> **Most specific wins.** Specificity = the count of non-wildcard characters in the pattern.
+> Ties break lexicographically, so the result is fully deterministic.
+
+```go
+// resolveBash picks the rule for a literal command string.
+//
+//   "find *"          → 5 literal chars
+//   "find * -delete*" → 13 literal chars   ← wins for `find . -delete`
+//
+// Patterns are compiled and sorted once per PermissionSet, not per call.
+func (p *compiledSet) resolveBash(cmd string) Rule {
+    for _, pat := range p.bashSorted { // pre-sorted, descending specificity
+        if pat.match(cmd) {
+            return pat.rule
+        }
+    }
+    return RuleAsk // fail-closed when nothing matches
+}
+```
+
+Matching is `filepath.Match`-style over the whole command string. This is a **usability
+feature, not a security boundary** — `git diff; rm -rf /` matches `git diff*` and would be
+allowed. That limitation is documented in the user-facing docs rather than papered over. The
+real protections are `os.Root` confinement and the fact that a human is watching.
+
+### 7.4 Where mode lives, and who mutates it
+
+Mode is **session state**, not config and not loop state.
+
+- **Persisted** as `EntryModeChange`, a first-class session entry alongside model changes — so
+  replaying a session reproduces which mode produced which turn.
+- **Read** by the permission service at `Ask` time. Never read by `agent`.
+- **Written** by the `[bubbletea]` `Update` goroutine (Shift+Tab) or by a slash command.
+
+Synchronization against an in-flight turn is one `atomic.Pointer`:
+
+```go
+type Service struct {
+    yolo    atomic.Bool                 // the short-circuit; see §7.7
+    mode    atomic.Pointer[compiledSet] // written by Update, read by Ask
+    grants  sync.Map                    // (tool, action, path) → granted
+    pending sync.Map                    // callID → chan Decision
+}
+
+func (s *Service) SetMode(m Mode) {
+    s.yolo.Store(m == ModeYolo)
+    s.mode.Store(compile(m, s.overrides))
+}
+```
+
+Because `Ask` loads the pointer at the moment of the check, a mid-turn switch **takes
+effect at the next permission check and is never retroactive**. A tool already running to
+completion under the old mode finishes; the next one is evaluated under the new one. That is
+the only sane semantics, and it falls out of the design rather than needing a special case.
+
+### 7.5 Mode switching tells the model
+
+A silent constraint change produces a confused model that keeps proposing edits it cannot
+make. So a switch injects a synthetic user-role reminder into the transcript, exactly as
+opencode does:
+
+```
+[Mode changed to plan. You can no longer edit or write files. Investigate and
+propose a plan; the user will switch you to manual or auto to carry it out.]
+```
+
+It is a normal transcript message — persisted, replayed, and visible in the UI as a system
+notice rather than a user bubble.
+
+### 7.6 Prompt-caching interaction — mode text goes in the uncached tail
+
+If mode instructions live in the system prompt, switching mode changes the prompt. Whether
+that costs anything depends entirely on **which block** it lands in, because the Anthropic
+cache is a prefix match (§11).
+
+**Decision: mode text goes in the dynamic, uncached tail — never in a cached block.**
+
+Reasoning: Shift+Tab is a frequent, casual action. If mode text sat in an early block, every
+toggle would invalidate the cached prefix containing tool descriptions and the entire
+`AGENTS.md` composition — thousands of tokens re-billed for a ~60-token change. Putting it
+last costs those ~60 tokens on every request and invalidates nothing. That trade is not close.
+
+### 7.7 The approval ladder
+
+`Ask` consults, in order, short-circuiting on the first answer:
+
+```
+0. yolo active?                                      → allow   ← atomic.Bool, before everything
+1. mode preset resolves to allow?                    → allow
+2. mode preset resolves to deny?                     → deny (no prompt)
+3. config allow-list matches?                        → allow
+4. session grant for (tool, action, path) exists?    → allow
+5. otherwise → publish EventPermission, block on a channel, ask the user
+```
+
+```go
+func (s *Service) Ask(ctx context.Context, req Request) error {
+    if s.yolo.Load() {
+        return nil // rung 0: one atomic load, ahead of every map lookup
+    }
+    ...
+}
+```
+
+**Why yolo is rung 0 rather than a permissive preset.** Crush uses an `atomic.Bool` checked
+first for exactly this, and the reasoning holds up three ways. It is unambiguous — no pattern
+can accidentally deny under yolo, because no pattern is consulted. It is cheap — one atomic
+load instead of a compiled glob walk on every tool call. And it is honest — "yolo" is a
+different *kind* of statement from "auto," and collapsing it into the same mechanism invites
+exactly the bug where a stray config override makes yolo unexpectedly prompt.
+
+Crush's ladder otherwise, plus modes at rungs 1–2 ([findings.md](research/findings.md)).
+Grants are keyed by path, so "always allow writes in `internal/`" does not silently cover
+`~/.ssh`, and they are session-scoped and in-memory — they do not persist across restarts.
+
+### 7.8 TUI
+
+- **Shift+Tab cycles** plan → manual → auto → plan. **Yolo is not in the cycle** (§7.1) — it
+  requires `--yolo` at launch or `/yolo` explicitly. You cannot reach it by leaning on a key.
+- The current mode renders in the **status line**, colour-coded (plan blue, manual default,
+  auto amber) — a persistent reminder, since "which mode am I in" is the question the
+  permissive modes make expensive to get wrong.
+- **Yolo renders a loud, persistent indicator** while active: an inverse-video `⚡ YOLO` badge
+  in the status line, and a coloured border on the input area. It never fades and is never
+  collapsed into a subtle glyph. If every guardrail is off, the interface should say so
+  continuously — not once at startup, when the user has already stopped reading.
+- In **auto**, the permission overlay never appears for allow-listed actions; the tool card
+  renders with a small "auto-approved" marker so the action stays visible.
+- In **plan**, a denied action renders inline as a dimmed tool card with the reason, so the
+  user can see what the model wanted to do.
+
+---
+
+## 8. MCP integration
+
+**In the MVP, tightly scoped**, and sequenced as the **last MVP milestone** — after the core
+loop, the seven tools and streaming are solid. It is the one place where third-party code runs
+inside our process boundary, and it deserves a stable foundation underneath it.
+
+| In v1 | Out of v1 |
+|---|---|
+| **stdio transport only** — spawn a subprocess, JSON-RPC over stdin/stdout | HTTP and Streamable HTTP transports |
+| Official `github.com/modelcontextprotocol/go-sdk`, version-pinned | OAuth-authenticated servers |
+| Tool discovery and tool calls | MCP resources and prompts |
+| Servers from `.mcp.json`, rasp config, optionally Claude Desktop's config | Server-initiated sampling |
+
+### 8.0 The containment rule
+
+> **No MCP type, error code, method name or protocol concept may leave `internal/mcp`.**
+> The package exposes exactly two things: `tool.Tool` values, and a small lifecycle API
+> (`Start`, `Shutdown`, `Status`). Nothing else crosses the boundary.
+
+This is the single most important MCP decision in the design, and it is driven by evidence
+rather than taste: **MCP has shipped two breaking revisions in eight months.** Revision
+2026-07-28 alone removed the `initialize` / `notifications/initialized` handshake outright,
+made the protocol stateless with version and capability data riding in `_meta` on every
+request, added a required `resultType` field to all results, added a new `server/discover`
+RPC, deprecated Roots, Sampling and Logging, removed `ping` and `logging/setLevel`, formally
+deprecated HTTP+SSE, loosened schema validation to full JSON Schema 2020-12, and deprecated
+OAuth Dynamic Client Registration.
+
+Any one of those would be an afternoon inside a sealed package. Any one of them would be a
+week if MCP concepts had leaked into the registry, the loop, or the TUI.
+
+**The test, stated as an invariant:** a new MCP spec revision must be a dependency bump plus
+changes confined to `internal/mcp/`. If a revision ever forces an edit to `internal/agent`,
+`internal/tool` or `internal/tui`, the boundary was drawn wrong and fixing it takes priority
+over shipping the revision.
+
+Concretely, this means:
+
+- `mcp.Tool` implements `tool.Tool` and exposes nothing else. Callers see a `tool.Tool`.
+- A server error becomes a `tool.Result{IsError: true}` with a human-readable string. No MCP
+  error code, no `jsonrpc.Error`, ever reaches `agent`.
+- Schemas are `map[string]any`, opaque, passed through (§3.2).
+- Protocol handshake details — `initialize` in the old spec, `server/discover` and `_meta` in
+  the new one — are entirely internal to `connectStdio`.
+- `resultType` is handled at the boundary: absent means `"complete"` (the spec's required
+  treatment of older servers), and `"input_required"` maps to a `tool.Result` explaining that
+  interactive MCP flows are unsupported in v1 — not a new concept in our type system.
+
+### 8.1 Discovery
+
+Three sources, merged, later wins:
+
+| Source | Path |
+|---|---|
+| Claude Desktop (opt-in, for zero-config interop) | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS), `%APPDATA%\Claude\…` (Windows) |
+| Project | `./.mcp.json` |
+| rasp config | `mcp.servers` in global or project config |
+
+`.mcp.json` uses the same shape everyone else does, so an existing file works unmodified:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "$(gh auth token)" }
+    }
+  }
+}
+```
+
+Reading Claude Desktop's config is the same instinct as reading `CLAUDE.md`: an existing setup
+should just work. It is **opt-in** (`"mcp": {"import_claude_desktop": true}`) because silently
+spawning subprocesses a user configured for a different application is not a friendly default.
+
+### 8.2 The MCP tool — schema pass-through
+
+```go
+package mcp
+
+// Tool adapts one server-advertised tool to tool.Tool. The schema is whatever
+// the server sent, used VERBATIM: we neither validate nor re-derive it. If a
+// server sends a schema its own handler rejects, that is a server bug and it
+// surfaces as an ordinary tool error.
+type Tool struct {
+    server string
+    raw    string         // the server's own tool name
+    desc   string
+    schema map[string]any // straight from tools/list
+    client *Client
+}
+
+func (t *Tool) Name() string           { return "mcp__" + t.server + "__" + t.raw }
+func (t *Tool) Description() string    { return t.desc }
+func (t *Tool) Schema() map[string]any { return t.schema }
+
+func (t *Tool) Run(ctx context.Context, raw json.RawMessage) (tool.Result, error) {
+    ctx, cancel := context.WithTimeout(ctx, t.client.callTimeout)
+    defer cancel()
+
+    out, err := t.client.CallTool(ctx, t.raw, raw)
+    if err != nil {
+        // A dead server is a tool error, not a turn error. The model sees
+        // it, can adapt, and the turn continues.
+        return tool.Result{
+            Content: fmt.Sprintf("MCP server %q failed: %v", t.server, err),
+            IsError: true,
+        }, nil
+    }
+    return tool.Result{Content: out.Text, Title: t.raw, Details: out.Structured}, nil
+}
+```
+
+`mcp__<server>__<tool>` is Claude Code's convention. Using it means a server's documentation
+and a user's muscle memory both transfer.
+
+MCP tools do **not** implement `Parallel`, so they run serially (§6 rule 4).
+
+### 8.3 Lifecycle and failure isolation
+
+The requirement is blunt: **a dead or slow server must never block startup or hang an
+turn.** Three mechanisms.
+
+**Connect in the background, at startup.** Not lazily on first use — we need the tool list
+before we can build the prompt. One goroutine per server, spawned immediately, none blocking:
+
+```go
+func (m *Manager) Start(ctx context.Context) {
+    for name, cfg := range m.servers {
+        go m.run(ctx, name, cfg) // owns this server's subprocess for its lifetime
+    }
+}
+
+func (m *Manager) run(ctx context.Context, name string, cfg ServerConfig) {
+    dial, cancel := context.WithTimeout(ctx, cfg.Timeout) // default 10s
+    defer cancel()
+
+    // connectStdio spawns the subprocess and performs whatever discovery the
+    // pinned spec revision requires. Which RPCs that involves is an
+    // implementation detail of THIS package and nothing above it (§8.0).
+    c, err := connectStdio(dial, cfg)
+    if err != nil {
+        m.markFailed(name, err) // logged; shown in `rasp mcp list` and the TUI
+        return                  // no auto-retry in v1
+    }
+
+    m.registry.Replace("mcp:"+name, c.Tools()) // ← visible at the NEXT snapshot
+
+    // Refresh when the server's advertised TTL expires. `CacheableResult`
+    // (ttlMs, cacheScope) became required on tool listings in revision
+    // 2026-07-28; absent or zero means "cache until the process exits".
+    for {
+        select {
+        case <-c.ToolsExpired():
+            if tools, err := c.RefreshTools(ctx); err == nil {
+                m.registry.Replace("mcp:"+name, tools)
+            }
+        case <-ctx.Done():
+            c.Shutdown() // close stdin, wait, then kill the process group
+            return
+        }
+    }
+}
+```
+
+A refresh lands in the registry, not in any in-flight turn — the snapshot taken at the
+start of a turn is immutable for its duration (§3.3), so a mid-turn refresh can never
+change the tool list underneath a running loop.
+
+**The first turn waits, briefly and boundedly.** `Send` waits up to `settleTimeout`
+(2s) for the initial connection round, then proceeds with whatever is ready. A server that
+finishes connecting at t=8s simply appears in the next turn's snapshot. Startup is never
+blocked; the first turn is delayed by at most two seconds.
+
+**A crash mid-turn is an ordinary tool error.** The snapshot still holds that server's
+tools, so a call still routes there, `CallTool` fails, and the model gets an error result it
+can work around. No panic, no aborted turn. The server disappears from the *next*
+snapshot.
+
+**Reaping.** Each server goroutine owns its subprocess. On shutdown the manager context is
+cancelled; each goroutine closes stdin, waits briefly, then kills the process group — the same
+`Setpgid` + negative-PID technique the bash tool uses (§12), because an MCP server spawned via
+`npx` is itself a parent of other processes.
+
+### 8.4 Tool-count budget and per-server allow-lists
+
+Some servers expose 40+ tools. Every tool's name, description and schema is sent **on every
+request** and sits in the cached prefix. Three servers of that size can cost more context than
+the conversation.
+
+```json
+"mcp": {
+  "import_claude_desktop": false,
+  "max_total_tools": 60,
+  "servers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "tools": ["search_repositories", "get_file_contents", "create_issue"],
+      "timeout": "10s"
+    }
+  }
+}
+```
+
+- **`tools`** — a per-server allow-list. Absent means all of them.
+- **`max_total_tools`** — a global ceiling (default 60, including the seven built-ins). On
+  exceeding it, rasp keeps built-ins plus servers in config order, drops the rest, and warns
+  loudly with the exact count. Silently truncating a tool list would produce baffling "the
+  model won't use my tool" reports.
+
+**The caching interaction, stated plainly.** The tool list is part of the cached prompt prefix,
+and two things can silently destroy it:
+
+1. **A server connecting or refreshing mid-session** changes the list. Unavoidable, but bounded:
+   the snapshot is taken **once per turn** (§3.3), so within a turn the list is
+   byte-identical and multi-step turns — the common case — keep their cache. A newly
+   connected server costs exactly one cache miss, once.
+2. **Unstable ordering.** If a server returns its tools in a different order on each listing,
+   the serialized prefix differs every request and the cache hit rate is *zero* — with no error
+   and no obvious symptom, just a quietly larger bill. Revision 2026-07-28 now recommends
+   servers return listings deterministically for precisely this reason, but we sort by name in
+   `Set` regardless rather than trusting compliance (§3.3).
+
+Worth watching `cache_read_input_tokens` in the status line during development for exactly
+this: a cache-hit rate that drops to zero after adding an MCP server is the signature.
+
+### 8.5 What `internal/mcp` does **not** contain
+
+- **No permission logic.** MCP tools flow through the same `permission.Service` and the same
+  mode presets as built-ins. `PermissionSet.MCP` patterns match `server__tool`.
+- **No schema interpretation.** The server's JSON Schema is passed through untouched (§3.2).
+- **No transport but stdio.** Streamable HTTP would live in a sibling implementation of the
+  same `Client` interface when it arrives. HTTP+SSE specifically is now formally deprecated
+  upstream, so it will never be built.
+- **No resources, prompts, roots, sampling or logging.** Tools only. The last three are
+  deprecated upstream anyway (§15).
+- **No auto-retry or reconnect.** A failed server stays failed until `rasp mcp reconnect` or a
+  restart. Reconnect storms against a broken config are worse than an honest error.
+- **And, per §8.0: no MCP type escapes the package.** This is the rule that makes the next
+  breaking revision a contained change.
+
+---
+
+## 9. Storage
+
+### Format: append-only JSONL
+
+One file per session, one JSON object per line. What Claude Code, pi and opencode all do.
+
+- Appending never rewrites the file — no O(n) write per turn.
+- A crash leaves a valid file up to the last complete line; a torn final line is skipped.
+- `tail -f` and `jq` work on it. That matters more than it sounds while debugging a loop.
+- Resume is "read the file, replay it."
+
+### Layout
+
+```
+~/.local/share/rasp/                     # $XDG_DATA_HOME
+  sessions/
+    <project-key>/
+      20260808T024153_01J8XZ4Q7K.jsonl
+  logs/
+    rasp.log
+```
+
+`<project-key>` is the repo's **first commit hash** (`git rev-list --max-parents=0 --all`),
+falling back to a hash of the absolute path outside a repo. opencode's trick: the same repo
+maps to the same bucket regardless of where it is checked out, so sessions follow the project
+rather than the directory.
+
+### On-disk example
+
+```jsonl
+{"id":"01J8XZ4Q7K","parent_id":"","kind":"meta","time":"2026-08-08T02:41:53Z","cwd":"/Users/theo/Projects/rasp","model":"claude-opus-5","provider":"anthropic","mode":"manual"}
+{"id":"01J8XZ4R2A","parent_id":"01J8XZ4Q7K","kind":"message","time":"2026-08-08T02:41:53Z","message":{"role":"user","content":[{"type":"text","text":"fix the failing auth test"}]}}
+{"id":"01J8XZ4X9C","parent_id":"01J8XZ4R2A","kind":"message","time":"2026-08-08T02:42:01Z","message":{"role":"assistant","content":[{"type":"text","text":"Let me look at the test."},{"type":"tool_use","id":"toolu_01A9","name":"read","input":{"path":"internal/auth/check_test.go"}}],"stop_reason":"tool_use","usage":{"input":4210,"output":88,"cache_read":3900}}}
+{"id":"01J8XZ4X9D","parent_id":"01J8XZ4X9C","kind":"message","time":"2026-08-08T02:42:01Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01A9","content":"package auth\n\nfunc TestCheck(t *testing.T) {\n...","is_error":false}]}}
+{"id":"01J8XZ51A0","parent_id":"01J8XZ4X9D","kind":"mode_change","time":"2026-08-08T02:43:02Z","mode":"auto"}
+{"id":"01J8XZ52B1","parent_id":"01J8XZ51A0","kind":"model_change","time":"2026-08-08T02:44:10Z","model":"claude-sonnet-5","provider":"anthropic"}
+{"id":"01J8Y0F3K9","parent_id":"01J8XZ52B1","kind":"compaction","time":"2026-08-08T03:02:44Z","summary":"Goal: fix the failing auth test...","replaced":22}
+```
+
+Note the assistant message and its `tool_result` are **adjacent** — written in one `Append`,
+per invariant 1. Mode and model changes are **first-class entries**, so replay reproduces
+which mode and which model produced which turn. Compaction is an entry too, so reopening a
+session reconstructs context deterministically without re-running the LLM.
+
+### Atomic writes
+
+Appends use `O_APPEND` on a single open handle — atomic below `PIPE_BUF`, tolerable above it
+since a torn final line is skipped on read. The **meta** file (index, title, token totals) is
+rewritten wholesale, so it uses temp-file + `rename`, atomic on POSIX. pi does exactly this.
+
+### Why not SQLite for v1
+
+Crush uses SQLite via `modernc.org/sqlite` and it works well — but it brings migrations
+(`goose`), query codegen (`sqlc`), and a footgun their own source documents: they force
+`SetMaxOpenConns(1)` because concurrent sub-agent sessions caused WAL desync. We have no
+sub-agents in v1 and no query needs beyond "list sessions for this project."
+
+When listing gets slow, add a SQLite **index** — one row per session — and keep the transcript
+on JSONL. Reversible, and the ecosystem scan's recommendation.
+
+---
+
+## 10. Configuration
+
+Two files, both JSON, deep-merged. The [teaching doc](internals.md) covers authoring them;
+this is the mechanism.
+
+### Precedence
+
+```
+1. Command-line flags              --model, --mode, --yolo, --provider
+2. Environment                     RASP_MODEL, ANTHROPIC_API_KEY, ...
+3. Project config                  ./.rasp/config.json   (+ ./.mcp.json)
+4. Global config                   ~/.config/rasp/config.json
+5. Built-in defaults
+```
+
+Later entries lose. Merge is per-key deep merge, not whole-object replacement, so a project
+config can override one model without restating providers.
+
+### Schema
+
+```json
+{
+  "$schema": "https://rasp.dev/schema.json",
+  "model": "anthropic/claude-opus-5",
+  "mode": "manual",
+
+  "providers": {
+    "anthropic": { "api_key": "$(op read op://vault/anthropic/key)" },
+    "openrouter": {
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key": "${OPENROUTER_API_KEY}",
+      "models": ["moonshotai/kimi-k2", "deepseek/deepseek-v3"]
+    },
+    "ollama": {
+      "base_url": "http://localhost:11434/v1",
+      "api_key": "unused",
+      "models": ["qwen3-coder:30b"]
+    }
+  },
+
+  "modes": {
+    "manual": {
+      "bash": { "go build*": "allow", "go test*": "allow" }
+    }
+  },
+
+  "mcp": {
+    "import_claude_desktop": false,
+    "max_total_tools": 60,
+    "servers": {
+      "github": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": { "GITHUB_TOKEN": "$(gh auth token)" },
+        "tools": ["search_repositories", "get_file_contents"],
+        "timeout": "10s"
+      }
+    }
+  },
+
+  "context": {
+    "files": ["AGENTS.md", "CLAUDE.md"],
+    "reserve_tokens": 16384
+  },
+
+  "ui": { "theme": "auto", "diff": "unified" }
+}
+```
+
+`modes.<name>` deep-merges onto the built-in preset, so a user adds `"go test*": "allow"` to
+manual mode without restating the whole map.
+
+**Two constraints on `mode`, both about the same hazard.** A project config is a file in a
+repository — it arrives from `git clone`, and nobody reads it.
+
+1. **`"mode": "yolo"` is rejected in a *project* config.** It is accepted only in the global
+   config, from `--yolo`, or from `/yolo`. Otherwise cloning a repository could disable every
+   guardrail before the user has read a single line of it. rasp refuses to start and names the
+   file.
+2. **`modes.yolo` overrides are ignored entirely.** Yolo short-circuits ahead of pattern
+   evaluation (§7.7), so an override could only ever create the false impression of a
+   constraint that is not being enforced. Configuring one is a warning at startup, not a
+   silent no-op.
+
+The same reasoning applies to `mcp.servers` in a project config, which is a request to spawn a
+subprocess: allowed, but the first run in a new project lists the servers it is about to start
+and asks once.
+
+### Auth: API keys only in the MVP
+
+OAuth is phase 2. Every string in `providers.*.api_key` and `mcp.servers.*.env.*` goes through
+one resolver:
+
+| Form | Meaning |
+|---|---|
+| `sk-ant-...` | Literal |
+| `${VAR}` / `$VAR` | Environment variable |
+| `${VAR:-default}` | Environment with fallback |
+| `$(command)` | Run it, take trimmed stdout |
+
+This is Crush's design, and it is why we ship no keyring integration: `$(op read …)`,
+`$(pass show …)`, `$(gh auth token)` all work with zero code. Results are cached ~30s so we are
+not forking a process per model call. Config files holding a literal key are written `0600`
+and warned about if found `0644`.
+
+### AGENTS.md discovery
+
+Walk from cwd up to the git worktree root (or filesystem root outside a repo), collecting every
+match. Order outermost-first, so the most specific file lands nearest the model's attention.
+
+```
+~/.config/rasp/AGENTS.md              global, always first
+/Users/theo/Projects/AGENTS.md        ancestor
+/Users/theo/Projects/rasp/AGENTS.md   nearest, last
+```
+
+Filenames tried per directory, in order: `AGENTS.md`, then `CLAUDE.md`. The **first name that
+matches anywhere wins for the whole walk** — you don't get a mix of both families, which is
+pi's rule and avoids double-loading the same content under two names.
+
+Each file is wrapped for provenance:
+
+```
+<project_instructions path="/Users/theo/Projects/rasp/AGENTS.md">
+...contents...
+</project_instructions>
+```
+
+**The git-worktree fix**, a real bug we would otherwise hit: in a linked worktree the main
+repo's `AGENTS.md` and the worktree's copy occupy the same logical scope and would load twice.
+Detect it by canonicalizing both paths — `git worktree` writes realpaths while cwd may be
+symlinked, notably on macOS where `/tmp` → `/private/tmp` — and suppress the duplicate.
+
+---
+
+## 11. Context window management
+
+### System prompt as ordered blocks
+
+The Anthropic cache is a **prefix match**: one byte changed before a breakpoint invalidates
+everything after it. So the prompt is not a string — it is an ordered list with explicit cache
+flags.
+
+```go
+type SystemBlock struct {
+    Text  string
+    Cache bool // place a cache breakpoint AFTER this block
+}
+```
+
+Stable content first, volatile content last, always:
+
+| # | Block | Cache | Why |
+|---|---|---|---|
+| 1 | Core identity and tool-use doctrine | — | Never changes |
+| 2 | Tool descriptions (built-in **+ MCP**) | ✅ | Changes only when the tool set changes — hence the per-turn snapshot (§3.3, §8.4) |
+| 3 | `AGENTS.md` composition | ✅ | Stable within a session |
+| 4 | **Mode instructions** | ❌ | Switched casually via Shift+Tab (§7.6) |
+| 5 | Environment: cwd, platform, git branch, date | ❌ | Volatile |
+
+Blocks 4 and 5 sit after the last breakpoint, so changing either costs their own tokens and
+invalidates nothing. Putting the date in block 1 would blow the cache on every session; putting
+mode text in block 2 would blow it on every Shift+Tab.
+
+The adapter applies provider-specific syntax (`cache_control` for Anthropic, nothing for most
+OpenAI-compatible endpoints); `prompt` only marks intent.
+
+### Token estimation — hybrid
+
+```go
+// Real usage from the last assistant message + chars/4 for everything after it.
+// neo estimates the whole transcript at chars/4, which drifts badly on
+// code-heavy sessions since code tokenizes denser than prose.
+func Estimate(entries []Entry) int {
+    total, idx := lastReportedUsage(entries) // authoritative
+    for _, e := range entries[idx+1:] {
+        total += len(e.Text()) / 4 // heuristic, small tail only
+    }
+    return total
+}
+```
+
+### Two-tier reduction
+
+opencode's insight, and the best idea in that report: **most context bloat is stale tool
+output, and deleting it is free.** Only summarize when that isn't enough.
+
+**Tier 1 — prune.** Runs after every turn. No LLM call, no cost.
+
+```
+PRUNE_PROTECT = 40_000   // once tool output exceeds this...
+PRUNE_MINIMUM = 20_000   // ...blank outputs older than this recent window
+```
+
+Walk backwards through tool results. Once accumulated tool-output tokens exceed
+`PRUNE_PROTECT`, blank the `Content` of results older than the most recent `PRUNE_MINIMUM`
+tokens, replacing each with `[output pruned to save context]`. A 2MB file read from twenty
+turns ago stops costing anything; recent turns stay intact.
+
+The `tool_result` block itself is **never removed** — only its content is emptied. Removing it
+would violate invariant 1.
+
+**Tier 2 — summarize.** Only on real overflow.
+
+```go
+func shouldCompact(used, contextWindow, maxOutput int) bool {
+    reserve := max(maxOutput, 4096) + 12_000 // output budget + margin
+    return used > contextWindow-reserve
+}
+```
+
+1. Find a cut point walking backwards until `KeepRecentTokens` (20k) accumulates.
+2. **Snap to a safe boundary.** Valid only between complete turns — never between a `tool_use`
+   and its `tool_result`. Both neo and pi enforce this; it is invariant 1 wearing a different
+   hat.
+3. Ask the same provider to summarize everything before the cut, with a structured prompt:
+   Goal / Constraints / Progress (Done, In Progress, Blocked) / Key Decisions / Next Steps /
+   Critical Context, instructed to "preserve exact file paths, function names and error
+   messages."
+4. **Carry the read/modified file lists across the boundary** so the agent doesn't forget what
+   it already touched — pi's refinement, and the difference between compaction being invisible
+   and compaction being infuriating.
+5. Write an `EntryCompaction`. Full history stays on disk; only the prompt shrinks.
+
+The summarization call sets no cache breakpoints and uses a fresh session ID — standalone, and
+it should not pollute the cache.
+
+---
+
+## 12. Error handling and resilience
+
+### Two-tier retry
+
+**Tier 1 — transport.** Wraps the HTTP call. Retries `408`, `409`, `429`, `5xx`. Honors
+`retry-after` and `retry-after-ms`, including HTTP-date form. Exponential backoff capped at 8s
+with 25% downward jitter.
+
+One sharp detail from pi: **a server-requested delay above the cap (60s) returns an error
+rather than sleeping.** A provider asking for a ten-minute wait should surface as a failure,
+not a silent hang. The sleep is interruptible by the turn's context — the vendor SDKs' own
+retry timers ignore cancellation, which is why we call them with `maxRetries: 0` and implement
+this ourselves.
+
+**Tier 2 — semantic.** Operates on the resulting `Message`, which is possible only because of
+the "never returns a Go error" contract.
+
+| Class | Examples | Action |
+|---|---|---|
+| Retryable | `overloaded`, `rate limit`, `5xx`, `connection reset`, `stream ended before message_stop` | Backoff, up to 3 |
+| **Non-retryable, checked first** | `insufficient_quota`, `quota exceeded`, `billing`, `credit balance` | **Fail immediately** |
+| Fatal | `invalid_api_key`, `model_not_found`, `context_length_exceeded` | Fail with a specific fix hint |
+
+The quota list is checked **first**. A 429 meaning "you are out of money" must not burn the
+retry budget — pi annotates each pattern with the GitHub issue it came from, which tells you
+this list is earned rather than designed.
+
+### Where errors go
+
+| Failure | Goes to | Shape |
+|---|---|---|
+| Tool: non-zero exit, not found, bad args | **The model** | `Result{IsError: true}` → `tool_result` with `is_error` |
+| Tool panics | **The model** | Recovered, converted to an error result |
+| **MCP server dead or timed out** | **The model** | Ordinary error result; the turn continues |
+| Permission denied | **The model**, then stops | Error result, then the turn ends — no blind retry |
+| Provider transient | Nobody (retried) | Silent unless retries exhaust |
+| Provider fatal | **The user** | Status line + inline error block with a fix hint |
+| Config invalid | **The user**, at startup | Refuse to start, name the file and key |
+| **MCP server failed to connect** | **The user**, non-fatally | Warning in the status line and `rasp mcp list`; rasp runs without it |
+| Session file corrupt | **The user**, recoverable | Skip torn lines, warn, continue |
+
+The distinction that matters: **tool failures are conversation, not exceptions.** A failing
+test is information the model needs. Only "rasp itself cannot continue" reaches the user as an
+error.
+
+### Degraded modes
+
+| Missing | Behaviour |
+|---|---|
+| `ripgrep` | `grep` falls back to a pure-Go walk. Slower, same results |
+| `git` | Project key falls back to a path hash; no branch in the prompt |
+| An MCP server | Its tools are absent; everything else works |
+| Terminal narrower than 60 cols | Diffs render without the gutter; warn once |
+| No `$XDG_DATA_HOME` | Fall back to `~/.local/share` per spec |
+| Session dir unwritable | Warn once, continue in memory. Losing history beats refusing to run |
+
+---
+
+## 13. Testing strategy
+
+Six layers, each proving something the others cannot.
+
+**1. Fake provider** — `internal/llm/fake`. A scripted `Provider` emitting a pre-programmed
+event sequence. No network, no cost, fully deterministic.
+
+```go
+p := fake.New(
+    fake.Text("Let me look at that."),
+    fake.ToolCall("read", `{"path":"main.go"}`),
+    fake.Done(llm.StopToolUse),
+)
+```
+
+Proves: loop control flow, tool dispatch, all four invariants, termination, cancellation. The
+bulk of tests live here, and it is why the loop must not own state. pi requires exactly this
+pattern so their suite runs at zero API cost.
+
+**2. `go-vcr` cassettes** — a handful of end-to-end tests over recorded real traffic, proving
+the adapters match the wire format. Custom request matcher (bodies contain non-deterministic
+IDs) and **redaction of `x-api-key` before anything is committed.**
+
+**3. Fake MCP server** — an in-process server speaking real JSON-RPC over a pipe. Proves the
+manager handles `tools/list`, namespacing, allow-list filtering, the budget ceiling, call
+proxying, timeout, and — most importantly — **crash mid-turn surfacing as a tool error
+rather than a panic.**
+
+**4. Golden files** — snapshot `View()` output for a fixed model state, and snapshot the
+sequence of tool calls a scripted conversation produces. Catches styling regressions and
+unintended loop changes. `-update` regenerates.
+
+**5. `teatest`** — drive the Bubble Tea model headlessly: Esc cancels, the permission overlay
+resolves, Shift+Tab cycles modes, resize doesn't panic. Note it is explicitly experimental with
+an unmerged successor proposal — use it, don't build abstractions on it we can't swap.
+
+**6. Fuzzing** — `go test -fuzz` against `tool/edit`'s match ladder, a pure string function
+with no I/O precisely so it can be fuzzed. Seed with real edits; hunt for panics and for the
+worst outcome: a match that succeeds in the wrong place.
+
+Plus a table test over `permission`'s glob resolution — specificity ordering is exactly the
+kind of rule that looks obvious and is wrong in three cases — and `go.uber.org/goleak` in
+`TestMain`, since an agent spawns goroutines per turn, per tool, per bash pump and per MCP
+server, and a leak means a hung process on quit.
+
+---
+
+## 14. Build and distribution
+
+```yaml
+# .goreleaser.yaml
+builds:
+  - env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{.Version}}"]
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+checksum:
+  name_template: checksums.txt
+homebrew_casks:          # NOT `brews:` — deprecated since goreleaser 2.10
+  - repository:
+      owner: theo
+      name: homebrew-tap
+```
+
+**`CGO_ENABLED=0` is load-bearing**, not incidental. It is what makes cross-compiling the whole
+matrix from one CI runner possible, and why the dependency list excludes anything cgo-linked:
+`mattn/go-sqlite3` (use `modernc.org/sqlite` if we ever need it) and tree-sitter (which is why
+structural search is out of scope).
+
+The one real caveat: disabling cgo forces Go's pure-Go DNS resolver, which reads
+`/etc/resolv.conf` directly and doesn't support mDNS or some corporate VPN resolution. For a
+tool calling `api.anthropic.com` this never matters.
+
+`ripgrep` is an optional **runtime** dependency, never a build one — detected on `$PATH` with a
+pure-Go fallback. MCP servers are likewise runtime-only: rasp spawns whatever the user
+configured and never bundles a server or a Node runtime. We do **not** copy pi's
+auto-download-from-GitHub-releases approach; it is clever, but it is machinery and a
+supply-chain surface we don't need.
+
+### Pin the MCP SDK explicitly
+
+```
+github.com/modelcontextprotocol/go-sdk vX.Y.Z  // exact, never a range
+```
+
+Every dependency gets a pinned version because that is what `go.mod` does, but this one gets a
+comment saying why, because the reasoning is unusual: **the MCP specification has had two
+breaking revisions in eight months** (§8.0), and the SDK tracks the spec. An unattended minor
+bump can therefore change wire behaviour, not just implementation details.
+
+The upgrade procedure is deliberate rather than automatic: read the spec changelog, bump the
+pin, run the fake-MCP-server suite (§13) and the real-server smoke test, and confirm the diff
+touches nothing outside `internal/mcp/`. That last check is the containment rule doing its job —
+if the diff escapes the package, the boundary needs fixing before the bump lands.
+
+Dependabot is configured to open MCP SDK bumps as PRs but never to auto-merge them.
+
+---
+
+## 15. Extension points deliberately left open
+
+Every phase-2 item in [scope.md](scope.md) has a named seam. The point of listing them is that
+none require restructuring — if one does, the seam is wrong and should be fixed now.
+
+| Future work | Absorbed by | Why it's additive |
+|---|---|---|
+| **OAuth** (phase 2) | `auth.Credential` | `Resolve(ctx)` already runs before every model call. An `OAuthCredential` refreshing at `max(expires_in/10, 30s)` is a new implementation, not a new call site |
+| **MCP over Streamable HTTP** | `mcp.Client` | Transport already sits behind an interface; stdio is one implementation. Note this is **Streamable HTTP**, not HTTP+SSE — the latter is formally deprecated upstream and will never be built |
+| **MCP server auth** | `mcp.ServerConfig` + `auth.Credential` | Env-var injection with `$(command)` expansion already covers token-bearing servers. Full OAuth reuses the same `Credential` seam as providers. Note that Dynamic Client Registration is deprecated upstream in favour of Client ID Metadata Documents, so build to the latter when it lands |
+| **Custom modes / agents** | `permission.PermissionSet` | Modes are already data, already config-overridable. A user-defined mode is another entry in the preset map — this is opencode's path to custom agents, and modes-as-presets is what makes it nearly free |
+| **Sub-agents** | `tool.Tool` + `tool.Registry` + a `PermissionSet` | A `task` tool constructs a second `Agent` with a filtered snapshot and a restricted preset. The loop needs no changes because it never assumed it was the only one |
+| **Session branching** | `Entry.ParentID` | Already written on every entry. `/fork` becomes a read query, not a migration |
+| **A server** | `agent.Event` + `Agent`'s methods | The event stream is already the frontend contract. A server serializes those events instead of calling `program.Send`. Crush's `Workspace` seam without the 15k LOC |
+| **Sandboxing** | A `workspace.FS` interface | Tools already route file access through `workspace` rather than `os`. Swapping the implementation relocates execution without touching any tool — pi's `ExecutionEnv` indirection, the only reason they can run tools in a micro-VM |
+| **Fetched model catalog** | `config` model resolution | Model lists are already data. A fetched catalog is another source in the merge chain |
+| **Hooks** | A decorator around `Tool` | Wrap each tool at registration. The loop never learns hooks exist |
+| **Alternative frontends** | `agent.Event` | The headless runner already proves there is more than one consumer — the test that the seam is real |
+
+**Seams we are explicitly *not* leaving.** MCP's Roots, Sampling and Logging features are all
+deprecated upstream as of revision 2026-07-28, and `ping` and `logging/setLevel` are removed
+outright. Designing extension points for them would be building for a past that is already
+being dismantled. The MCP seam covers **transports** and **auth**; nothing else.
+
+Three seams must be right on day one, because retrofitting any of them is expensive:
+
+**`workspace.FS`** — every file operation through an interface rather than `os.ReadFile`
+directly. Costs nothing now; pi's analysis is clear it is the difference between sandboxing
+being an afternoon and being a rewrite of every tool.
+
+**`tool.Tool` returning `map[string]any` from `Schema()`** — MCP forced this, and it is the
+right shape regardless. It is what lets a reflected Go struct and a server-supplied schema
+coexist in one registry, and what will let hooks, sub-agent tool filtering and any future
+dynamic tool source do the same.
+
+**The `internal/mcp` containment boundary** (§8.0) — the only one of the three whose value is
+measured in avoided work rather than enabled features. Two breaking spec revisions in eight
+months is the evidence; a third is a question of when, not whether.

@@ -1,0 +1,204 @@
+# rasp — MVP and future scope
+
+Companion to [research/findings.md](research/findings.md). This document draws the line
+around v1: what ships, what waits, and what we are choosing never to build.
+
+**Guiding rule:** the MVP is the smallest thing that is genuinely useful *daily*. Not a demo.
+If a feature doesn't make the tool better to actually use on a real codebase, it waits.
+
+---
+
+## MVP
+
+### Platform
+
+| | |
+|---|---|
+| Language | Go 1.26 |
+| Distribution | Single static binary, `CGO_ENABLED=0`, cross-compiled via goreleaser |
+| Topology | Single process. Agent core is a UI-agnostic package emitting typed events |
+| Frontends | TUI (primary) and `rasp run -p "..."` headless (falls out of the seam for free) |
+
+### Auth: API keys only
+
+- Resolution order: config file → environment variable.
+- Config values support **shell expansion**, including `$(command)` — so
+  `"api_key": "$(op read op://vault/anthropic/key)"` works with any secret manager and we
+  build no keyring integration. (Copied from Crush; all four reference projects store
+  credentials as plaintext `0600` files and none use an OS keyring.)
+- The credential layer is built behind a `Credential` interface that can refresh itself, and
+  is **re-resolved on every LLM call** — so OAuth slots in later without touching the loop.
+
+### Providers: two adapters
+
+- **Native Anthropic** via `anthropics/anthropic-sdk-go` — prompt caching, thinking blocks,
+  correct `tool_use` semantics.
+- **OpenAI-compatible** with a swappable base URL — covers OpenRouter, Groq, DeepSeek, xAI,
+  Mistral, Together, Ollama and LM Studio from one adapter. Built by wrapping the real OpenAI
+  client with injectable hooks rather than reimplementing it (Crush's `openaicompat` pattern).
+
+Model list: hardcoded per-provider defaults plus user-defined models in config. A fetched
+catalog (models.dev / catwalk style) is future scope.
+
+### Streaming, from day one
+
+Non-negotiable, and cheap only if designed in. Two contracts:
+
+- Every stream event carries the **full accumulated message so far**, not just the delta. The
+  UI re-renders state; it never reassembles fragments.
+- The provider stream function **never returns an error** for model or request failures —
+  they arrive as a final message with `stop_reason: error`. One error path, not two.
+
+### The seven tools
+
+pi's set exactly. Deliberately minimal — pi is a genuinely capable agent with these.
+
+| Tool | Behavior |
+|---|---|
+| `read` | Read a file whole, or an offset/limit line window. Size-capped |
+| `write` | Create or overwrite. Creates parent dirs. Atomic write, preserves mode |
+| `edit` | Exact-string replace with the four-rung fallback ladder (below) |
+| `bash` | Run a command with a timeout, process-group kill, bounded output |
+| `grep` | Content search. Shell out to `rg` when present, pure-Go fallback |
+| `find` | Filename/glob search (`doublestar`), gitignore-aware |
+| `ls` | Directory listing |
+
+**The edit ladder** (Crush's design, the best of the four references):
+
+1. Exact string match. More than one occurrence without `replace_all` → hard error asking for
+   more context. Never "first match wins."
+2. Zero matches → retry with whitespace normalized, accepting **whole-line-aligned matches
+   only**, never partial lines.
+3. On a normalized match, re-indent the replacement to the file's detected indent unit (tabs
+   vs N-space), and **tell the model in the result** that the match wasn't byte-exact.
+4. Still nothing → run a line-similarity scan, print the file's actual content at the closest
+   location with whitespace visualized, so the model can self-correct.
+
+No Levenshtein, no approximate character matching. "Fuzzy" means whitespace only.
+
+### TUI
+
+Chat-first. One scrolling column, input pinned at the bottom. No panes.
+
+- Streaming markdown via **stable-prefix incremental rendering** — prove the longest prefix
+  with no open markdown construct, cache its render, re-render only the unstable tail.
+  Memoize Glamour's `TermRenderer` per width; guard it with a mutex (it is not reentrant).
+- **Per-item render cache keyed by width**, with a finished-item freeze flag.
+- **Colored unified diffs** for every edit — `go-udiff` to compute, Lip Gloss to style,
+  line-level color. Syntax highlighting and side-by-side are future.
+- Collapsible tool-call cards. Tools return *data*; the TUI owns presentation.
+- Status line: model, context used, token counts, cost.
+- Permission prompt overlay.
+- Esc interrupts the turn (two-stage: arm, then confirm). Ctrl-C quits.
+- Slash commands: `/model`, `/new`, `/resume`, `/compact`, `/clear`, `/help`, `/quit`.
+
+Event delivery: agent core → typed events → one goroutine calling `tea.Program.Send`.
+Persistence-layer debounce (~33ms) so streaming never floods the UI.
+
+### Sessions
+
+- Append-only **JSONL**, one file per session, written atomically (temp + rename).
+- Every entry carries `id` and `parent_id` from the start. We won't ship branching in v1, but
+  the field costs nothing now and makes `/fork` possible later without a migration.
+- Model changes recorded as first-class entries, so replay reproduces which model produced
+  which turn.
+- `rasp --resume` and a session picker.
+
+### Context management
+
+- `AGENTS.md` discovery walking cwd → repo root, outermost first. Also read `CLAUDE.md`.
+  Handle the git-worktree double-load case.
+- LLM-driven **compaction**, never truncation. Cut points never separate a `tool_use` from
+  its `tool_result`. Carry read/modified file lists across the boundary.
+- Hybrid token estimation: real usage from the last assistant message, `chars/4` for the tail.
+- Prompt caching: system prompt split into a stable cacheable block and an uncached dynamic
+  tail, with volatile content after the last breakpoint.
+
+### Safety net
+
+Framed honestly as a **blast-radius limiter, not a security boundary**.
+
+- Every file tool confined to the workspace via Go 1.24's `os.Root` — symlink escapes
+  rejected by the runtime, not by our own path arithmetic.
+- Approval gate on writes and bash, with a config allow-list, session-scoped grants keyed by
+  `(tool, action, path)`, and an explicit `--yolo`.
+- Read-before-edit: refuse to edit a file this session hasn't read, or one whose mtime is
+  newer than the last read.
+
+### Correctness invariants
+
+These are cheap now and very expensive to retrofit. Each one is a known bug class.
+
+1. **`tool_use` never exists without `tool_result`** — both mechanisms. Commit the assistant
+   message and its results together *and* repair on history reload (inject synthetic error
+   results for orphaned calls, drop orphaned results). An orphan reaching disk permanently
+   bricks a session.
+2. **Truncated-tool-call guard** — if `stop_reason == "length"`, fail every tool call in that
+   message rather than executing possibly-truncated arguments.
+3. **Loop detection** — hash `(tool, input, output)` per step; halt if the same signature
+   repeats more than 5 times in the last 10.
+4. **Panic recovery per tool** — a panicking tool returns a failed result, never crashes.
+5. **Per-file mutation mutex** keyed by resolved realpath.
+6. **Process-group kill** for bash, with `cmd.Cancel` overridden and `WaitDelay` set.
+7. **Two-tier retry** — transport (honors `retry-after`, jitter, throws rather than sleeps on
+   absurd delays) and semantic (never retry quota/billing exhaustion).
+
+### Testing
+
+- Fake provider (hand-written SSE frames) for fast loop unit tests.
+- `go-vcr` cassettes for a few real recorded streaming tool-use turns. Scrub `x-api-key`.
+- Golden files for rendered `View()` output.
+- Fuzz the edit-matching logic.
+
+---
+
+## Future scope
+
+Ordered roughly by expected value.
+
+### Phase 2 — the obvious gaps
+
+- **OAuth.** `rasp auth login <provider>`, browser PKCE, local callback server, proactive
+  refresh at `max(expires_in/10, 30s)`, revoked-token detection. Start with GitHub Copilot
+  (device code, and we can read an existing Copilot CLI token off disk). *Anthropic
+  subscription OAuth is a separate, explicitly-flagged decision — see findings.md.*
+- **More tools, Crush-style.** `multiedit`, `web_fetch`, `web_search`, `download`, `todos`,
+  `question` (ask the user mid-turn), `job_output`/`job_kill` for background bash.
+- **Sub-agents.** A `task` tool spawning a child session with a restricted read-only tool set
+  and its own cost accounting rolling up to the parent. Copy neo's mode-based restriction and
+  hard caps.
+- **Session branching.** `/fork` and `/tree` over the `parent_id` field we already store.
+- **Fetched model catalog** with ETag caching.
+
+### Phase 3 — ecosystem
+
+- **MCP** — stdio transport first, via the official `modelcontextprotocol/go-sdk`. MCP tools
+  merge into the same tool list and pass through the same permission gate.
+- **LSP** — diagnostics, then `lsp_definition` / `lsp_symbols` / `lsp_rename` as tools.
+- **Hooks** — `PreToolUse` shell commands, regex-matched on tool name.
+- **Skills** — the Agent Skills `SKILL.md` standard, advertised by name/description with the
+  model reading files on demand.
+
+### Phase 4 — polish
+
+- Side-by-side diffs, intra-line word highlighting.
+- Themes, configurable keybindings.
+- File-version history for undo/checkpoint.
+- Optional OS keyring backend.
+
+---
+
+## Deliberately excluded
+
+Not "later" — decisions not to build, with reasons.
+
+| | Why |
+|---|---|
+| **Client/server split** | Crush spends ~15,000 LOC on it (`server`/`client`/`proto`/`backend` + Swagger) so multiple clients can attach to one daemon. opencode goes further with three front-ends. That solves *their* problem. We keep the clean core/UI seam — which is the part that actually pays — and skip the protocol. Additive later if ever needed |
+| **Multi-pane workspace** | Panes cost horizontal width, focus management, per-pane scroll state and resize handling — a large fraction of total TUI effort. No serious coding agent is multi-pane; a status sidebar later is cheap and additive |
+| **Agent framework** (langchaingo etc.) | The loop, tool dispatch and context management *are* what this project exists to understand |
+| **Scripted config format** | Crush maintains JSON *and* a Bash-interpreter config DSL (2,412 LOC). One JSON file is enough |
+| **Tree-sitter** | Needs cgo-linked grammars, which breaks `CGO_ENABLED=0`. Claude Code itself uses ripgrep plus the model's own understanding |
+| **Tools owning their own UI rendering** | pi does this and flags it as a weakness — the tools become unusable by any other frontend. Tools return data; the TUI renders it |
+| **Multiple SQLite drivers** | Crush ships two, selected per platform, to cover OpenBSD/NetBSD/Android. One (`modernc.org/sqlite`) when we need SQLite at all |
+| **Sandboxing** | Real isolation needs the OS or a VM. A partial in-process sandbox is worse than none because users mistake it for a boundary — pi's argument, and it's correct. We ship a blast-radius limiter and say so plainly |
