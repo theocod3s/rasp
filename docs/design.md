@@ -119,7 +119,7 @@ internal/
 | `llm` | Neutral `Message`/`Block`/`Event` types, `Provider` | Provider-specific structs; those live in the adapters |
 | `llm/anthropic` | Anthropic wire translation, cache breakpoints | Retry policy (`llm/retry`); tool semantics |
 | `tool` | The interface, schema reflection, the registry, per-turn snapshots | Any actual tool. Any UI. Any MCP protocol |
-| `tool/builtin` | The seven tools | Path validation (`workspace`); approval (`permission`) |
+| `tool/builtin` | The eight tools | Path validation (`workspace`); approval (`permission`) |
 | `tool/edit` | The match ladder and re-indentation | File I/O — a pure string function, which is why it's fuzzable |
 | `mcp` | Subprocess lifecycle, JSON-RPC over stdio, tool discovery, call proxying | Permission decisions. Schema *interpretation*. Any transport but stdio. **And: no MCP type, error code or protocol concept may leave this package — see §8.0** |
 | `workspace` | `os.Root` handle, path resolution, mtime tracking | Tool logic; permission decisions |
@@ -289,13 +289,24 @@ type Tool interface {
     Run(ctx context.Context, raw json.RawMessage) (Result, error)
 }
 
-// Parallel is optional. A tool that does not implement it is serial.
-// Fail-closed, and the RUNTIME decides — never the model (neo's rule; it
-// removes an entire trust question).
-type Parallel interface {
-    ParallelSafe() bool
+// Sequential is optional. A tool that does not implement it runs CONCURRENTLY
+// with its siblings — parallel is the default (pi's model).
+//
+// If any single call in a batch is sequential, the WHOLE batch runs
+// sequentially. That is pi's rule, and it is the conservative reading: a tool
+// declaring itself sequential usually means "I touch global state", and
+// running it alongside unknown siblings defeats the point.
+//
+// The RUNTIME decides, never the model (neo's rule) — the model cannot request
+// concurrency, which removes an entire trust question.
+type Sequential interface {
+    Sequential() bool
 }
 ```
+
+Parallel-by-default is a reversal of an earlier draft, and it is the more demanding choice: it
+only works because of four mechanisms that must all exist together (§6 rules 4–6). Getting one
+of them wrong produces data loss, not slowness.
 
 **Producer 1 — reflection, for built-ins.** This was the one recommendation the research
 reversed: neo hand-writes `map[string]any` literals, but Crush derives the schema from the Go
@@ -565,8 +576,12 @@ Send(ctx, text)
        │     commit assistant message; emit EventTurnEnd; return
        │   }
        │
-   (7) ├─ results := dispatch(pending, tools)        ← §6 for parallelism
-       │     per call: resolve from snapshot → permission → panic guard → run
+   (7) ├─ results := dispatch(pending, tools)        ← §6 rules 4-6
+       │     partition on approval boundaries; run each group concurrently
+       │     (cap 8) unless any call is Sequential; results land BY INDEX so
+       │     tool_result order matches tool_use order regardless of completion
+       │     per call: resolve from snapshot → permission → panic guard →
+       │               per-file lock → run
        │
    (8) ├─ COMMIT assistant message AND results together, or neither
        │
@@ -724,7 +739,7 @@ subtly broken. The rule is single ownership.
 | **[turn]** | The transcript, in-flight step state, the tool snapshot | One `Send`, spawned as a `tea.Cmd` |
 | **[pump]** | Nothing. Drains the event channel → `program.Send` | Program lifetime |
 | **[sdk]** | HTTP/SSE decoding | One stream |
-| **[tool]** | One tool's execution | One call; spawned only when parallel-safe |
+| **[tool]** | One tool's execution | One call; spawned per call unless the batch is serial |
 | **[bash-pump]** | Throttled output snapshots | One bash call |
 | **[mcp-server]** | One MCP subprocess and its JSON-RPC framing | Program lifetime, one per configured server |
 
@@ -753,25 +768,32 @@ at the persistence layer, so the UI never sees a per-token message. Terminal eve
 end, error, tool end) bypass the debounce and flush immediately. Throttling lives where the
 data is.
 
-**4. Parallel tool execution is opt-in and runtime-owned.** For v1, only tools implementing
-`Parallel` and returning true run concurrently — in practice `read`, `grep`, `find`, `ls`.
-`write`, `edit`, `bash` are always serial. **MCP tools are always serial**: we have no idea
-what a third-party server does, so it fails closed. Crush marks only its sub-agent tool
-parallel; that conservatism is right for v1.
+**4. Tool execution is parallel by default, and runtime-owned.** Tools run concurrently —
+reads and writes alike — unless a tool implements `Sequential` and returns true, in which case
+the entire batch degrades to serial. This is pi's model, and it is the aggressive choice: a
+model that asks to read six files gets them at once.
 
-The model never chooses. Unknown tools fail closed to serial.
+The model never chooses. Concurrency is a property of the tool, decided by us.
+
+MCP tools are **sequential by default**, inverting the rule for third-party code specifically:
+we have no idea whether a given server is reentrant, and a server author cannot tell us. That
+asymmetry is deliberate — our own tools are parallel because we audited them.
 
 ```go
-sem := make(chan struct{}, MaxParallelTools) // 4
+// Dispatch runs a batch. Results land by index in a pre-sized slice, so
+// completion order is irrelevant to result order (rule 6).
+sem := make(chan struct{}, MaxParallelTools) // 8
 var wg sync.WaitGroup
-for i, call := range parallelSafe {
+results := make([]*tool.Result, len(batch))
+
+for i, call := range batch {
     wg.Add(1)
     go func(i int, call pendingCall) {
         defer wg.Done()
         select {
         case sem <- struct{}{}:
             defer func() { <-sem }()
-            results[i] = runSafely(ctx, call)
+            results[i] = runSafely(ctx, call) // panic guard + per-file lock inside
         case <-ctx.Done():
             results[i] = interruptedResult()
         }
@@ -780,17 +802,34 @@ for i, call := range parallelSafe {
 wg.Wait()
 ```
 
-Results are written by index into a pre-sized slice — no ordering race — and fed back in the
-order the model emitted the calls, which providers require.
+**5. Approval is a serial barrier.** A call whose permission check will prompt the user cannot
+run inside a concurrent batch — two prompts racing for one terminal is incoherent. The
+dispatcher partitions the batch at each such call: run everything before it concurrently, wait,
+prompt, run the call, then continue. This is neo's behaviour, and it is why the permission
+check happens during partitioning rather than inside the goroutine.
 
-**5. Per-file mutation mutex.** Parallel reads are safe; two writes to the same file are not.
-A realpath-keyed mutex serializes same-file mutations while different files stay parallel —
-pi's `file-mutation-queue`, about 30 lines.
+```go
+// Partition on approval boundaries before spawning anything.
+for _, group := range partitionOnApproval(batch) {
+    if group.needsApproval {
+        results[group.idx] = runWithPrompt(ctx, group.call) // serial; may block on the user
+        continue
+    }
+    dispatchConcurrent(ctx, group.calls, results)           // the code above
+}
+```
+
+**6. Two invariants make parallelism safe.** Neither is optional.
+
+*Per-file mutation mutex.* Parallel reads are safe; two writes to the same file are not. A
+realpath-keyed mutex serializes same-file mutations while different files stay parallel —
+pi's `file-mutation-queue`, about 30 lines. `EvalSymlinks` matters: `./a.go`, `a.go` and a
+symlink pointing at it must all take the same lock, or the mutex silently does nothing.
 
 ```go
 func (l *FileLocks) With(path string, fn func() error) error {
     real, err := filepath.EvalSymlinks(path)
-    if err != nil { real = path }
+    if err != nil { real = path } // non-existent file (a create) — lock the literal path
     mu, _ := l.m.LoadOrStore(real, &sync.Mutex{})
     m := mu.(*sync.Mutex)
     m.Lock()
@@ -799,20 +838,25 @@ func (l *FileLocks) With(path string, fn func() error) error {
 }
 ```
 
-**6. Cancellation is one `context.CancelFunc` per turn**, stored on the TUI model. Esc is
+*Result ordering.* Tools finish whenever they finish, but `tool_result` blocks must be emitted
+in the order the model requested them — every provider rejects a mismatch between the
+`tool_use` sequence and the `tool_result` sequence. Writing by index into a pre-sized slice
+(rule 4) gives this for free; the trap is any refactor that appends results as they arrive.
+
+**7. Cancellation is one `context.CancelFunc` per turn**, stored on the TUI model. Esc is
 two-stage — first press arms, second cancels (Crush's anti-fat-finger detail). The context
 threads into the provider stream, every tool, the bash process group, the MCP call, and the
 retry sleep, so an interrupt during a backoff sleep actually interrupts.
 
-**7. Steering and follow-up are separate queues.** "Interrupt now" and "queue until done" are
+**8. Steering and follow-up are separate queues.** "Interrupt now" and "queue until done" are
 different operations, and conflating them races the tool executor. Steering drains at step
 boundaries; follow-ups only when the loop would otherwise stop.
 
-**8. The tool registry is read via snapshot, written by the MCP manager.** The `[turn]`
+**9. The tool registry is read via snapshot, written by the MCP manager.** The `[turn]`
 goroutine never holds a lock on it — it took its snapshot at step 4 of §5 and reads a frozen
 slice thereafter.
 
-**9. Mode is read by the permission service, written by `Update`.** See §7.4.
+**10. Mode is read by the permission service, written by `Update`.** See §7.4.
 
 ---
 
@@ -896,18 +940,39 @@ var Presets = map[Mode]PermissionSet{
     ModePlan: {
         Read: RuleAllow, Write: RuleDeny, Edit: RuleDeny, Fetch: RuleAsk,
         Bash: PatternRules{
-            "*":               RuleDeny,   // deny by default...
-            "git status*":     RuleAllow,  // ...allow the read-only verbs
-            "git diff*":       RuleAllow,
-            "git log*":        RuleAllow,
-            "git show*":       RuleAllow,
-            "ls*":             RuleAllow,
-            "cat*":            RuleAllow,
-            "rg*":             RuleAllow,
-            "find *":          RuleAllow,
-            "find * -delete*": RuleDeny,   // ...but not the destructive flags
-            "find * -exec*":   RuleDeny,
-            "go test*":        RuleAsk,
+            "*": RuleAsk, // unlisted commands ASK, they do not fail
+
+            // search
+            "rg*": RuleAllow, "grep*": RuleAllow, "ag*": RuleAllow,
+            "fd*": RuleAllow, "find *": RuleAllow,
+
+            // read-only version control
+            "git status*": RuleAllow, "git diff*": RuleAllow,
+            "git log*": RuleAllow, "git show*": RuleAllow,
+            "git blame*": RuleAllow, "git branch": RuleAllow,
+            "git remote -v": RuleAllow,
+
+            // inspect
+            "ls*": RuleAllow, "cat*": RuleAllow, "head*": RuleAllow,
+            "tail*": RuleAllow, "wc*": RuleAllow, "file *": RuleAllow,
+            "stat*": RuleAllow, "tree*": RuleAllow,
+
+            // language tooling that only reads
+            "go list*": RuleAllow, "go doc*": RuleAllow,
+            "go env*": RuleAllow, "go vet*": RuleAllow,
+            "npm ls*": RuleAllow, "cargo tree*": RuleAllow, "pip show*": RuleAllow,
+
+            // environment
+            "pwd": RuleAllow, "which*": RuleAllow, "echo*": RuleAllow,
+            "env": RuleAllow, "date": RuleAllow,
+
+            // carve-backs — more specific, so these win over the allows above
+            "find * -delete*": RuleAsk, "find * -exec*": RuleAsk,
+            "git checkout*": RuleAsk, "git reset*": RuleAsk,
+            "git clean*": RuleAsk, "git push*": RuleAsk, "git stash*": RuleAsk,
+            "go test*": RuleAsk,  // executes arbitrary code from _test.go files
+            "go build*": RuleAsk, // writes build artifacts
+            "sed -i*": RuleAsk, "perl -i*": RuleAsk,
         },
         MCP: PatternRules{"*": RuleAsk},
     },
@@ -978,6 +1043,45 @@ Matching is `filepath.Match`-style over the whole command string. This is a **us
 feature, not a security boundary** — `git diff; rm -rf /` matches `git diff*` and would be
 allowed. That limitation is documented in the user-facing docs rather than papered over. The
 real protections are `os.Root` confinement and the fact that a human is watching.
+
+### 7.3a The redirection guard
+
+Glob-matching a command string has a specific hole that matters most in plan mode: **the shell
+writes files without any write-looking command being involved.**
+
+```bash
+echo "package main" > auth.go      # matches echo*  → would be allowed
+cat template.go > handler.go       # matches cat*   → would be allowed
+go vet ./... | tee report.txt      # matches go vet* → would be allowed
+```
+
+So plan mode applies one hard check *before* glob resolution, and it is a deny rather than an
+ask because there is no legitimate read-only use of output redirection:
+
+```go
+var redirectPattern = regexp.MustCompile(`(^|[^0-9<>])>>?[^>]|\|\s*tee\b`)
+
+// planPreflight runs before resolveBash. Plan mode only.
+func planPreflight(cmd string) (Rule, bool) {
+    if redirectPattern.MatchString(cmd) {
+        return RuleDeny, true
+    }
+    return 0, false
+}
+```
+
+**Say plainly what this is worth.** It closes the accidents — a model reaching for `>` because
+that's the shortest way to write a file. It does not close the hole: `bash -c "..."`,
+`python -c`, `xargs`, or a heredoc all defeat it, and enumerating them is a losing game.
+
+> **Plan mode is a strong speed bump, not a proof.** It reliably stops a model from modifying
+> your tree by accident, which is what it is for. It does not constrain a model actively trying
+> to escape it. The docs must say this rather than implying a guarantee — an overstated
+> guarantee is worse than the gap, because it changes what the user does with it.
+
+pi is not a reference here. It ships no plan mode and no permission gating at all — *"No plan
+mode. Write plans to files, or build it with extensions"* (their README). The references are
+opencode and Claude Code.
 
 ### 7.4 Where mode lives, and who mutates it
 
@@ -1090,7 +1194,7 @@ Grants are keyed by path, so "always allow writes in `internal/`" does not silen
 ## 8. MCP integration
 
 **In the MVP, tightly scoped**, and sequenced as the **last MVP milestone** — after the core
-loop, the seven tools and streaming are solid. It is the one place where third-party code runs
+loop, the eight tools and streaming are solid. It is the one place where third-party code runs
 inside our process boundary, and it deserves a stable foundation underneath it.
 
 | In v1 | Out of v1 |
@@ -1137,13 +1241,23 @@ Concretely, this means:
 
 ### 8.1 Discovery
 
-Three sources, merged, later wins:
+Two sources at runtime, merged, later wins:
 
 | Source | Path |
 |---|---|
-| Claude Desktop (opt-in, for zero-config interop) | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS), `%APPDATA%\Claude\…` (Windows) |
 | Project | `./.mcp.json` |
 | rasp config | `mcp.servers` in global or project config |
+
+Other products' config files are **not** in that list. They are read exactly once, by the
+first-run import in §10.1, and copied into rasp's own config. After that they are never
+consulted again.
+
+That's a deliberate reversal of the earlier design, and the reason is the same one driving
+§8.0's containment rule: reading another product's file on every startup makes their schema
+part of our runtime contract. Anthropic can restructure `claude_desktop_config.json` whenever
+they like, and under a read-every-startup design that becomes our bug, appearing at launch, in
+a code path the user cannot inspect. Importing once converts a permanent coupling into a
+one-time translation.
 
 `.mcp.json` uses the same shape everyone else does, so an existing file works unmodified:
 
@@ -1159,9 +1273,8 @@ Three sources, merged, later wins:
 }
 ```
 
-Reading Claude Desktop's config is the same instinct as reading `CLAUDE.md`: an existing setup
-should just work. It is **opt-in** (`"mcp": {"import_claude_desktop": true}`) because silently
-spawning subprocesses a user configured for a different application is not a friendly default.
+Servers that arrive via the first-run import are written into rasp's config in this same shape,
+so there is one representation regardless of where a server originally came from.
 
 ### 8.2 The MCP tool — schema pass-through
 
@@ -1204,7 +1317,9 @@ func (t *Tool) Run(ctx context.Context, raw json.RawMessage) (tool.Result, error
 `mcp__<server>__<tool>` is Claude Code's convention. Using it means a server's documentation
 and a user's muscle memory both transfer.
 
-MCP tools do **not** implement `Parallel`, so they run serially (§6 rule 4).
+MCP tools **do** implement `Sequential`, returning true — inverting the parallel-by-default
+rule for third-party code specifically (§6 rule 4). We audited our own tools for reentrancy;
+we cannot audit someone else's server.
 
 ### 8.3 Lifecycle and failure isolation
 
@@ -1280,7 +1395,6 @@ the conversation.
 
 ```json
 "mcp": {
-  "import_claude_desktop": false,
   "max_total_tools": 60,
   "servers": {
     "github": {
@@ -1294,7 +1408,7 @@ the conversation.
 ```
 
 - **`tools`** — a per-server allow-list. Absent means all of them.
-- **`max_total_tools`** — a global ceiling (default 60, including the seven built-ins). On
+- **`max_total_tools`** — a global ceiling (default 60, including the eight built-ins). On
   exceeding it, rasp keeps built-ins plus servers in config order, drops the rest, and warns
   loudly with the exact count. Silently truncating a tool list would produce baffling "the
   model won't use my tool" reports.
@@ -1382,27 +1496,49 @@ Appends use `O_APPEND` on a single open handle — atomic below `PIPE_BUF`, tole
 since a torn final line is skipped on read. The **meta** file (index, title, token totals) is
 rewritten wholesale, so it uses temp-file + `rename`, atomic on POSIX. pi does exactly this.
 
-### Why not SQLite for v1
+### Why there is no session index — and why that isn't a deferral
 
-Crush uses SQLite via `modernc.org/sqlite` and it works well — but it brings migrations
-(`goose`), query codegen (`sqlc`), and a footgun their own source documents: they force
-`SetMaxOpenConns(1)` because concurrent sub-agent sessions caused WAL desync. We have no
-sub-agents in v1 and no query needs beyond "list sessions for this project."
+The obvious objection to JSONL is listing: a session picker has to open every file to read its
+title. That objection assumes a global list. **Sharding by `<project-key>` removes it.** The
+picker shows sessions for *this repo* — tens, not thousands — and rasp exposes no view that
+enumerates every session ever. The cost is bounded by sessions-per-project, which is bounded by
+how much work you've done in one repo.
 
-When listing gets slow, add a SQLite **index** — one row per session — and keep the transcript
-on JSONL. Reversible, and the ecosystem scan's recommendation.
+So this is not "defer the index until later." It's "the data layout means there is nothing to
+index."
+
+Both alternatives have documented costs, and they're worth stating because they're the reason
+this is a decision rather than laziness:
+
+- **A sidecar index file** — what neo does with `index.json` — needs coordination the
+  append-only files don't. neo's own source comments admit *"concurrent neo processes can lose
+  index updates."* Two rasp windows in the same repo is an ordinary situation, not an exotic one.
+- **SQLite from the start** — what Crush does via `modernc.org/sqlite` — brings migrations
+  (`goose`), query codegen (`sqlc`), and a footgun their source documents: they force
+  `SetMaxOpenConns(1)` because concurrent sub-agent sessions caused WAL desync
+  (`SQLITE_NOTADB`).
+
+JSONL stays the **sole source of truth**. If the picker ever exceeds ~50ms, an index becomes
+purely additive — one row per session, transcript untouched — and nothing above the storage
+layer has to change to accommodate it.
 
 ---
 
 ## 10. Configuration
 
-Two files, both JSON, deep-merged. The [teaching doc](internals.md) covers authoring them;
-this is the mechanism.
+Two files, both **JSONC** — JSON with `//` and `/* */` comments stripped before parsing —
+deep-merged. Crush and opencode both use JSONC, and the reason is mundane: a config you
+hand-edit needs to explain itself, and plain JSON offers nowhere to write *why* a setting is
+what it is. The cost is one small dependency and the fact that a strict JSON parser elsewhere
+will choke on the file, which is why the extension stays `.json` rather than `.jsonc` — every
+editor already applies JSONC tolerance to files by that name in this ecosystem.
+
+The [teaching doc](internals.md) covers authoring them; this is the mechanism.
 
 ### Precedence
 
 ```
-1. Command-line flags              --model, --mode, --yolo, --provider
+1. Command-line flags              --model, --mode, --provider
 2. Environment                     RASP_MODEL, ANTHROPIC_API_KEY, ...
 3. Project config                  ./.rasp/config.json   (+ ./.mcp.json)
 4. Global config                   ~/.config/rasp/config.json
@@ -1412,9 +1548,16 @@ this is the mechanism.
 Later entries lose. Merge is per-key deep merge, not whole-object replacement, so a project
 config can override one model without restating providers.
 
+> **`--yolo` is deliberately absent from that list.** It is not a config value that happens to
+> sit at the top of a precedence chain — it is a flag that arms the rung-0 bypass in §7.7,
+> which answers before any `PermissionSet` is consulted. Putting it in the precedence stack
+> would imply a lower layer could set it, and §10's "yolo may not be set by project config"
+> rule exists precisely to prevent that. The two mechanisms are different by design:
+> `--mode plan` selects a preset; `--yolo` disables the mechanism that reads presets.
+
 ### Schema
 
-```json
+```jsonc
 {
   "$schema": "https://rasp.dev/schema.json",
   "model": "anthropic/claude-opus-5",
@@ -1441,7 +1584,6 @@ config can override one model without restating providers.
   },
 
   "mcp": {
-    "import_claude_desktop": false,
     "max_total_tools": 60,
     "servers": {
       "github": {
@@ -1482,6 +1624,70 @@ The same reasoning applies to `mcp.servers` in a project config, which is a requ
 subprocess: allowed, but the first run in a new project lists the servers it is about to start
 and asks once.
 
+### 10.1 First-run import
+
+Most people arriving at rasp already have MCP servers and API keys configured for another
+agent. Redoing that by hand is a poor first impression; reading their files forever is a
+permanent coupling to schemas we don't own. A one-time import gets the benefit without the
+liability.
+
+Triggered only when no rasp config exists **and** no import marker is present:
+
+```go
+// internal/config/importer.go
+type Source struct {
+    Name string                          // "Claude Desktop"
+    Path func() (string, bool)           // platform-specific; false = not applicable here
+    Scan func([]byte) (Found, error)     // tolerant parse — never returns a fatal error
+}
+
+type Found struct {
+    MCPServers map[string]ServerSpec
+    APIKeys    map[string]string // providerID → literal key
+    Model      string
+}
+```
+
+| Source | Location |
+|---|---|
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json`, `%APPDATA%\Claude\…`, `~/.config/Claude/…` |
+| Claude Code | `~/.claude/settings.json`, `./.mcp.json` |
+| Codex | `~/.codex/config.toml` |
+| opencode | `~/.config/opencode/opencode.json` |
+| Crush | `~/.local/share/crush/crush.json`, `./.crush/crush.json` |
+| pi | `~/.pi/agent/{settings,auth}.json` |
+
+Findings are shown before anything is written, then a single prompt:
+
+```
+Found existing configuration:
+
+  Claude Desktop   3 MCP servers (github, postgres, playwright)
+  Claude Code      1 MCP server (sentry) · ANTHROPIC_API_KEY
+  Codex            OPENAI_API_KEY
+
+Import into rasp?  [Y/n]
+```
+
+Four rules govern it:
+
+1. **One prompt, everything behind it — API keys included.** No separate opt-in for keys. The
+   key is already plaintext on this machine, in a file owned by this user at these permissions;
+   copying it into a second such file does not change the threat model. Any attacker who can
+   read rasp's config can already read Claude's. A second prompt would be friction with no
+   security gain. *Showing* what will be copied is transparency; it is not a gate.
+2. **A decision either way writes the marker** (`~/.config/rasp/.imported`), so declining is
+   remembered and the question is never asked twice.
+3. **A malformed or unreadable source is skipped silently.** It contributes nothing to the
+   summary and never blocks startup. Every `Scan` is tolerant by construction — this code runs
+   against files we don't control and can't test against future versions.
+4. **Name collisions resolve last-source-wins**, in the table's order, with the merged result
+   shown before writing so nothing is silently shadowed.
+
+Afterwards rasp reads only its own config. Since values support `$(command)` expansion, anyone
+who'd rather not duplicate a secret can replace the imported literal with `$(op read …)` later
+— their choice to make, not a question to ask during setup.
+
 ### Auth: API keys only in the MVP
 
 OAuth is phase 2. Every string in `providers.*.api_key` and `mcp.servers.*.env.*` goes through
@@ -1498,6 +1704,51 @@ This is Crush's design, and it is why we ship no keyring integration: `$(op read
 `$(pass show …)`, `$(gh auth token)` all work with zero code. Results are cached ~30s so we are
 not forking a process per model call. Config files holding a literal key are written `0600`
 and warned about if found `0644`.
+
+### 10.2 The model catalog
+
+rasp needs each model's context-window size, output cap, pricing and tool-call support — for
+the model picker, the cost line, and `shouldCompact` in §11. Hardcoding that means every new
+model release needs a rasp release, which is the wrong coupling for a tool whose entire pitch
+is being model-agnostic. So the catalog is **fetched from models.dev**, the community JSON pi
+also uses.
+
+```go
+// internal/models/catalog.go
+type Model struct {
+    ID            string
+    Provider      string
+    ContextWindow int
+    MaxOutput     int
+    CostPerMIn    float64
+    CostPerMOut   float64
+    CostPerMCache float64
+    SupportsTools bool
+    SupportsCache bool
+}
+
+// Resolve order — first hit wins:
+//   1. user-defined models in config     (always authoritative)
+//   2. cached models.dev, if fresh
+//   3. cached models.dev, if stale       (stale beats absent)
+//   4. embedded snapshot                 (//go:embed models.snapshot.json)
+func (c *Catalog) Get(id string) (Model, bool)
+```
+
+Four rules make this a dependency we can live with:
+
+1. **Never on the startup path.** The fetch runs in a background goroutine after the first
+   frame, bounded at **5s**. A slow or unreachable models.dev delays nothing the user sees.
+2. **Never fatal.** Network error, timeout, malformed JSON, schema drift — all fall through the
+   chain above. The floor is the embedded snapshot, so `Get` always answers.
+3. **ETag revalidation**, refreshed hourly at most, cached under `~/.cache/rasp/models.json`.
+4. **User config always wins**, so a wrong upstream entry is fixable locally in one line
+   without waiting for anyone.
+
+The honest cost: correctness now depends on a third-party file. pi's own catalog generator
+carries dozens of hand-written corrections to models.dev data — the clearest available evidence
+that it is useful but not authoritative. Rule 4 is what makes that survivable, and it's why
+user-defined models sit *above* the catalog rather than merging with it.
 
 ### AGENTS.md discovery
 
@@ -1560,6 +1811,20 @@ mode text in block 2 would blow it on every Shift+Tab.
 
 The adapter applies provider-specific syntax (`cache_control` for Anthropic, nothing for most
 OpenAI-compatible endpoints); `prompt` only marks intent.
+
+### One prompt, every model
+
+Block 1 is a **single short prompt shared by every model**, embedded with `go:embed` and
+version-controlled beside the code. It is a tuning surface, and the golden edit corpus is its
+regression signal — a prompt change that degrades edit-match rates shows up as a failing test
+rather than as a vibe.
+
+We do not ship per-model-family variants. opencode maintains six, selected by substring-matching
+the model ID, and that pays off when you support every model on the market. At our scale it
+would be N prompts kept in sync on instinct: you cannot tell which of the differences between
+your Claude prompt and your GPT prompt actually matter, because nothing measures them. The
+door stays open — `prompt.Build` takes the model ID already — but a variant needs evidence that
+a specific model misbehaves without it, not a hunch.
 
 ### Token estimation — hybrid
 
@@ -1801,7 +2066,7 @@ none require restructuring — if one does, the seam is wrong and should be fixe
 | **Session branching** | `Entry.ParentID` | Already written on every entry. `/fork` becomes a read query, not a migration |
 | **A server** | `agent.Event` + `Agent`'s methods | The event stream is already the frontend contract. A server serializes those events instead of calling `program.Send`. Crush's `Workspace` seam without the 15k LOC |
 | **Sandboxing** | A `workspace.FS` interface | Tools already route file access through `workspace` rather than `os`. Swapping the implementation relocates execution without touching any tool — pi's `ExecutionEnv` indirection, the only reason they can run tools in a micro-VM |
-| **Fetched model catalog** | `config` model resolution | Model lists are already data. A fetched catalog is another source in the merge chain |
+| **A second catalog source** (Crush's `catwalk`, a private mirror) | `models.Catalog` resolve chain (§10.2) | The chain is already ordered fallbacks. Another source is another link, not a new concept |
 | **Hooks** | A decorator around `Tool` | Wrap each tool at registration. The loop never learns hooks exist |
 | **Alternative frontends** | `agent.Event` | The headless runner already proves there is more than one consumer — the test that the seam is real |
 

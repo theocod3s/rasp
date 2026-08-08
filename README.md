@@ -53,8 +53,8 @@ Findings are cross-cut in [docs/research/findings.md](docs/research/findings.md)
 
 - **Streaming from the first commit.** A blocking agent feels broken, and it's painful to
   retrofit.
-- **Seven tools** — `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`. Plus MCP (stdio) for
-  everything else.
+- **Eight tools** — `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, `todos`. Plus MCP
+  (stdio) for everything else — you extend rasp with MCP servers, not by us adding tools.
 - **Four modes** — `plan`, `manual`, `auto`, `yolo` — implemented as permission presets, with
   no mode-specific branch in the agent loop.
 - **Real diffs.** Every edit renders as a colored unified diff. You should never have to run

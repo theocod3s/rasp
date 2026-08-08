@@ -92,7 +92,7 @@ POST https://api.anthropic.com/v1/messages
         },
         "required": ["command"]
       }},
-    /* read, write, edit, grep, find, ls ... */
+    /* read, write, edit, grep, find, ls, todos ... */
   ],
   "messages": [
     {"role": "user", "content": "how many Go files are in internal?"}
@@ -530,6 +530,10 @@ main repo's `AGENTS.md` twice. pi has a specific fix for this; it's a real bug.
 Precedence, lowest to highest: **built-in defaults → global config → project config → env vars
 → CLI flags.**
 
+The format is **JSONC** — JSON with `//` comments stripped before parsing, the same choice
+Crush and opencode made. Plain JSON has nowhere to record *why* a setting is what it is, which
+matters more than it sounds for a file you edit by hand months apart.
+
 ```jsonc
 // .rasp/config.json
 {
@@ -551,10 +555,55 @@ One security rule the design doc added and I think is right: **a project config 
 `"mode": "yolo"` or override the yolo preset.** A cloned repo that silently disables every
 guardrail is an attack, not a feature.
 
+#### Importing from other tools
+
+If you already use one of these agents, its config is on your disk somewhere. On **first run
+only**, rasp looks for those files, shows what it found, and asks once:
+
+```
+Found existing configuration:
+
+  Claude Desktop   3 MCP servers (github, postgres, playwright)
+  Claude Code      1 MCP server (sentry) · ANTHROPIC_API_KEY
+  Codex            OPENAI_API_KEY
+
+Import into rasp?  [Y/n]
+```
+
+Two design choices in there worth naming.
+
+**It imports everything in one prompt, including API keys.** The instinct is to ask separately
+about credentials — I had that instinct and it was wrong. The key is already plaintext on this
+machine, in a file owned by this user, at the same permissions. Copying it into a second such
+file doesn't change the threat model at all; anyone who can read rasp's config can already read
+Claude's. A second prompt would be friction that buys nothing. *Showing* what will be copied is
+transparency; gating it would be theatre.
+
+**After importing, rasp reads only its own config.** This is the real advantage over reading
+other products' files on every startup: no ongoing dependency on a schema someone else can
+change without telling us. One-time copy, then independence.
+
+#### Where model metadata comes from
+
+To show a model picker, display cost, and know when to compact, rasp needs each model's context
+window, pricing, and whether it supports tool calling. That comes from **models.dev** — a
+community-maintained JSON catalog covering every provider — fetched on startup with ETag
+revalidation and cached to disk.
+
+The failure behaviour matters more than the happy path. On timeout, network failure or a
+malformed response, it falls back to the last cached copy, and failing that to a small embedded
+snapshot. It is never a startup error and never blocks the first prompt. Custom models defined
+in config override the catalog.
+
+The honest cost: correctness now depends on a third-party file. pi fetches the same catalog and
+their generator carries dozens of hand-written corrections to its data.
+
 ### 5.3 MCP — tools you didn't write
 
-We ship 7 tools. MCP is the escape valve that makes 7 acceptable: a user who needs GitHub,
-Postgres or Playwright gets it without us writing anything.
+rasp ships eight built-in tools — `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, and
+`todos` (a checklist the model maintains for itself; it touches no files and runs nothing).
+MCP is the escape valve that makes eight acceptable: a user who needs GitHub, Postgres or
+Playwright gets it without us writing anything.
 
 ```jsonc
 // .mcp.json — same format Claude Code uses
@@ -603,6 +652,52 @@ permission map. Modes cost zero special-casing.
 because "a matcher configuration that silently approves everything" is exactly the thing that
 gets reached by accident. It's unreachable from the Shift+Tab cycle, requires explicit opt-in,
 and never survives a restart.
+
+#### Why plan mode is harder than it looks
+
+Denying `edit` and `write` is trivial. Bash is the problem, because `git log` is exactly what
+planning *needs* and `rm -rf` obviously isn't — and bash is one tool, so the decision has to
+be made on the command *text*:
+
+```
+ALLOW (silent)
+  search      rg*  grep*  ag*  fd*  find *
+  vcs read    git status*  git log*  git diff*  git show*  git blame*
+  inspect     ls*  cat*  head*  tail*  wc*  file *  stat*  tree*
+  language    go list*  go doc*  go env*  go vet*  npm ls*  cargo tree*
+  env         pwd  which*  echo*  env  date
+
+ASK (more specific patterns override the broader allow above)
+  find * -delete*   find * -exec*
+  git checkout*  git reset*  git clean*  git push*
+  go test*  go build*          ← run arbitrary code / write build artifacts
+  sed -i*  perl -i*
+
+DENY
+  anything containing  >   >>   | tee
+
+everything else → ask
+```
+
+Now the part worth actually understanding. **Glob-matching command strings is fundamentally
+leaky**, because a shell writes files without any write-looking command:
+
+```bash
+echo "package main" > auth.go     # matches `echo*` → allowed → file written
+cat template.go > handler.go      # matches `cat*`  → allowed → file written
+```
+
+Hence the outright ban on redirection. But even that isn't airtight — `bash -c "..."` hides
+the whole command from the matcher, and so does any script you invoke.
+
+So the honest framing, which the docs state and rasp's UI should never contradict: **plan mode
+is a strong speed bump, not a proof.** It reliably stops accidents. It does not stop a
+determined model, and pretending otherwise is worse than not having it, because a guarantee
+people believe is more dangerous than a precaution they understand.
+
+Note pi is *not* a reference here — it ships no plan mode and no permission gating at all
+(*"No plan mode. Write plans to files, or build it with extensions"*). The references are
+opencode and Claude Code.
 
 ---
 
@@ -655,15 +750,29 @@ Appears in three places:
 
 **Parallelization** — *"run independent subtasks concurrently, aggregate."*
 
-Available two ways, and rasp starts conservative on both. Parallel *tool calls* — the model can
-emit several `tool_use` blocks in one step, and you may run them concurrently. But rasp runs
-tools **sequentially** in v1, following Crush, which marks only its sub-agent tool parallel.
-Sequential is easy to reason about, and parallel file reads are rarely the bottleneck. Parallel
-*sub-agents* is phase 2.
+Real, and shipping in v1. The model can emit several `tool_use` blocks in one step — "read
+these six files" — and rasp runs them **concurrently by default**, reads and writes alike.
+This is pi's model rather than Crush's, which marks only its sub-agent tool parallel.
 
-Note the correctness trap if you do parallelize: two edits to the same file race. pi's fix is
-a per-file mutex keyed by resolved realpath — about 30 lines, and it lets different files stay
-parallel.
+Parallelism is also where every correctness trap in this document lives, so it only works
+because four mechanisms exist together. Remove any one and you get silent data loss, not
+slowness:
+
+1. **Per-file mutex keyed by resolved realpath.** Two concurrent edits to `auth.go` must
+   serialize; an edit to `auth.go` and one to `main.go` need not. `filepath.EvalSymlinks`
+   matters — `./auth.go`, `auth.go` and a symlink to it must take the *same* lock, or the
+   mutex quietly protects nothing. pi's version is about 30 lines.
+2. **Result reordering.** Tools finish in whatever order they finish, but `tool_result` blocks
+   must be emitted in the order the model asked for them, because providers reject a mismatch
+   against the `tool_use` sequence. Writing results by index into a pre-sized slice gives this
+   for free; appending as they complete is the bug.
+3. **A concurrency cap** — 8 here. Unbounded goroutines against a slow filesystem is its own
+   failure mode.
+4. **Approval as a serial barrier.** If two concurrent calls both need your permission, you
+   get two prompts racing for one terminal. neo's fix is to split the batch at any call
+   requiring approval: run what precedes it concurrently, wait, prompt, then continue.
+
+Parallel *sub-agents* is a separate thing, and that's phase 2.
 
 **Orchestrator-workers** — *"a central model breaks down a task and delegates."*
 
@@ -690,7 +799,7 @@ would be a phase-3 addition, and honestly of unproven value next to just running
 | **Augmented LLM in a loop** | **Yes — this is the architecture** | The agent loop, §1 |
 | Routing | Yes, MVP | Model selection by job (main vs title vs compaction) |
 | Prompt chaining | Yes, MVP | Compaction; plan→build |
-| Parallelization | Deliberately deferred | Tools run sequentially in v1 |
+| Parallelization | Yes, MVP | Tools run concurrently by default, behind four safety mechanisms |
 | Orchestrator-workers | Phase 2 | Sub-agents with restricted toolsets |
 | Evaluator-optimizer | Emergent, not coded | Run tests → read failures → fix |
 
@@ -740,7 +849,74 @@ nothing and needs no model call. Only summarize when that isn't enough.
 
 ---
 
-## 8. Where to start reading the code
+## 8. How sessions are stored
+
+A session is **one JSONL file** — one JSON object per line, appended to as the turn progresses.
+That's what Claude Code, pi and opencode all do, and the reasons are unglamorous but decisive:
+
+- **Appending never rewrites the file.** A JSON blob per session means an O(n) write every
+  turn; by turn 200 you're rewriting megabytes to add one message.
+- **A crash leaves a valid file.** Read until the last complete line and skip a torn final one.
+  There is no corrupt-file state to recover from, because a partial line is simply not a line.
+- **`tail -f` and `jq` work on it.** This matters more than it sounds while you're debugging a
+  loop that misbehaves once every twenty turns.
+- **Resume is "read the file, replay it."** No migration, no schema, no query layer.
+
+```jsonl
+{"id":"01J8XZ4Q7K","parent_id":"","kind":"meta","model":"claude-opus-5","mode":"manual",…}
+{"id":"01J8XZ4R2A","parent_id":"01J8XZ4Q7K","kind":"message","message":{"role":"user",…}}
+{"id":"01J8XZ4X9C","parent_id":"01J8XZ4R2A","kind":"message","message":{"role":"assistant",…}}
+```
+
+Note `parent_id` on every entry. rasp doesn't ship conversation branching in v1 — but the field
+costs one string now, and without it, adding `/fork` later means migrating everyone's history.
+pi's sessions are a genuine tree for exactly this reason. Note also that a model change is its
+own entry kind, not metadata: replaying a session then reproduces *which model produced which
+turn*, which you'll want the first time you switch models mid-session and something changes.
+
+### Why there's no database
+
+The obvious objection to files is listing them: a session picker seems to need opening every
+file to read its title. With 2,000 sessions that's slow.
+
+Except that never happens, because sessions **shard by project**:
+
+```
+~/.local/share/rasp/sessions/<project-key>/20260808T024153_01J8XZ4Q7K.jsonl
+```
+
+`<project-key>` is the repo's **first commit hash** (`git rev-list --max-parents=0 --all`).
+Listing reads one directory — this project's sessions, typically dozens. There is no view that
+enumerates all sessions ever, so the scaling problem has no way to appear.
+
+The first-commit hash is opencode's trick and it's better than the obvious alternative. pi keys
+on a hash of the working directory, which means moving or re-cloning the repo orphans your
+history. A commit hash follows the project.
+
+Two cautionary data points for anyone tempted to add an index anyway:
+
+- **neo built one and it has a known bug.** One JSON file per session plus a shared
+  `index.json` — and neo's own source comments admit *"concurrent neo processes can lose index
+  updates."* That's the real cost: an index needs coordination the append-only files don't.
+- **Crush went SQLite from the start** and had to force `SetMaxOpenConns(1)` after concurrent
+  sub-agent sessions caused WAL desync (`SQLITE_NOTADB`). It works, but it has its own edges.
+
+If the picker ever crosses ~50ms, an index is purely additive later, with JSONL still
+authoritative. Build it when a measurement asks for it, not before.
+
+### The repair pass on load
+
+Loading isn't just parsing. It's also where the §2.4 invariant gets enforced: walk the
+reconstructed history, and for any `tool_use` without a matching `tool_result`, synthesize an
+error result; drop any `tool_result` whose `tool_use` is missing.
+
+This is what makes "kill the process at any point and resume" actually true rather than
+aspirational — and it's why the repair belongs at the storage boundary rather than in the agent
+loop. The loop should never have to think about it.
+
+---
+
+## 9. Where to start reading the code
 
 When the code exists, this is the order that will make sense:
 
@@ -748,7 +924,7 @@ When the code exists, this is the order that will make sense:
 2. `internal/agent/loop.go` — the loop from §1, with the invariants from §2.4 and §4.6
 3. `internal/tools/tool.go` then `bash.go` — the interface, then the hardest tool (§3.5)
 4. `internal/tui/model.go` — `Update`, and the `Program.Send` bridge (§4.3)
-5. `internal/session/store.go` — JSONL append and the repair-on-read pass
+5. `internal/session/store.go` — JSONL append and the repair-on-read pass (§8)
 
 If you can trace a keystroke through all five in under thirty minutes, the code is doing its
 job. That's success criterion S9 in the PRD, and it's the one most likely to quietly fail.
