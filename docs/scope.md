@@ -259,6 +259,40 @@ Ordered roughly by expected value.
 - **Skills** — the Agent Skills `SKILL.md` standard, advertised by name/description with the
   model reading files on demand.
 
+### Phase 3.5 — cross-session agent messaging
+
+**Explicitly not MVP.** Independent rasp sessions — separate processes, separate repos,
+separate terminals — able to discover and message each other. One agent working in the backend
+asks the one that has the frontend loaded, rather than re-reading it. A long-running session
+you can hand work to from another window.
+
+This is architecturally cheaper than it sounds, because the MVP already builds most of it:
+
+| Needed | Already exists |
+|---|---|
+| Somewhere to deliver a message | The **steering and follow-up queues** (design.md §6 rule 8). An inbound message is just another producer for a queue built for mid-turn user input |
+| Stable addressing | Session IDs, already written to every JSONL entry |
+| Adding the tools | The registry accepts dynamically-registered tools — MCP proves it |
+| Not disturbing the loop | The loop never assumed it was the only consumer of those queues |
+
+What genuinely has to be built: **discovery** (a directory of per-session socket files, with
+staleness detection for sessions that died without cleaning up), **transport** (a Unix domain
+socket per session; named pipes on Windows), and two tools — `list_agents` and `send_message`.
+
+**The security question is the hard part, and it's the reason this isn't a small feature.**
+A message from another agent is *untrusted input*, indistinguishable from a prompt-injection
+payload. If agent A can send text that agent B acts on, A has effectively gained a lever on B's
+tools. Two rules make it defensible, and both need designing rather than assuming:
+
+- An inbound message arrives as **user-role content, subject to B's own permission gate and
+  mode** — never as an instruction that bypasses either. A message cannot make a session in
+  plan mode write a file.
+- The receiving session shows message provenance in the transcript, so it's always visible that
+  a given instruction came from another agent rather than from you.
+
+Deferred deliberately: it multiplies the surface of both the concurrency model and the trust
+model, and neither is worth destabilising before the single-session path is proven.
+
 ### Phase 4 — polish
 
 - Side-by-side diffs, intra-line word highlighting.

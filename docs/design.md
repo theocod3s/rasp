@@ -2111,6 +2111,25 @@ none require restructuring — if one does, the seam is wrong and should be fixe
 | **A second catalog source** (Crush's `catwalk`, a private mirror) | `models.Catalog` resolve chain (§10.2) | The chain is already ordered fallbacks. Another source is another link, not a new concept |
 | **Hooks** | A decorator around `Tool` | Wrap each tool at registration. The loop never learns hooks exist |
 | **Alternative frontends** | `agent.Event` | The headless runner already proves there is more than one consumer — the test that the seam is real |
+| **Cross-session agent messaging** (phase 3.5) | The **steering / follow-up queues** (§6 rule 8) + `tool.Registry` | An inbound message from another session is just another producer for a queue that already exists for mid-turn user input. The loop never assumed it was the only consumer. Adds discovery (per-session socket files) and two tools; changes nothing in the loop. **The trust model is the real work, not the plumbing** — see below |
+
+**On cross-session messaging, since the table defers to here.** The plumbing is genuinely
+small — the queues exist, the registry is already dynamic, the loop is already indifferent to
+who produced a message. What is *not* small is the trust model. Text arriving from another
+session is untrusted input, structurally indistinguishable from a prompt-injection payload, and
+if session A can send text that session B acts on, A has acquired a lever on B's tools.
+
+Two rules make it defensible, and both are design work rather than assumptions:
+
+1. An inbound message enters as **user-role content, subject to the receiving session's own
+   permission gate and mode.** Never as an instruction that bypasses either. A message must not
+   be able to make a session sitting in plan mode write a file.
+2. **Provenance is rendered.** The transcript always shows that a given instruction arrived
+   from another agent rather than from the user, because a message that looks like the user
+   typed it is exactly the failure this feature would otherwise create.
+
+The seam's existence is what makes this deferrable without regret. The trust model is why it is
+deferred rather than cheap.
 
 **Seams we are explicitly *not* leaving.** MCP's Roots, Sampling and Logging features are all
 deprecated upstream as of revision 2026-07-28, and `ping` and `logging/setLevel` are removed
