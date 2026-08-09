@@ -777,6 +777,20 @@ Deliberately last, so external servers are debugged against a known-good agent.
 - [ ] every friction point filed as an issue rather than fixed inline
 - [ ] the outcome decides whether M5 ships or a stabilisation milestone is inserted
 
+### M5-09 · Open-source repo docs
+**XS** · deps: — · spec: prd §3
+
+`CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`. M5-03 covers the README; these are the
+files a public repo is expected to carry and that `LICENSE` alone does not supply.
+
+- [ ] `CONTRIBUTING.md` states `just ci` before pushing, and that the design documents are the
+      source of truth — a disagreement between code and a document is a bug in one of them
+- [ ] `SECURITY.md` scopes what a vulnerability report means here, saying plainly that rasp is
+      **not** a security boundary, so "the agent can write files" or "a prompt can redirect it"
+      are out of scope. pi does exactly this and it is why they aren't buried in such reports
+      ([research/pi.md](research/pi.md))
+- [ ] `CODE_OF_CONDUCT.md` present
+
 ---
 
 ## Future phases
@@ -799,6 +813,7 @@ specifying work you won't start for months mostly produces wrong specifics.
 | **P3-LSP** | Diagnostics first, then `lsp_definition` / `lsp_symbols` / `lsp_rename` as tools |
 | **P3-HOOKS** | `PreToolUse` shell commands, regex-matched on tool name, as a decorator around `Tool` |
 | **P3-SKILLS** | Agent Skills `SKILL.md`, advertised by name and description with the model reading on demand |
+| **P3-MEMORY** | Semantic memory — durable cross-session facts (the user, project conventions, settled decisions) recalled as one more ordered `prompt` block with its own cache flag. Eviction is the hard part, not storage |
 
 ### Phase 3.5 — cross-session messaging
 | Epic | Notes |
@@ -814,6 +829,8 @@ specifying work you won't start for months mostly produces wrong specifics.
 | **P4-THEME** | Themes and configurable keybindings |
 | **P4-HISTORY** | Per-session file-version history for undo/checkpoint |
 | **P4-KEYRING** | Optional OS keyring backend alongside file storage |
+| **P4-SPINNER** | Rotating status text while a turn runs, instead of a fixed spinner label. Pure `tui`; small enough to pull forward if it ever feels worth it |
+| **P4-VOICE** | Speech-to-text input. Much the largest epic in this phase and the furthest from the current design, which assumes keyboard input throughout. Needs an STT engine — hosted adds a network dependency, local must not break `CGO_ENABLED=0` |
 
 ---
 
