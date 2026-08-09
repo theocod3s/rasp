@@ -108,22 +108,39 @@ func TestEveryInternalPackageDocumentsWhatItExcludes(t *testing.T) {
 }
 
 // TestNoUndesignedTopLevelPackages closes the escape route from the test above:
-// design §2 gives Go code to cmd/ and internal/ only, so a new top-level
-// directory of Go is as much a design change as a new internal package.
+// design §2 gives Go code to cmd/ and internal/ only, so Go appearing anywhere
+// else is as much a design change as a new internal package.
+//
+// The one exception is a repo-level _test.go at the module root, which has no
+// package of its own to live in — this file is one.
 func TestNoUndesignedTopLevelPackages(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("reading module root: %v", err)
 	}
+
+	var rootGo []string
 	for _, e := range entries {
 		name := e.Name()
-		if !e.IsDir() || ignoredDir(name) || name == topLevelCmd || name == topLevelInternal {
+		if !e.IsDir() {
+			if strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
+				rootGo = append(rootGo, name)
+			}
+			continue
+		}
+		if ignoredDir(name) || name == topLevelCmd || name == topLevelInternal {
 			continue
 		}
 		if pkgs := goPackagesUnder(t, name); len(pkgs) > 0 {
 			t.Errorf("%s/ holds Go packages %v, but %s §2 puts Go under %s/ and %s/ only",
 				name, pkgs, designDoc, topLevelCmd, topLevelInternal)
 		}
+	}
+
+	if len(rootGo) > 0 {
+		t.Errorf("the module root holds non-test Go %v, but %s §2 puts Go under %s/ and %s/ "+
+			"only; repo-level _test.go files are the one exception", rootGo, designDoc,
+			topLevelCmd, topLevelInternal)
 	}
 }
 
@@ -242,12 +259,12 @@ func goPackagesUnder(t *testing.T, root string) []string {
 		if p != root && ignoredDir(d.Name()) {
 			return fs.SkipDir
 		}
-		if _, err := build.ImportDir(p, 0); err != nil {
-			var noGo *build.NoGoError
-			if errors.As(err, &noGo) {
-				return nil // a directory on the way to one, not a package
-			}
+		isPkg, err := isGoPackage(p)
+		if err != nil {
 			return fmt.Errorf("%s: %w", p, err)
+		}
+		if !isPkg {
+			return nil // a directory on the way to one, not a package
 		}
 		rel, err := filepath.Rel(root, p)
 		if err != nil {
@@ -267,6 +284,38 @@ func goPackagesUnder(t *testing.T, root string) []string {
 // ignoredDir reports whether the Go toolchain ignores a directory of this name.
 func ignoredDir(name string) bool {
 	return name == "testdata" || strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".")
+}
+
+// releaseTargets is design §14's build matrix.
+var releaseTargets = []struct{ goos, goarch string }{
+	{"darwin", "amd64"}, {"darwin", "arm64"},
+	{"linux", "amd64"}, {"linux", "arm64"},
+	{"windows", "amd64"}, {"windows", "arm64"},
+}
+
+// isGoPackage reports whether dir is a Go package for any release target.
+//
+// Asking only about the host would make these tests platform-dependent, and
+// design §2 names a per-platform package (wakelock) that CI will run on both
+// linux and macOS. A package the host cannot build would otherwise report as
+// missing from the tree — and, worse, generate no subtest at all, so its doc
+// comment would go unchecked on the very platform where nobody is looking.
+func isGoPackage(dir string) (bool, error) {
+	for _, target := range releaseTargets {
+		ctx := build.Default
+		ctx.GOOS, ctx.GOARCH = target.goos, target.goarch
+		ctx.CgoEnabled = false // §14 fixes CGO_ENABLED=0, so cgo-only files build nowhere
+
+		if _, err := ctx.ImportDir(dir, 0); err != nil {
+			var noGo *build.NoGoError
+			if errors.As(err, &noGo) {
+				continue // excluded here; another target may still want it
+			}
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // packageDoc parses dir and returns the package name along with its package doc
@@ -299,7 +348,7 @@ func packageDoc(t *testing.T, dir string) (name, doc string) {
 	if len(docs) > 1 {
 		t.Errorf("%d files carry a package doc comment; Go expects one (conventionally doc.go)", len(docs))
 	}
-	return name, strings.Join(docs, "\n")
+	return name, strings.Join(docs, "\n\n")
 }
 
 // exclusionParagraph returns the paragraph introducing what the package
