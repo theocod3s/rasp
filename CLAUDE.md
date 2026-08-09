@@ -44,6 +44,9 @@ bug in one of them and gets resolved, not worked around.
   silently destroys the cache on every request (design §3.3).
 - Results land **by index** in a pre-sized slice, never appended as they complete: `tool_result`
   order must match `tool_use` order or the provider rejects the request (design §6 rule 6).
+- Same-file mutations serialize on a **realpath-keyed** mutex; different files stay parallel.
+  `EvalSymlinks` is load-bearing — `./a.go`, `a.go` and a symlink to it must take the same lock,
+  or the mutex silently does nothing and two writes corrupt the file (design §6 rule 6).
 
 **Safety**
 
@@ -55,7 +58,8 @@ bug in one of them and gets resolved, not worked around.
 - A response truncated by the output limit (`StopMaxTokens`) fails *every* pending tool call:
   truncated JSON can parse and validate while being semantically wrong (design §4 invariant 2).
 - Each tool call runs under a panic guard; a panic becomes an error result and the process
-  survives. This matters more once third-party MCP code runs in-process (design §4 invariant 4).
+  survives. This matters more with MCP in scope: a third-party server is code we did not write
+  (design §4 invariant 4). It runs as a **subprocess**, never in our address space (§8).
 - rasp is not a security boundary and no document may imply otherwise. Plan mode's redirection
   guard is a strong speed bump, not a proof (design §7.3a, prd §6.6).
 
@@ -69,8 +73,8 @@ bug in one of them and gets resolved, not worked around.
   from one runner, and why no cgo-linked dependency (`mattn/go-sqlite3`, tree-sitter) may enter
   `go.mod` (design §14).
 - The MCP SDK is pinned exactly and never bumped unattended: read the spec changelog, bump the
-  pin, run the fake-MCP-server suite, and confirm the diff touches nothing outside
-  `internal/mcp/` (design §14).
+  pin, run the fake-MCP-server suite and the real-server smoke test, and confirm the diff touches
+  nothing outside `internal/mcp/` (design §14).
 
 ## Which document answers which question
 
@@ -89,13 +93,15 @@ bug in one of them and gets resolved, not worked around.
   `local`.
 - `just ci` runs fmt-check, vet, build, test and race — run it before pushing. `just` is a
   **development dependency only**: it is not needed to run rasp and never ships. Every recipe is
-  a plain `go` command, readable off the `justfile`.
+  a one-line shell command, readable off the `justfile` and runnable by hand.
 - **Adding an `internal/` package is a design change.** `arch_test.go` parses the package tree
-  out of design §2 rather than copying it, so a new package needs all three of: an entry in the
-  §2 tree block (two spaces per level, trailing slash), a row in the §2 table saying what it must
-  **not** contain, and a `doc.go` whose comment opens `// Package <name> ` and carries a separate
-  paragraph starting `Does not contain:` with real substance behind it. Go lives under `cmd/` and
-  `internal/` only; the module root takes repo-level `_test.go` files and nothing else.
+  out of design §2 rather than copying it, and enforces two things: an entry in the §2 tree block
+  (two spaces per level, trailing slash), and a `doc.go` whose comment opens `// Package <name> `
+  and carries a separate paragraph starting `Does not contain:` with real substance behind it. Go
+  lives under `cmd/` and `internal/` only; the module root takes repo-level `_test.go` files and
+  nothing else. The §2 *table* is a separate, unenforced convention — it covers the packages worth
+  calling out (14 of the 25), not every one, so add a row when the package has a boundary someone
+  could plausibly get wrong.
 - Refer to work items by their backlog ID — `M0-01`, `M1-09` — in commits, PR titles and bodies,
   code comments and anything written back to Linear. `docs/backlog.md` is organised by those IDs
   and the ticket titles carry them; a Linear key like `THE-5` means nothing outside Linear.
