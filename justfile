@@ -10,9 +10,9 @@ default:
 build:
     go build ./...
 
-# Build the rasp binary into ./rasp
+# Build the rasp binary into ./rasp, shaped like a release build
 binary:
-    go build -trimpath -ldflags '-s -w -X main.version={{version}}' -o rasp ./cmd/rasp
+    CGO_ENABLED=0 go build -trimpath -ldflags '-s -w -X main.version={{version}}' -o rasp ./cmd/rasp
 
 # Run the tests
 test:
@@ -33,6 +33,7 @@ fmt:
 # Fail if any file needs gofmt
 fmt-check:
     #!/usr/bin/env sh
+    set -e                      # a gofmt that cannot run must not report success
     unformatted=$(gofmt -l .)
     if [ -n "$unformatted" ]; then
         echo "these files need gofmt:" >&2

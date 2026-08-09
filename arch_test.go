@@ -6,10 +6,18 @@
 // at the moment they are about to break it. These tests move that rule to where
 // it fails the build. M1-09 asks for the same treatment ("enforced by a lint or
 // test") for the workspace boundary.
+//
+// The package list is parsed out of docs/design.md rather than copied into this
+// file. A copy would let the tree and the document drift apart one green build
+// at a time, which is the failure these tests exist to prevent — they should not
+// reproduce it.
 package rasp_test
 
 import (
+	"errors"
+	"fmt"
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -21,58 +29,45 @@ import (
 	"testing"
 )
 
-// designPackages is the internal/ tree exactly as design §2 specifies it, as
-// paths relative to internal/. Adding a package here is a design decision:
-// update §2 and this list together, or the tree and the document drift and the
-// document loses.
-var designPackages = []string{
-	"agent",
-	"auth",
-	"compact",
-	"config",
-	"headless",
-	"llm",
-	"llm/anthropic",
-	"llm/fake",
-	"llm/openaicompat",
-	"llm/retry",
-	"logx",
-	"mcp",
-	"permission",
-	"prompt",
-	"session",
-	"tool",
-	"tool/builtin",
-	"tool/edit",
-	"tui",
-	"tui/chat",
-	"tui/dialog",
-	"tui/diffview",
-	"tui/styles",
-	"wakelock",
-	"workspace",
-}
+const (
+	designDoc = "docs/design.md"
 
-// exclusionMarker is the phrase every package doc uses to introduce what does
-// not belong in the package. Requiring one fixed phrase makes the convention
-// greppable and the check unambiguous.
-const exclusionMarker = "Does not contain"
+	// packageLayoutHeading is the section of design.md holding the tree.
+	packageLayoutHeading = "## 2. Package layout"
 
-// TestInternalTreeMatchesDesign fails when a package appears in internal/
-// without a corresponding row in design §2, or disappears from the tree while
-// §2 still lists it.
+	// exclusionMarker introduces what does not belong in a package. Requiring
+	// one fixed phrase keeps the convention greppable and the check
+	// unambiguous.
+	exclusionMarker = "Does not contain:"
+
+	// minExclusionLen is how much text must follow the marker. It exists to
+	// reject a marker satisfied by a shrug ("Does not contain: nothing much")
+	// while staying well under the shortest real exclusion in the tree.
+	minExclusionLen = 30
+
+	// topLevelGoDirs are the only top-level directories design §2 gives Go
+	// code to.
+	topLevelCmd      = "cmd"
+	topLevelInternal = "internal"
+)
+
+// TestInternalTreeMatchesDesign fails when a package appears in internal/ that
+// design §2 does not list, or §2 lists one the tree does not have.
 func TestInternalTreeMatchesDesign(t *testing.T) {
+	designed := designPackages(t)
 	found := internalPackages(t)
 
-	for _, pkg := range designPackages {
+	for _, pkg := range designed {
 		if !slices.Contains(found, pkg) {
-			t.Errorf("design §2 lists internal/%s, but it is not in the tree", pkg)
+			t.Errorf("%s lists %s, but it is not in the tree",
+				designDoc, path.Join(topLevelInternal, pkg))
 		}
 	}
 	for _, pkg := range found {
-		if !slices.Contains(designPackages, pkg) {
-			t.Errorf("internal/%s is in the tree but not in design §2 — add a row to the table "+
-				"(including what the package must not contain) and to designPackages here", pkg)
+		if !slices.Contains(designed, pkg) {
+			t.Errorf("%s exists but %s §2 does not list it — add it to the tree "+
+				"and give it a row in the table saying what it must not contain",
+				path.Join(topLevelInternal, pkg), designDoc)
 		}
 	}
 }
@@ -82,63 +77,196 @@ func TestInternalTreeMatchesDesign(t *testing.T) {
 func TestEveryInternalPackageDocumentsWhatItExcludes(t *testing.T) {
 	for _, pkg := range internalPackages(t) {
 		t.Run(pkg, func(t *testing.T) {
-			name, doc := packageDoc(t, filepath.Join("internal", filepath.FromSlash(pkg)))
+			dir := filepath.Join(topLevelInternal, filepath.FromSlash(pkg))
+			name, doc := packageDoc(t, dir)
 
-			switch {
-			case doc == "":
+			if doc == "" {
 				t.Fatalf("no package doc comment; every internal package states its single "+
-					"responsibility and what does not belong in it (design §2). Add a doc.go "+
-					"starting %q", "// Package "+name+" ...")
-			case !strings.HasPrefix(doc, "Package "+name+" "):
+					"responsibility and what does not belong in it (%s §2). Add a doc.go "+
+					"starting %q", designDoc, "// Package "+name+" ...")
+			}
+			if !strings.HasPrefix(doc, "Package "+name+" ") {
 				t.Errorf("doc comment should open %q, per Go convention; got %q",
 					"Package "+name+" ...", firstLine(doc))
 			}
 
-			if !strings.Contains(doc, exclusionMarker) {
-				t.Errorf("doc comment never says what the package excludes: no %q paragraph. "+
-					"That half is the load-bearing one — design §2 is mostly a list of "+
-					"exclusions, and an exclusion nobody can find is not a constraint",
-					exclusionMarker)
+			// The exclusion has to be its own paragraph rather than a phrase
+			// buried in one, so it cannot be satisfied in passing.
+			para := exclusionParagraph(doc)
+			switch {
+			case para == "":
+				t.Errorf("doc comment has no paragraph opening %q, so it never says what the "+
+					"package excludes. That half is the load-bearing one — %s §2 is mostly a "+
+					"list of exclusions, and an exclusion nobody can find is not a constraint",
+					exclusionMarker, designDoc)
+			case len(strings.TrimSpace(strings.TrimPrefix(para, exclusionMarker))) < minExclusionLen:
+				t.Errorf("the %q paragraph is too thin to be telling anyone anything: %q",
+					exclusionMarker, para)
 			}
 		})
 	}
 }
 
-// internalPackages returns every directory under internal/ holding Go source,
-// as slash-separated paths relative to internal/.
+// TestNoUndesignedTopLevelPackages closes the escape route from the test above:
+// design §2 gives Go code to cmd/ and internal/ only, so a new top-level
+// directory of Go is as much a design change as a new internal package.
+func TestNoUndesignedTopLevelPackages(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("reading module root: %v", err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() || ignoredDir(name) || name == topLevelCmd || name == topLevelInternal {
+			continue
+		}
+		if pkgs := goPackagesUnder(t, name); len(pkgs) > 0 {
+			t.Errorf("%s/ holds Go packages %v, but %s §2 puts Go under %s/ and %s/ only",
+				name, pkgs, designDoc, topLevelCmd, topLevelInternal)
+		}
+	}
+}
+
+// designPackages reads the internal/ tree out of design §2 and returns its
+// packages as slash-separated paths relative to internal/. Parsing the document
+// is what makes the test's subject design §2 itself rather than a copy of it.
+func designPackages(t *testing.T) []string {
+	t.Helper()
+
+	src, err := os.ReadFile(designDoc)
+	if err != nil {
+		t.Fatalf("reading %s: %v", designDoc, err)
+	}
+
+	var (
+		pkgs       []string
+		stack      []string
+		inInternal bool
+	)
+	for _, line := range packageLayoutBlock(t, string(src)) {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		entry := strings.Fields(line)[0]
+
+		// Top-level entries reset the walk: the block covers cmd/ as well, and
+		// only the internal/ subtree is ours.
+		if indent == 0 {
+			inInternal = entry == topLevelInternal+"/"
+			stack = stack[:0]
+			continue
+		}
+		// Files (main.go, run.go) are listed alongside directories; only
+		// directories are packages.
+		if !inInternal || !strings.HasSuffix(entry, "/") {
+			continue
+		}
+
+		depth := indent / 2
+		if depth < 1 || depth-1 > len(stack) {
+			t.Fatalf("%s §2: cannot read the tree at %q — expected two spaces per level",
+				designDoc, strings.TrimRight(line, " "))
+		}
+		stack = append(stack[:depth-1], strings.TrimSuffix(entry, "/"))
+		pkgs = append(pkgs, strings.Join(stack, "/"))
+	}
+
+	if len(pkgs) == 0 {
+		t.Fatalf("%s: found no packages under %s/ in %q — has the section been reformatted?",
+			designDoc, topLevelInternal, packageLayoutHeading)
+	}
+	slices.Sort(pkgs)
+	return pkgs
+}
+
+// packageLayoutBlock returns the lines of the first fenced code block under the
+// package-layout heading.
+func packageLayoutBlock(t *testing.T, doc string) []string {
+	t.Helper()
+
+	lines := strings.Split(doc, "\n")
+	start := slices.Index(lines, packageLayoutHeading)
+	if start < 0 {
+		t.Fatalf("%s: no %q heading", designDoc, packageLayoutHeading)
+	}
+
+	open := -1
+	for i := start; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "```") {
+			open = i
+			break
+		}
+	}
+	if open < 0 {
+		t.Fatalf("%s: no code block under %q", designDoc, packageLayoutHeading)
+	}
+	for i := open + 1; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "```") {
+			return lines[open+1 : i]
+		}
+	}
+	t.Fatalf("%s: unterminated code block under %q", designDoc, packageLayoutHeading)
+	return nil
+}
+
+// internalPackages returns every Go package under internal/, as slash-separated
+// paths relative to internal/.
 func internalPackages(t *testing.T) []string {
 	t.Helper()
 
+	pkgs := goPackagesUnder(t, topLevelInternal)
+	if len(pkgs) == 0 {
+		t.Fatalf("found no packages under %s/ — is the test running from the module root?",
+			topLevelInternal)
+	}
+	return pkgs
+}
+
+// goPackagesUnder returns the Go packages in and below root, relative to root.
+// "Go package" means what the toolchain means by it, so testdata/ and the
+// _- and .-prefixed directories it ignores are ignored here too — otherwise the
+// golden files, cassettes and fuzz corpora design §13 calls for would each be
+// reported as an undesigned package.
+func goPackagesUnder(t *testing.T, root string) []string {
+	t.Helper()
+
 	var pkgs []string
-	err := filepath.WalkDir("internal", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || !d.IsDir() {
-			return err
-		}
-		entries, err := os.ReadDir(p)
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") {
-				rel, err := filepath.Rel("internal", p)
-				if err != nil {
-					return err
-				}
-				pkgs = append(pkgs, path.Clean(filepath.ToSlash(rel)))
-				break
-			}
+		if !d.IsDir() {
+			return nil
 		}
+		if p != root && ignoredDir(d.Name()) {
+			return fs.SkipDir
+		}
+		if _, err := build.ImportDir(p, 0); err != nil {
+			var noGo *build.NoGoError
+			if errors.As(err, &noGo) {
+				return nil // a directory on the way to one, not a package
+			}
+			return fmt.Errorf("%s: %w", p, err)
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		pkgs = append(pkgs, filepath.ToSlash(rel))
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("walking internal/: %v", err)
-	}
-	if len(pkgs) == 0 {
-		t.Fatal("found no packages under internal/ — is the test running from the module root?")
+		t.Fatalf("walking %s/: %v", root, err)
 	}
 
 	slices.Sort(pkgs)
 	return pkgs
+}
+
+// ignoredDir reports whether the Go toolchain ignores a directory of this name.
+func ignoredDir(name string) bool {
+	return name == "testdata" || strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".")
 }
 
 // packageDoc parses dir and returns the package name along with its package doc
@@ -172,6 +300,17 @@ func packageDoc(t *testing.T, dir string) (name, doc string) {
 		t.Errorf("%d files carry a package doc comment; Go expects one (conventionally doc.go)", len(docs))
 	}
 	return name, strings.Join(docs, "\n")
+}
+
+// exclusionParagraph returns the paragraph introducing what the package
+// excludes, or "" if no paragraph opens with the marker.
+func exclusionParagraph(doc string) string {
+	for para := range strings.SplitSeq(doc, "\n\n") {
+		if strings.HasPrefix(para, exclusionMarker) {
+			return strings.TrimSpace(para)
+		}
+	}
+	return ""
 }
 
 func docText(f *ast.File) string {
