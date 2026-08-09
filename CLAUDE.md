@@ -89,6 +89,10 @@ bug in one of them and gets resolved, not worked around.
 
 ## Conventions
 
+- **Report a finished task in a few lines.** What changed, and anything that genuinely needs a
+  decision. Not the reasoning, the verification narrative, or every caveat noticed along the way —
+  the reader asks when they want more. Detail earns its place *before* the work, or when something
+  failed, is uncertain, or went differently than asked. Success is the case that should be short.
 - Go 1.26 (`go.mod`). Any toolchain 1.21+ fetches it via `GOTOOLCHAIN` unless it is set to
   `local`.
 - `just ci` runs fmt-check, vet, build, test and race — run it before pushing. `just` is a
