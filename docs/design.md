@@ -33,7 +33,7 @@ per-project reports beside it.
 ┌──▼───┐ ┌────▼────┐ ┌───▼─────┐ ┌───▼──────┐ ┌──▼──────┐ ┌──▼─────────┐
 │ llm  │ │ tool    │ │ session │ │ compact  │ │ prompt  │ │ permission │
 │      │ │ registry│ │ JSONL   │ │ prune +  │ │ system  │ │ ladder +   │
-│ prov │ │ +7 built│ │ append  │ │ summarize│ │ prompt  │ │ MODES      │
+│ prov │ │ +8 built│ │ append  │ │ summarize│ │ prompt  │ │ MODES      │
 │ -ider│ │ +N mcp  │ │ -only   │ │          │ │ AGENTS  │ │            │
 └──┬───┘ └──┬───┬──┘ └─────────┘ └──────────┘ └─────────┘ └────────────┘
    │        │   │
@@ -94,7 +94,7 @@ internal/
     retry/             Two-tier retry, shared by both adapters
     fake/              Deterministic scripted provider for tests
   tool/                Tool interface, reflection schema gen, registry + snapshots
-    builtin/           read, write, edit, bash, grep, find, ls
+    builtin/           read, write, edit, bash, grep, find, ls, todos
     edit/              The four-rung match ladder (own package — it's the hard part)
   mcp/                 stdio client manager: spawn, initialize, tools/list, proxy, reap
   workspace/           os.Root confinement, path resolution, read-before-edit tracker
