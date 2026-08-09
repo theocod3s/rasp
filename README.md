@@ -5,9 +5,10 @@ A coding agent for the terminal.
 Go, single static binary, chat-first TUI. Model-agnostic — native Anthropic plus any
 OpenAI-compatible endpoint (OpenRouter, Groq, DeepSeek, Ollama, LM Studio, and the rest).
 
-> **Status: design phase.** No code yet. The documents below are the plan, and they're
-> written to be read — the research in particular may be useful to anyone else building
-> in this space.
+> **Status: early implementation.** The skeleton is in place — module, package tree, task
+> runner — but nothing runs yet: the binary prints its version and exits. The documents
+> below are the plan, and they're written to be read — the research in particular may be
+> useful to anyone else building in this space.
 
 ## Why
 
@@ -65,6 +66,29 @@ Findings are cross-cut in [docs/research/findings.md](docs/research/findings.md)
   model, and the docs say so plainly.
 - **Sessions that can't be bricked.** An interrupted turn is repaired on load, not left to
   poison every subsequent request.
+
+## Development
+
+Go 1.26. `go.mod` names it, so any Go 1.21 or newer toolchain fetches it on demand — unless
+you've set `GOTOOLCHAIN=local`, in which case install 1.26 yourself.
+
+Tasks run through [`just`](https://github.com/casey/just). It is a **development dependency
+only**: it is not needed to run rasp, it is not in the release archives, and a `go install`
+never sees it.
+
+```sh
+brew install just     # or: cargo install just, or a binary from the releases page
+
+just                  # list every recipe
+just build            # compile every package
+just test             # run the tests
+just binary           # build ./rasp with the version stamped in
+just ci               # fmt-check, vet, build, test, race
+```
+
+`just ci` is the full check sequence, and it is the one CI will run, so a green local run
+should mean a green pipeline. If you would rather not install anything, every recipe is a
+plain `go` command — read it off the [justfile](justfile) and run it directly.
 
 ## Name
 
