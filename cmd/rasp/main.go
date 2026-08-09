@@ -1,10 +1,7 @@
 // Command rasp is a coding agent for the terminal.
 package main
 
-import (
-	"fmt"
-	"os"
-)
+import "fmt"
 
 // version is injected at build time via -ldflags "-X main.version=...".
 // See design §14.
@@ -16,5 +13,4 @@ func main() {
 	// session.go and mcp.go later still. Until then this keeps the tree
 	// buildable and the version stamp honest.
 	fmt.Printf("rasp %s\n", version)
-	os.Exit(0)
 }
