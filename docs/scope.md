@@ -261,7 +261,8 @@ Ordered roughly by expected value.
 - **Semantic memory** — durable facts that outlive a session: who the user is, the conventions
   a project follows, decisions already settled. Recalled into the prompt rather than re-derived
   every time. The seam is `prompt` — memory is one more ordered block with its own cache flag —
-  and the hard part is eviction, not storage.
+  and the hard part is eviction, not storage. *Long-horizon: recorded so the seam is protected,
+  with no expectation of building it soon.*
 
 ### Phase 3.5 — cross-session agent messaging
 
@@ -329,7 +330,8 @@ model, and neither is worth destabilising before the single-session path is prov
 - **Voice input** — speech-to-text, so a turn can be spoken instead of typed. Much the largest
   item in this phase and the one furthest from the current design, which assumes keyboard input
   throughout. Needs an STT engine: a hosted one adds a second network dependency, a local one
-  has to stay compatible with `CGO_ENABLED=0`.
+  has to stay compatible with `CGO_ENABLED=0`. *Long-horizon, like semantic memory — neither is
+  queued behind the other, and neither is queued at all.*
 
 ---
 

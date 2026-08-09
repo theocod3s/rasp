@@ -36,9 +36,9 @@ author can check them. Where a criterion is a test, it should end up as an actua
 | **M2** | TUI, permissions, modes | 20 | Live transcript; Shift+Tab plan→manual; yolo unreachable by cycling |
 | **M3** | Durability | 16 | Long session, compacted, interrupted, resumed next day, model switched partway |
 | **M4** | MCP | 9 | A real `.mcp.json` server works with zero rasp config; killing it degrades gracefully |
-| **M5** | Ship | 8 | `brew install`, then a full working day |
+| **M5** | Ship | 9 | `brew install`, then a full working day |
 
-MVP total: **90 items**, plus **15 epics** across the four future phases — 105 in all. Future
+MVP total: **91 items**, plus **18 epics** across the four future phases — 109 in all. Future
 phases are epics, not tickets; see the end.
 
 > **These exist in Linear** as [project Rasp](https://linear.app/theocod3s/project/rasp-be0653f32d76),
@@ -813,7 +813,7 @@ specifying work you won't start for months mostly produces wrong specifics.
 | **P3-LSP** | Diagnostics first, then `lsp_definition` / `lsp_symbols` / `lsp_rename` as tools |
 | **P3-HOOKS** | `PreToolUse` shell commands, regex-matched on tool name, as a decorator around `Tool` |
 | **P3-SKILLS** | Agent Skills `SKILL.md`, advertised by name and description with the model reading on demand |
-| **P3-MEMORY** | Semantic memory — durable cross-session facts (the user, project conventions, settled decisions) recalled as one more ordered `prompt` block with its own cache flag. Eviction is the hard part, not storage |
+| **P3-MEMORY** | Semantic memory — durable cross-session facts (the user, project conventions, settled decisions) recalled as one more ordered `prompt` block with its own cache flag. Eviction is the hard part, not storage. **Long-horizon** — listed to protect the seam, not because it is queued |
 
 ### Phase 3.5 — cross-session messaging
 | Epic | Notes |
@@ -830,7 +830,7 @@ specifying work you won't start for months mostly produces wrong specifics.
 | **P4-HISTORY** | Per-session file-version history for undo/checkpoint |
 | **P4-KEYRING** | Optional OS keyring backend alongside file storage |
 | **P4-SPINNER** | Rotating status text while a turn runs, instead of a fixed spinner label. Pure `tui`; small enough to pull forward if it ever feels worth it |
-| **P4-VOICE** | Speech-to-text input. Much the largest epic in this phase and the furthest from the current design, which assumes keyboard input throughout. Needs an STT engine — hosted adds a network dependency, local must not break `CGO_ENABLED=0` |
+| **P4-VOICE** | Speech-to-text input. Much the largest epic in this phase and the furthest from the current design, which assumes keyboard input throughout. Needs an STT engine — hosted adds a network dependency, local must not break `CGO_ENABLED=0`. **Long-horizon**, like P3-MEMORY |
 
 ---
 
