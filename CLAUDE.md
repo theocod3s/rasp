@@ -65,6 +65,14 @@ bug in one of them and gets resolved, not worked around.
 
 **Process hygiene**
 
+- **A check that cannot run must fail, not pass.** Three bugs here have had one shape: the
+  absence of a signal read as a pass. `just fmt-check` captured `$(gofmt -l .)` and dropped the
+  exit status, so a file `gofmt` could not parse reported clean. `arch_test.go` classified a
+  package as absent when its files were excluded for the host `GOOS`, generated *zero* subtests
+  for it, and called that green. The pre-push hook's first draft wrote `if ! just ci; then
+  status=$?`, where `$?` is the status of the **negation** — always zero — so a failing build
+  would have pushed. None is visible from a green run. When you write a check, decide what it
+  does when the checker is missing, errors, or matches nothing, and make that path loud.
 - stdout belongs to the UI. Logs go to a file via `internal/logx`, and no secret ever reaches a
   log record (design §2, M0-09).
 - `go.uber.org/goleak` in `TestMain`. Goroutines are spawned per turn, per tool, per bash pump

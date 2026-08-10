@@ -44,17 +44,9 @@ them. Go through them individually rather than concluding "it works".
 
 **A check you have only seen pass is not evidence.** If the ticket adds a test, a lint, a CI
 gate — anything whose job is to fail — break the thing it guards on purpose and watch it fail,
-then restore. This is the single highest-value habit in this repo, and both real bugs found in
-M0-01 were of exactly this shape:
-
-- `just fmt-check` reported success on a file `gofmt` could not parse, because `$(gofmt -l .)`
-  captured stdout and discarded the exit status. It passed every test that only ever fed it
-  well-formed input.
-- The arch test classified a package as absent when its files were excluded for the host's
-  `GOOS` — and then generated *zero* subtests for it, so the acceptance criterion silently went
-  unenforced on the platform where nobody was looking.
-
-Neither is visible from a green run. Both are obvious the moment you try to make them fail.
+then restore. This is the single highest-value habit in this repo: it is how all three of the
+bugs behind CLAUDE.md's *"a check that cannot run must fail, not pass"* were caught, and none
+of them was visible from a green run.
 
 Then `just ci` — fmt-check, vet, build, test, race. Run it before pushing, not after.
 
