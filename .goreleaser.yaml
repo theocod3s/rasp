@@ -1,0 +1,50 @@
+# Release build for rasp. Spec: design §14.
+#
+# This file only describes *how artifacts are built*. Tagging, publishing and pushing the
+# cask to the tap belong to the release pipeline. `just snapshot` exercises everything here
+# except those three.
+version: 2
+
+project_name: rasp
+
+builds:
+  - id: rasp
+    main: ./cmd/rasp
+    binary: rasp # goreleaser appends .exe on windows itself — never restate it
+    env:
+      - CGO_ENABLED=0 # load-bearing: one runner builds every target, and no cgo dependency can enter go.mod (§14)
+    flags:
+      - -trimpath
+    # {{.Tag}}, not {{.Version}}: .Version strips the leading v, which would have a
+    # release report `rasp 1.2.3` while `just binary` reports `v1.2.3-4-g326ac9c`.
+    ldflags:
+      - -s -w -X main.version={{.Tag}}
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+homebrew_casks:
+  # NOT `brews:` — deprecated since goreleaser 2.10.
+  - name: rasp
+    homepage: https://github.com/theocod3s/rasp
+    description: A terminal coding agent in Go
+    repository:
+      owner: theocod3s
+      name: homebrew-tap
+    # The binaries are unsigned and unnotarized, so Gatekeeper quarantines anything
+    # downloaded by the cask and the first run dies with "cannot be opened". Stripping
+    # the attribute on install is what the goreleaser docs prescribe for this case.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/rasp"]
+          end

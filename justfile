@@ -52,3 +52,7 @@ ci: fmt-check vet build test race
 # Compile for one $GOOS/$GOARCH target: the release binary, then every package
 cross-compile: binary
     CGO_ENABLED=0 go build ./...
+
+# Build the whole release matrix into ./dist without tagging or publishing
+snapshot:
+    goreleaser release --snapshot --clean --skip=publish
