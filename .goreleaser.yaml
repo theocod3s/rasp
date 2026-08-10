@@ -15,10 +15,17 @@ builds:
       - CGO_ENABLED=0 # load-bearing: one runner builds every target, and no cgo dependency can enter go.mod (§14)
     flags:
       - -trimpath
-    # {{.Tag}}, not {{.Version}}: .Version strips the leading v, which would have a
-    # release report `rasp 1.2.3` while `just binary` reports `v1.2.3-4-g326ac9c`.
+    # The leading v is a literal because .Version is the tag with its v stripped; writing it
+    # back keeps a release reporting `rasp v1.2.3` rather than `rasp 1.2.3`. {{.Tag}} would
+    # supply the v for free but cannot tell a release from a dev build: it is the most recent
+    # tag either way, so once any tag exists every snapshot claims to be that release.
+    # .Version degrades honestly instead — `1.2.3` tagged, `1.2.3-SNAPSHOT-<sha>` otherwise.
     ldflags:
-      - -s -w -X main.version={{.Tag}}
+      - -s -w -X main.version=v{{ .Version }}
+    # Archives are only byte-reproducible if the files inside them are: tar records each
+    # entry's mtime, so an unpinned build time gives two runs of the same commit different
+    # archive hashes. The commit's own timestamp is the deterministic stamp.
+    mod_timestamp: '{{ .CommitTimestamp }}'
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
 
@@ -27,6 +34,17 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
+    # These two are exactly what goreleaser bundles by default; they are restated only to
+    # carry an mtime, and naming them replaces the default glob rather than adding to it.
+    # Without this the binary is stamped (builds.mod_timestamp) but these are not, and since
+    # git does not record mtimes, every fresh clone dates them to checkout time and the
+    # archive hash moves. RFC3339 here, not the epoch .CommitTimestamp used above: this field
+    # parses a timestamp rather than passing it through, and rejects the epoch form.
+    files:
+      - src: LICENSE
+        info: {mtime: '{{ .CommitDate }}'}
+      - src: README.md
+        info: {mtime: '{{ .CommitDate }}'}
 
 checksum:
   name_template: checksums.txt

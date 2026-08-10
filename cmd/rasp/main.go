@@ -9,7 +9,7 @@ var version = "dev"
 
 func main() {
 	// The Cobra root, flag parsing and subcommand wiring arrive with the
-	// milestones that need them — run.go first, then config.go, with
+	// milestones that need them — config.go first, then run.go, with
 	// session.go and mcp.go later still. Until then this keeps the tree
 	// buildable and the version stamp honest.
 	fmt.Printf("rasp %s\n", version)
