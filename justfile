@@ -48,3 +48,7 @@ clean:
 
 # Everything CI runs (M0-02)
 ci: fmt-check vet build test race
+
+# Compile for one $GOOS/$GOARCH target: the release binary, then every package (M0-02)
+cross-compile: binary
+    CGO_ENABLED=0 go build ./...
