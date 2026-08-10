@@ -34,6 +34,17 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
+    # These two are exactly what goreleaser bundles by default; they are restated only to
+    # carry an mtime, and naming them replaces the default glob rather than adding to it.
+    # Without this the binary is stamped (builds.mod_timestamp) but these are not, and since
+    # git does not record mtimes, every fresh clone dates them to checkout time and the
+    # archive hash moves. RFC3339 here, not the epoch .CommitTimestamp used above: this field
+    # parses a timestamp rather than passing it through, and rejects the epoch form.
+    files:
+      - src: LICENSE
+        info: {mtime: '{{ .CommitDate }}'}
+      - src: README.md
+        info: {mtime: '{{ .CommitDate }}'}
 
 checksum:
   name_template: checksums.txt
