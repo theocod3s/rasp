@@ -1,0 +1,61 @@
+# CI for rasp (M0-02). Every check here is a `just` recipe rather than a command restated in
+# YAML, so the sequence has one definition and a green `just ci` locally means a green pipeline.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same PR makes the in-flight run irrelevant. Never cancel a main run,
+# though: two PRs merged in quick succession would leave the first commit with no verdict,
+# and that is exactly the commit a later bisect or release tag needs a signal for.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Tests run on linux only. The repo is private, where macOS runners bill at 10x the minute
+  # rate, and cross-compile below proves the other platforms build (design §14).
+  check:
+    runs-on: ubuntu-latest
+    # The job takes ~40s. A hung test — the goleak and bash-pump classes design §13
+    # anticipates — would otherwise bill the default 360 minutes on a private repo.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+      # The race detector links a C runtime, so this is the one job where cgo stays on.
+      # Everywhere else CGO_ENABLED=0 is load-bearing (design §14).
+      - run: just ci
+        env:
+          CGO_ENABLED: 1
+
+  cross-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      # One broken target must not cancel the other five, or a red run can't tell you
+      # whether the breakage is platform-specific.
+      fail-fast: false
+      matrix:
+        goos: [darwin, linux, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+      # CGO_ENABLED=0 lives in the recipe, not here: it is what lets one linux runner
+      # build every release target without a C cross-toolchain.
+      - run: just cross-compile
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
