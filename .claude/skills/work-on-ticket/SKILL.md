@@ -1,5 +1,5 @@
 ---
-name: ticket
+name: work-on-ticket
 description: Work a rasp backlog item end to end — read the ticket, check deps, branch, implement, verify every acceptance criterion, open a PR, and keep docs/backlog.md and Linear in sync. Use this whenever a backlog ID appears (M0-02, M1-09, M5-04, P2-SUBAGENT), or the user says "next ticket", "pick up the CI one", "start M3-04", "implement the workspace confinement", or otherwise asks for work that maps to a milestone item — even when they never say the word "ticket". Also use when finishing, reviewing, or closing one out.
 ---
 
