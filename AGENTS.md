@@ -81,7 +81,7 @@ when they are already in context.
   would have pushed. None is visible from a green run. When you write a check, decide what it
   does when the checker is missing, errors, or matches nothing, and make that path loud.
 - stdout belongs to the UI. Logs go to a file via `internal/logx`, and no secret ever reaches a
-  log record (design §2, M0-09).
+  log record (design §2).
 - `go.uber.org/goleak` in `TestMain`. Goroutines are spawned per turn, per tool, per bash pump
   and per MCP server; a leak is a hung process on quit (design §13).
 - `CGO_ENABLED=0` is load-bearing, not incidental. It is what cross-compiles the whole matrix
@@ -126,9 +126,14 @@ what the work is and where it stands.
   calling out (14 of the 25), not every one, so add a row when the package has a boundary someone
   could plausibly get wrong.
 - Refer to work items by their milestone ID — `M0-01`, `M1-09` — in commits, PR titles and
-  bodies, code comments and anything written back to Linear. Every Linear issue title carries
-  its ID (`M0-02 · CI`), so the ID is the handle in both places, and it survives leaving Linear
-  in a way a key like `THE-5` does not: git history and code comments outlive the tracker.
+  bodies, and anything written back to Linear. Every Linear issue title carries its ID
+  (`M0-02 · CI`), so the ID is the handle in both places, and it survives leaving Linear in a
+  way a key like `THE-5` does not: git history outlives the tracker.
+- **Never put a milestone ID in a code comment**, and that includes the `justfile`, CI workflows
+  and `.goreleaser.yaml`. The tracker is private and this repo will not be, so `(M0-02)` beside
+  a recipe is a dead reference for every reader who is not us — and it dates the code without
+  explaining it. Say what the thing does and why instead. Commits and PRs keep their IDs: those
+  are addressed to us, and git history is where that trail belongs.
 - **Working a ticket — follow `.agents/skills/work-on-ticket/SKILL.md`.** It holds the
   sequence and, more usefully, the verification discipline that caught all three real bugs so
   far. Named here rather than left to the skill's own description, because that description

@@ -1,4 +1,4 @@
-# CI for rasp (M0-02). Every check here is a `just` recipe rather than a command restated in
+# CI for rasp. Every check here is a `just` recipe rather than a command restated in
 # YAML, so the sequence has one definition and a green `just ci` locally means a green pipeline.
 name: CI
 

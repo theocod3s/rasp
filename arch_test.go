@@ -4,8 +4,8 @@
 // Design §2 is mostly a table of exclusions — what each package must *not*
 // contain — and a rule that lives only in a design document is one nobody reads
 // at the moment they are about to break it. These tests move that rule to where
-// it fails the build. M1-09 asks for the same treatment ("enforced by a lint or
-// test") for the workspace boundary.
+// it fails the build. The workspace boundary is slated for the same treatment
+// ("enforced by a lint or test") when it lands.
 //
 // The package list is parsed out of docs/design.md rather than copied into this
 // file. A copy would let the tree and the document drift apart one green build
@@ -72,8 +72,9 @@ func TestInternalTreeMatchesDesign(t *testing.T) {
 	}
 }
 
-// TestEveryInternalPackageDocumentsWhatItExcludes is M0-01's second acceptance
-// criterion, kept as a test so it also holds for the next package added.
+// TestEveryInternalPackageDocumentsWhatItExcludes enforces the "Does not
+// contain:" paragraph required of every package doc comment, kept as a test so
+// it also holds for the next package added.
 func TestEveryInternalPackageDocumentsWhatItExcludes(t *testing.T) {
 	for _, pkg := range internalPackages(t) {
 		t.Run(pkg, func(t *testing.T) {
