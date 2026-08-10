@@ -2040,7 +2040,7 @@ server, and a leak means a hung process on quit.
 builds:
   - env: [CGO_ENABLED=0]
     flags: [-trimpath]
-    ldflags: ["-s -w -X main.version={{.Version}}"]
+    ldflags: ["-s -w -X main.version={{.Tag}}"]   # .Tag keeps the leading v; .Version strips it
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
 archives:
@@ -2052,7 +2052,7 @@ checksum:
   name_template: checksums.txt
 homebrew_casks:          # NOT `brews:` — deprecated since goreleaser 2.10
   - repository:
-      owner: theo
+      owner: theocod3s
       name: homebrew-tap
 ```
 
