@@ -2,7 +2,7 @@ package rasp_test
 
 import "testing"
 
-// Deliberately wrong: %d against a string is exactly what go vet exists to catch.
-func TestBreakVet(t *testing.T) {
-	t.Logf("%d", "not a number")
+// Deliberately failing, to prove `go test ./...` can turn the job red.
+func TestBreakTest(t *testing.T) {
+	t.Fatal("deliberate failure")
 }
