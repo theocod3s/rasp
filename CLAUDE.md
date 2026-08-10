@@ -109,5 +109,10 @@ bug in one of them and gets resolved, not worked around.
 - Refer to work items by their backlog ID — `M0-01`, `M1-09` — in commits, PR titles and bodies,
   code comments and anything written back to Linear. `docs/backlog.md` is organised by those IDs
   and the ticket titles carry them; a Linear key like `THE-5` means nothing outside Linear.
+- **Working a backlog item — follow `.claude/skills/work-on-ticket/SKILL.md`.** It holds the
+  sequence and, more usefully, the verification discipline that caught the only two real bugs so
+  far. Named here rather than left to the skill's own description, because that description
+  reliably fails to trigger: "implement M0-02" reads like ordinary work, so the skill never gets
+  consulted. A pointer from a file that is always in context is the fix.
 - Split `internal/agent/agent.go` by concern (`step.go`, `tools.go`, `invariants.go`) before it
   passes ~800 lines. That file is this project's named collapse risk (design §2).
