@@ -46,9 +46,9 @@ clean:
     rm -f rasp
     rm -rf dist
 
-# Everything CI runs (M0-02)
+# Everything CI runs
 ci: fmt-check vet build test race
 
-# Compile for one $GOOS/$GOARCH target: the release binary, then every package (M0-02)
+# Compile for one $GOOS/$GOARCH target: the release binary, then every package
 cross-compile: binary
     CGO_ENABLED=0 go build ./...
