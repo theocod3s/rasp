@@ -65,9 +65,20 @@ package's single responsibility, task runner, `.editorconfig`.
 ### M0-02 · CI
 **XS** · deps: M0-01 · spec: design §13
 
+CI invokes `just ci` rather than restating the commands, so the check sequence has one definition
+and a green local run means a green pipeline.
+
+Tests run on linux only. The repo is private, where macOS runners bill at 10× the minute rate,
+and `CGO_ENABLED=0` (§14) lets a linux runner cross-compile every release target for nothing.
+That proves the code *builds* everywhere, not that it *runs* everywhere — worth revisiting when
+`wakelock` lands, since it is the one per-platform package.
+
 - [ ] build, `go vet`, `go test ./...`, and `go test -race ./...` on push
 - [ ] fails the job on any non-zero exit
-- [ ] runs on linux and macOS
+- [ ] runs on linux; macOS runners deliberately skipped while the repo is private
+- [ ] the workflow installs `just` and runs `just ci`, so CI and local checks have one definition
+- [ ] a cross-compile step builds every §14 target — darwin/linux/windows × amd64/arm64 — and
+      fails the job on any that does not compile
 
 ### M0-03 · goreleaser config
 **S** · deps: M0-01 · spec: design §14
