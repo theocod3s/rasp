@@ -2,7 +2,7 @@ package rasp_test
 
 import "testing"
 
-// Deliberately misformatted: gofmt would strip the spaces inside the parens.
-func TestBreakFmt( t *testing.T ) {
-        _ = 1
+// Deliberately wrong: %d against a string is exactly what go vet exists to catch.
+func TestBreakVet(t *testing.T) {
+	t.Logf("%d", "not a number")
 }
