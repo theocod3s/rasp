@@ -2040,7 +2040,10 @@ server, and a leak means a hung process on quit.
 builds:
   - env: [CGO_ENABLED=0]
     flags: [-trimpath]
-    ldflags: ["-s -w -X main.version={{.Tag}}"]   # .Tag keeps the leading v; .Version strips it
+    ldflags: ["-s -w -X main.version=v{{ .Version }}"]   # literal v: .Version strips it. Not
+                                                         # .Tag — it cannot tell a release from
+                                                         # a snapshot of the same commit
+    mod_timestamp: '{{ .CommitTimestamp }}'              # else tar mtimes break archive hashes
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
 archives:

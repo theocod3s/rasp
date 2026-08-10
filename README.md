@@ -75,7 +75,8 @@ you've set `GOTOOLCHAIN=local`, in which case install 1.26 yourself.
 
 Tasks run through [`just`](https://github.com/casey/just). It is a **development dependency
 only**: it is not needed to run rasp, it is not in the release archives, and a `go install`
-never sees it.
+never sees it. [`goreleaser`](https://goreleaser.com) is the same kind of dependency, needed
+by the one recipe that builds the release matrix.
 
 ```sh
 brew install just     # or: cargo install just, or a binary from the releases page
@@ -85,11 +86,13 @@ just build            # compile every package
 just test             # run the tests
 just binary           # build ./rasp with the version stamped in
 just ci               # fmt-check, vet, build, test, race
+just snapshot         # build the release matrix into ./dist — needs goreleaser
 ```
 
 `just ci` is the full check sequence, and it is the one CI will run, so a green local run
-should mean a green pipeline. If you would rather not install anything, every recipe is a
-plain `go` command — read it off the [justfile](justfile) and run it directly.
+should mean a green pipeline. If you would rather not install anything, the recipes are short
+shell commands — read them off the [justfile](justfile) and run them by hand. `just snapshot`
+is the only one that reaches past the Go toolchain, and what it reaches for is `goreleaser`.
 
 ## Name
 
