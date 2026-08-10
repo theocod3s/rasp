@@ -1,7 +1,8 @@
 # Findings: what three codebases agree on, and where they diverge
 
-Synthesis of [crush.md](crush.md), [neo.md](neo.md), [pi.md](pi.md) and
-[go-ecosystem.md](go-ecosystem.md).
+Synthesis of source-level readings of Crush, neo, pi and the Go ecosystem around them. The
+per-project reports those readings produced are no longer kept; this document is what survived
+them.
 
 > **Status:** Crush landed and resolved both questions that were marked ⚠ — how to stream
 > markdown without flicker, and how to avoid re-rendering the conversation every frame. It
@@ -387,9 +388,8 @@ list additionally memoizes by `(item, width, version)` with a `Finished()` freez
 returns finished items verbatim forever without calling `Render()`.
 
 > The two independent Crush readings disagreed slightly on whether a list-*level* cache
-> exists (their own `AGENTS.md` says items should cache internally). Both mechanisms are
-> described in `crush.md` §8; the per-item cache is the one to build first — it's simple and
-> gets most of the win.
+> exists (their own `AGENTS.md` says items should cache internally). The per-item cache is the
+> one to build first — it's simple and gets most of the win.
 
 **3. The real answer to "don't redraw per token" is upstream of the UI entirely.** Crush
 debounces at the *persistence* layer: streaming deltas within a 33ms window coalesce into one

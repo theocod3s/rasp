@@ -66,7 +66,7 @@ bug in one of them and gets resolved, not worked around.
 **Process hygiene**
 
 - stdout belongs to the UI. Logs go to a file via `internal/logx`, and no secret ever reaches a
-  log record (design §2, backlog M0-09).
+  log record (design §2, M0-09).
 - `go.uber.org/goleak` in `TestMain`. Goroutines are spawned per turn, per tool, per bash pump
   and per MCP server; a leak is a hung process on quit (design §13).
 - `CGO_ENABLED=0` is load-bearing, not incidental. It is what cross-compiles the whole matrix
@@ -76,16 +76,20 @@ bug in one of them and gets resolved, not worked around.
   pin, run the fake-MCP-server suite and the real-server smoke test, and confirm the diff touches
   nothing outside `internal/mcp/` (design §14).
 
-## Which document answers which question
+## Which source answers which question
 
-| Question | Document |
+| Question | Source |
 |---|---|
 | What rasp is, what it must do, milestones, risks | `docs/prd.md` |
 | Does this ship in v1, wait, or never happen | `docs/scope.md` |
 | Boundaries, interfaces, concurrency, storage — **the primary reference** | `docs/design.md` |
 | Why a mechanism works at all, from first principles | `docs/internals.md` |
-| What the next piece of work is, with acceptance criteria | `docs/backlog.md` |
-| Evidence behind a decision ("neo does X, and here's why") | `docs/research/` |
+| Evidence behind a decision ("neo does X, and here's why") | `docs/findings.md` |
+| What the next piece of work is, with deps and acceptance criteria | Linear — [project Rasp](https://linear.app/theocod3s/project/rasp-be0653f32d76) |
+
+The last row is the only one that is not a file in this repo, and that is deliberate: tickets
+lived in `docs/backlog.md` as well until the two drifted, so Linear is now the single record of
+what the work is and where it stands.
 
 ## Conventions
 
@@ -106,10 +110,11 @@ bug in one of them and gets resolved, not worked around.
   nothing else. The §2 *table* is a separate, unenforced convention — it covers the packages worth
   calling out (14 of the 25), not every one, so add a row when the package has a boundary someone
   could plausibly get wrong.
-- Refer to work items by their backlog ID — `M0-01`, `M1-09` — in commits, PR titles and bodies,
-  code comments and anything written back to Linear. `docs/backlog.md` is organised by those IDs
-  and the ticket titles carry them; a Linear key like `THE-5` means nothing outside Linear.
-- **Working a backlog item — follow `.claude/skills/work-on-ticket/SKILL.md`.** It holds the
+- Refer to work items by their milestone ID — `M0-01`, `M1-09` — in commits, PR titles and
+  bodies, code comments and anything written back to Linear. Every Linear issue title carries
+  its ID (`M0-02 · CI`), so the ID is the handle in both places, and it survives leaving Linear
+  in a way a key like `THE-5` does not: git history and code comments outlive the tracker.
+- **Working a ticket — follow `.claude/skills/work-on-ticket/SKILL.md`.** It holds the
   sequence and, more usefully, the verification discipline that caught the only two real bugs so
   far. Named here rather than left to the skill's own description, because that description
   reliably fails to trigger: "implement M0-02" reads like ordinary work, so the skill never gets

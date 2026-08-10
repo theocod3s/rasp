@@ -24,4 +24,5 @@ go.work.sum
 
 # Local agent/tooling state
 .claude/settings.local.json
+CLAUDE.local.md
 .rasp/

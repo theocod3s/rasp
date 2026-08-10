@@ -7,8 +7,8 @@ OpenAI-compatible endpoint (OpenRouter, Groq, DeepSeek, Ollama, LM Studio, and t
 
 > **Status: early implementation.** The skeleton is in place — module, package tree, task
 > runner — but nothing runs yet: the binary prints its version and exits. The documents
-> below are the plan, and they're written to be read — the research in particular may be
-> useful to anyone else building in this space.
+> below are the plan, and they're written to be read — the research findings in particular
+> may be useful to anyone else building in this space.
 
 ## Why
 
@@ -28,8 +28,7 @@ Two reasons, and the project only succeeds if both hold:
 | [docs/design.md](docs/design.md) | How it's built — architecture, interfaces, concurrency, storage |
 | [docs/internals.md](docs/internals.md) | How it *works* — the mechanics, taught from first principles |
 | [docs/scope.md](docs/scope.md) | MVP versus later versus never |
-| [docs/backlog.md](docs/backlog.md) | The work, decomposed — 91 MVP items with dependencies and acceptance criteria |
-| [docs/research/](docs/research/) | Source-level teardowns of five existing agents |
+| [docs/findings.md](docs/findings.md) | What five existing agents settled — the evidence behind the design |
 
 New to this? Read [docs/internals.md](docs/internals.md). It explains what a coding agent is
 at the wire level — what a tool call actually looks like, why streaming changes the
@@ -49,7 +48,9 @@ source level:
 | [opencode](https://github.com/sst/opencode) | A client/server split — and it *deleted* its Go TUI, which is worth understanding |
 | Go ecosystem | Libraries, verified versions, sandboxing, distribution |
 
-Findings are cross-cut in [docs/research/findings.md](docs/research/findings.md).
+What that reading concluded is cross-cut in [docs/findings.md](docs/findings.md) — where the
+projects converge, where they diverge, and which divergence we followed. The per-project
+reports behind it are not kept.
 
 ## Planned for v1
 

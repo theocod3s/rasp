@@ -1,6 +1,6 @@
 ---
 name: work-on-ticket
-description: Work a rasp backlog item end to end — read the ticket, check deps, branch, implement, verify every acceptance criterion, open a PR, and keep docs/backlog.md and Linear in sync. Use this whenever a backlog ID appears (M0-02, M1-09, M5-04, P2-SUBAGENT), or the user says "next ticket", "pick up the CI one", "start M3-04", "implement the workspace confinement", or otherwise asks for work that maps to a milestone item — even when they never say the word "ticket". Also use when finishing, reviewing, or closing one out.
+description: Work a rasp ticket end to end — read the Linear issue, check deps, branch, implement, verify every acceptance criterion, open a PR, and close the issue out. Use this whenever a milestone ID appears (M0-02, M1-09, M5-04, P2-SUBAGENT), or the user says "next ticket", "pick up the CI one", "start M3-04", "implement the workspace confinement", or otherwise asks for work that maps to a milestone item — even when they never say the word "ticket". Also use when finishing, reviewing, or closing one out.
 ---
 
 # Working a rasp ticket
@@ -10,12 +10,19 @@ cleverly. This is the sequence, and the reasoning behind the parts that are easy
 
 ## 1. Read the ticket, and its spec
 
-`docs/backlog.md` is keyed by ID — search `### M0-02`. Every ticket names a **spec anchor**
-(`design §13`, `prd §6.6`). Read that section before writing anything: the backlog is a
-decomposition, not the requirement, and where the two disagree the spec wins.
+Tickets live in Linear and nowhere else — [project Rasp](https://linear.app/theocod3s/project/rasp-be0653f32d76),
+one milestone per M0–M5 plus one per future phase. Find one by its ID: search the project for
+`M0-02` and take the exact title match (`M0-02 · CI`). Fuzzy matches rank below it. The issue
+carries size, deps, spec anchor and acceptance criteria.
 
-Check `deps`. They're hard ordering — a blocked ticket genuinely cannot start. If a dependency
-is unmerged, say so and stop rather than working around it.
+Every ticket names a **spec anchor** (`design §13`, `prd §6.6`). Read that section before
+writing anything: the ticket is a decomposition, not the requirement, and where the two
+disagree the spec wins.
+
+Check **Depends on**. Those are hard ordering — a blocked ticket genuinely cannot start. They
+live in the description as prose, not as Linear blocking relations, so nothing enforces them
+and nothing will stop you starting a ticket whose dependency is unmerged. Read them. If one is
+unmerged, say so and stop rather than working around it.
 
 **Don't invent scope.** If something looks missing it is usually deliberate — check
 `docs/scope.md`'s "deliberately excluded" before adding it. If it's a real gap, raise it; don't
@@ -61,8 +68,8 @@ Body shape that has worked:
   is actually for.
 - Anything deliberately left out, and why.
 
-Reference the work by backlog ID (`M0-02`), never the Linear key (`THE-6`) — the ID is what
-`docs/backlog.md` is organised by and what survives leaving Linear.
+Reference the work by milestone ID (`M0-02`), never the Linear key (`THE-6`) — the issue title
+carries the ID, and git history outlives the tracker.
 
 Don't merge your own PR unmarked. Run `/code-review`, and treat its findings as claims to check
 rather than facts — it has a real false-positive rate, and rejecting a wrong finding with
@@ -70,17 +77,15 @@ reasoning is as valuable as fixing a right one.
 
 ## 6. Merge and close out
 
-Rebase-merge; `main` is linear. Then, in the same pass:
+Rebase-merge; `main` is linear. Then move the issue to Done in the same pass. Linear is the
+only record of where the work stands, so an issue left In Progress is what will mislead the
+next session.
 
-- Move the Linear issue to Done.
-- Sync `docs/backlog.md` if the ticket's shape changed while you worked it.
-
-**Both carry the ticket, so both drift.** This has already happened once — a decision recorded
-in Linear was absent from `backlog.md` for a day. If you change one, change the other.
-
-Watch the counts in `backlog.md`'s milestone map (`M5 | Ship | 9`, `91 items ... 109 in all`).
-They are hand-maintained, nothing checks them, and adding or removing a ticket invalidates them
-silently. Count with `grep -cE '^### M[0-9]+-'` rather than trusting the header.
+If the ticket's shape changed while you worked it — a criterion that turned out wrong, a
+decision taken mid-flight — edit the issue description to match what was actually built. This
+is the step that used to be "sync the two copies", and it is worth keeping now there is one:
+a ticket that no longer describes its own outcome is worse than no ticket, because it reads
+as authoritative.
 
 ## 7. Report back briefly
 

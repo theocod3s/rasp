@@ -1,7 +1,7 @@
 # rasp — Product Requirements
 
 **Status:** draft, pre-implementation
-**Companions:** [scope.md](scope.md) (what ships when) · [design.md](design.md) (how it's built) · [research/findings.md](research/findings.md) (evidence)
+**Companions:** [scope.md](scope.md) (what ships when) · [design.md](design.md) (how it's built) · [findings.md](findings.md) (evidence)
 
 This document is the *what* and *why*. It deliberately contains no package layout, no Go
 interfaces, and no implementation strategy — those live in [design.md](design.md).
@@ -32,8 +32,8 @@ Two motivations, both real, neither subordinate to the other.
 the interesting parts are not the model. They are the agent loop, tool dispatch, context
 compaction, and the terminal UI that makes a stream of tokens feel like a conversation. Those
 are ordinary engineering problems with non-obvious solutions, and the fastest way to
-understand them is to build one. Reading five agent codebases at source level (see
-[research/](research/)) established *what* the solutions look like; writing one establishes
+understand them is to build one. Reading five agent codebases at source level (synthesized in
+[findings.md](findings.md)) established *what* the solutions look like; writing one establishes
 *why* each is shaped the way it is.
 
 **Daily use.** A learning exercise that gets abandoned at the demo stage teaches you the easy

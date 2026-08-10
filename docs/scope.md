@@ -1,6 +1,6 @@
 # rasp — MVP and future scope
 
-Companion to [research/findings.md](research/findings.md). This document draws the line
+Companion to [findings.md](findings.md). This document draws the line
 around v1: what ships, what waits, and what we are choosing never to build.
 
 **Guiding rule:** the MVP is the smallest thing that is genuinely useful *daily*. Not a demo.

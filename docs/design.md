@@ -3,8 +3,7 @@
 How rasp is built. The [PRD](prd.md) covers what and why; [scope.md](scope.md) draws the v1
 line; this document is architecture — boundaries, interfaces, data flow, concurrency.
 
-Design choices that rest on evidence cite [research/findings.md](research/findings.md) and the
-per-project reports beside it.
+Design choices that rest on evidence cite [findings.md](findings.md).
 
 ---
 
@@ -61,7 +60,7 @@ truncated-tool-call guard, loop detection, panic recovery.
 twenty-line consumer that prints and exits. Neither reaches into agent state — they see
 events, and they call methods (`Send`, `Cancel`, `Steer`, `SetMode`). This is the seam Crush
 and opencode both paid for and then benefited from: opencode replaced its entire client, in a
-different language, without touching the server contract ([opencode.md §2](research/opencode.md)).
+different language, without touching the server contract.
 We get the same seam in-process, for free.
 
 **The services** are leaf packages. They do not import each other except through interfaces
@@ -133,7 +132,7 @@ internal/
 
 **The warning worth heeding:** pi's `agent-session.ts` is 3,342 lines — a carefully layered
 codebase that collapsed into one file where the product gets assembled
-([findings.md](research/findings.md)). Our equivalent risk is `internal/agent/agent.go`. When
+([findings.md](findings.md)). Our equivalent risk is `internal/agent/agent.go`. When
 it passes ~800 lines, split by concern (`step.go`, `tools.go`, `invariants.go`) before it
 becomes the file nobody wants to open.
 
@@ -170,7 +169,7 @@ type Provider interface {
 ```
 
 Both contracts come from pi verbatim, and both are cheap up front and painful to retrofit
-([findings.md](research/findings.md)).
+([findings.md](findings.md)).
 
 ```go
 type Request struct {
@@ -313,7 +312,7 @@ of them wrong produces data loss, not slowness.
 **Producer 1 — reflection, for built-ins.** This was the one recommendation the research
 reversed: neo hand-writes `map[string]any` literals, but Crush derives the schema from the Go
 type, removing any possibility of drift between what the model was told and what we unmarshal
-([findings.md §1](research/findings.md)).
+([findings.md §1](findings.md)).
 
 ```go
 // New builds a Tool from a typed handler. TIn's struct tags produce the JSON
@@ -598,8 +597,7 @@ Send(ctx, text)
 Crush's comment says it plainly: *"Buffer dispatch until stream is fully consumed so that all
 OnToolCall callbacks complete before any tool result is written."* Draining the stream first
 guarantees the assistant message is complete before any result exists, which makes ordering
-deterministic and makes opt-in parallelism a single flag rather than a redesign
-([crush.md §3](research/crush.md)).
+deterministic and makes opt-in parallelism a single flag rather than a redesign.
 
 ### Invariant 1 — `tool_use` never exists without `tool_result`
 
@@ -754,7 +752,7 @@ subtly broken. The rule is single ownership.
 **2. Long-lived streams use `Program.Send`, not a blocking `tea.Cmd`.** A `Cmd` is
 `func() tea.Msg` — one value, one time. Wrong shape for hundreds of deltas. neo's comment
 notes they moved to direct `p.Send()` specifically to escape the backpressure of a hand-rolled
-pump ([neo.md §7](research/neo.md)).
+pump.
 
 ```go
 // The entire agent → UI bridge.
@@ -910,8 +908,8 @@ Four modes ship in the MVP. The design constraint is the interesting part:
 
 They are permission presets. This is opencode's design, and it is the most elegant thing in
 that report: their `plan` and `build` agents register identically and differ *only* in a
-default permission map ([opencode.md §10](research/opencode.md)). "Modes" therefore cost zero
-branches in the loop, and custom user-defined modes become nearly free later (§15).
+default permission map. "Modes" therefore cost zero branches in the loop, and custom
+user-defined modes become nearly free later (§15).
 
 | Mode | edit / write | bash | Gate |
 |---|---|---|---|
@@ -1211,7 +1209,7 @@ load instead of a compiled glob walk on every tool call. And it is honest — "y
 different *kind* of statement from "auto," and collapsing it into the same mechanism invites
 exactly the bug where a stray config override makes yolo unexpectedly prompt.
 
-Crush's ladder otherwise, plus modes at rungs 1–2 ([findings.md](research/findings.md)).
+Crush's ladder otherwise, plus modes at rungs 1–2 ([findings.md](findings.md)).
 Grants are keyed by path, so "always allow writes in `internal/`" does not silently cover
 `~/.ssh`, and they are session-scoped and in-memory — they do not persist across restarts.
 
