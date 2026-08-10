@@ -411,3 +411,73 @@ the data is, not scattered through the view.
 4. **Credential storage.** All three use plaintext `0600` files, none use an OS keyring. Crush
    adds shell expansion including `$(command)`, so a user can point at 1Password without us
    building keyring support. That may be the better middle path than `go-keyring`.
+
+---
+
+## Model routing: everyone shipped it first, and the cache makes the naive version backwards
+
+Added after the rest of this document, when *"auto mode — pick the model from task
+difficulty"* came up as a candidate differentiator. It isn't one. The reasons are worth
+keeping, because the idea is attractive enough to come back.
+
+**It already ships, twice, in the shape we would have built.**
+[OpenRouter's auto router](https://openrouter.ai/docs/guides/routing/routers/auto-router)
+picks a model per request from prompt complexity and accepts `allowed_models` wildcards like
+`anthropic/*` — which is "auto within one provider", already built, no markup, with session
+stickiness and cost tiers thrown in. [Cursor's Auto mode](https://cursor.com/changelog/router)
+is a router trained on 600,000+ live requests. Claude Code ships the deterministic version:
+`opusplan` runs Opus in plan mode and Sonnet for execution — routing derived from a state the
+user already set, not guessed.
+
+The trained routers are the ones to learn from, because **the training data is the moat**.
+[RouteLLM](https://www.lmsys.org/blog/2024-07-01-routellm/) is explicit that classifier
+accuracy is capped by labelled examples from your own workload. We have none and will have
+none. A router without that data is a coin flip wearing a feature's clothes.
+
+**Prompt caching makes routing *down* cost more.** A model switch invalidates the cache
+completely — tools, system and messages — because cache entries are model-scoped. A rasp turn
+is not one request but one per step (design §4), each resending the transcript, so steps after
+the first are cache reads at a fraction of base price. Switching mid-turn throws that away and
+pays full price on a cold prefix, plus a write premium to re-cache. For a mid-sized turn the
+"cheaper" model can cost several times more for the step it lands on, and the cold prefill is
+a direct attack on the sub-second first token in prd §8. Check current multipliers against
+provider pricing before relying on the arithmetic; the direction of the result is stable, the
+magnitudes are not.
+
+This also cuts against work already done: design §3.3 keeps the tool list byte-stable
+precisely to protect that prefix. An auto-router that changes model mid-session discards it
+anyway. The two features fight.
+
+**models.dev has no capability field.** Entries carry cost, limits, modalities and flags —
+nothing ranking models by how good they are. So "pick the best model for a hard task" is
+unanswerable from the catalog, and rasp would ship its own hand-maintained tier table. That
+reintroduces exactly what design §10.2 rejects in its first sentence: *"every new model release
+needs a rasp release, which is the wrong coupling for a tool whose entire pitch is being
+model-agnostic."*
+
+**`auto` is already a permission mode.** design §7.2 defines it as allow-edits with
+allow-listed bash, Shift+Tab cycles into it, and it sits at the far left of the status line
+because knowing your permission state is safety-relevant. The status line also shows the active
+model (prd §6.3), so a model selector named `auto` puts the word twice on one line meaning two
+unrelated things — and invites a user to read "auto" as routing when it actually means rasp may
+edit files without asking.
+
+**What to build instead — most of it is already planned.** internals §6.2 commits to *"model
+selection by job (main vs title vs compaction)"*, and design §11 gives the compaction call its
+own session with no cache breakpoints. That is routing that cannot fight the cache, because
+each sub-task carries its own context. On top of it:
+
+1. Let `model: "openrouter/auto"` work — the catalog must tolerate an unknown ID instead of
+   dying. This delivers the whole two-layer idea, credits someone else's routing model rather
+   than pretending to have one, and costs almost nothing.
+2. Named roles in config (`main`, `small`, `plan`) rather than a classifier. `small` is needed
+   anyway; `plan` buys the `opusplan` behaviour deterministically.
+3. Surface `cache_read_input_tokens` in the status line. design §8.4 already calls it worth
+   watching. A user who can see the cache go cold when they switch will route better than any
+   classifier we could ship, and it costs one integer.
+4. Leave real routing to sub-agents, where the child has its own context window and a cheap
+   model costs nothing in cache terms.
+
+The failure mode that decides it: a cheap model on a hard task returns a confident wrong
+answer, and the user has no way to see that the routing caused it. That is the same shape as
+the fuzzy edit matching this project already refuses — silent, plausible, wrong.
