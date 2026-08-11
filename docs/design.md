@@ -1536,6 +1536,30 @@ Appends use `O_APPEND` on a single open handle — atomic below `PIPE_BUF`, tole
 since a torn final line is skipped on read. The **meta** file (index, title, token totals) is
 rewritten wholesale, so it uses temp-file + `rename`, atomic on POSIX. pi does exactly this.
 
+### Session titles
+
+The picker lists sessions by title, so something has to produce one. It is a single call on
+`small_model` (falling back to `model`) over the first user message, asking for a few words with
+no trailing punctuation — naming a conversation is not work that needs the model that reasons
+about code, which is the same argument compaction makes in §11.
+
+Three rules, and the first is the only one that is hard:
+
+1. **It never touches the critical path.** The call is dispatched in the background *after* the
+   first turn is already streaming. A title is worth nothing until the picker is opened, possibly
+   days later, so paying even 300ms of it before the first token would trade the one latency
+   number prd §8 will not trade. Verify this the way it can fail — with the title call
+   blackholed, not by observing that it happened to be fast.
+2. **Failure is ordinary, not exceptional.** No retry loop, no error surfaced to the user, no
+   effect on the session. An untitled session displays its first user message, truncated. That
+   fallback is good enough often enough — *"fix the auth bug"* reads fine — that the model call
+   exists only for the cases it isn't: a pasted stack trace, or three paragraphs of context.
+3. **The title is a session entry as well as a meta field.** The meta file is what the picker
+   reads, but the entry is what makes replay agree with it without re-running the call.
+
+A session that never got a title can be given one later, so a spell of failing calls doesn't
+leave a permanently unreadable list.
+
 ### Why there is no session index — and why that isn't a deferral
 
 The obvious objection to JSONL is listing: a session picker has to open every file to read its
