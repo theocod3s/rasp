@@ -462,21 +462,37 @@ model (prd §6.3), so a model selector named `auto` puts the word twice on one l
 unrelated things — and invites a user to read "auto" as routing when it actually means rasp may
 edit files without asking.
 
-**What to build instead — most of it is already planned.** internals §6.2 commits to *"model
-selection by job (main vs title vs compaction)"*, and design §11 gives the compaction call its
-own session with no cache breakpoints. That is routing that cannot fight the cache, because
-each sub-task carries its own context. On top of it:
+**pi settles it.** pi ships a provider called `radius` — a remote gateway, OAuth or
+`RADIUS_API_KEY`, described in its own source as *"purely dynamic … no static catalog entry"* —
+whose default model id is `"auto"` (`model-resolver.ts:27`, in the same table as
+`anthropic: "claude-opus-4-8"`). So pi's `auto` is a string it forwards to somebody else's
+router. Grepping its source for difficulty, complexity or classification turns up only
+`tools/read.ts` classifying *files* as skill or docs. **pi implements no routing whatsoever**,
+and has no cheap-model role either. The agent closest to rasp in intent looked at this problem
+and forwarded it upstream.
 
-1. Let `model: "openrouter/auto"` work — the catalog must tolerate an unknown ID instead of
-   dying. This delivers the whole two-layer idea, credits someone else's routing model rather
-   than pretending to have one, and costs almost nothing.
-2. Named roles in config (`main`, `small`, `plan`) rather than a classifier. `small` is needed
-   anyway; `plan` buys the `opusplan` behaviour deterministically.
-3. Surface `cache_read_input_tokens` in the status line. design §8.4 already calls it worth
+**The decision.** `/model` is the entire user-facing story — the user picks, from whatever
+provider they authenticated with. No auto mode, now or later. Four supporting pieces:
+
+1. **Never validate a model id against the catalog.** Forward whatever string is configured.
+   This is what makes `openrouter/auto`, pi's `radius/auto`, and every router not yet invented
+   work for free — rasp does not need to know routers exist. A catalog miss degrades the
+   context and cost display to conservative estimates; it must never block a request. Same
+   anti-coupling argument as §10.2, one level up.
+2. **A default model per provider**, so "I don't want to choose" needs no mechanism. pi does
+   this in one line per provider.
+3. **One internal config key for the cheap model** used by compaction and session titles.
+   internals §6.2 already commits to this, and design §11 gives the compaction call its own
+   session with no cache breakpoints — so it cannot fight the cache. It is not routing and not
+   user-facing: it is refusing to run a flagship model on a summarization job. A `plan` role was
+   considered and dropped, because it is the one that would switch the *main* conversation's
+   model, and `/model` covers it.
+4. **Surface `cache_read_input_tokens` in the status line.** design §8.4 already calls it worth
    watching. A user who can see the cache go cold when they switch will route better than any
    classifier we could ship, and it costs one integer.
-4. Leave real routing to sub-agents, where the child has its own context window and a cheap
-   model costs nothing in cache terms.
+
+If real routing ever earns its place, sub-agents are the home: the child has its own context
+window, so a cheap model there costs nothing in cache terms.
 
 The failure mode that decides it: a cheap model on a hard task returns a confident wrong
 answer, and the user has no way to see that the routing caused it. That is the same shape as

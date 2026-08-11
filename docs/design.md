@@ -1775,7 +1775,7 @@ type Model struct {
 func (c *Catalog) Get(id string) (Model, bool)
 ```
 
-Four rules make this a dependency we can live with:
+Five rules make this a dependency we can live with:
 
 1. **Never on the startup path.** The fetch runs in a background goroutine after the first
    frame, bounded at **5s**. A slow or unreachable models.dev delays nothing the user sees.
@@ -1784,6 +1784,11 @@ Four rules make this a dependency we can live with:
 3. **ETag revalidation**, refreshed hourly at most, cached under `~/.cache/rasp/models.json`.
 4. **User config always wins**, so a wrong upstream entry is fixable locally in one line
    without waiting for anyone.
+5. **An id the catalog does not know is still sent.** `Get` returning `false` degrades the
+   context-window and cost display to conservative estimates, shown as estimates — it never
+   blocks a request. This is what lets `openrouter/auto` and any other provider-side router
+   work without rasp knowing routers exist, and it is rule 4's argument one level up: a model
+   we have never heard of must not require a rasp release to use.
 
 The honest cost: correctness now depends on a third-party file. pi's own catalog generator
 carries dozens of hand-written corrections to models.dev data — the clearest available evidence
