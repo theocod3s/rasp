@@ -808,9 +808,9 @@ Real, and cheap: **model selection by job**. The main loop needs a strong model.
 session title, summarizing for compaction, or classifying an error does not.
 
 ```
-main turn        → claude-opus-5     (expensive, capable)
-session title    → claude-haiku-4.5  (cheap, fast)
-compaction       → claude-haiku-4.5
+main turn        → claude-opus-5     (expensive, capable)  ← config "model"
+session title    → claude-haiku-4-5  (cheap, fast)         ← config "small_model"
+compaction       → claude-haiku-4-5
 ```
 
 Phase 2 extends it: routing a task to a sub-agent with a restricted toolset.
