@@ -41,13 +41,17 @@ fmt-check:
         exit 1
     fi
 
+# Fail if go.mod or go.sum needs `go mod tidy`, without rewriting either
+tidy-check:
+    go mod tidy -diff
+
 # Remove build output
 clean:
     rm -f rasp
     rm -rf dist
 
 # Everything CI runs
-ci: fmt-check vet build test race
+ci: fmt-check tidy-check vet build test race
 
 # Compile for one $GOOS/$GOARCH target: the release binary, then every package
 cross-compile: binary

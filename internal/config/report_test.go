@@ -35,6 +35,137 @@ func TestUnknownKeysWarnAndAreDropped(t *testing.T) {
 	}
 }
 
+// TestAnUnknownObjectNamesItsFile. Origins are recorded on leaves, so a key
+// holding an object has no entry of its own — and a warning that falls back to
+// the zero Origin reads as "built-in default", sending the reader at rasp's
+// compiled-in defaults instead of the file they wrote.
+func TestAnUnknownObjectNamesItsFile(t *testing.T) {
+	dir := project(t, `{"tools": {"foo": 1}}`)
+	res := load(t, config.Sources{ProjectDir: dir})
+
+	var found bool
+	for _, w := range res.Warnings {
+		if w.Key != "tools" {
+			continue
+		}
+		found = true
+		if want := filepath.Join(dir, ".rasp", config.File); w.Origin.Detail != want {
+			t.Errorf("warning origin = %q, want %q", w.Origin, want)
+		}
+	}
+	if !found {
+		t.Errorf("no warning for the unknown object; got %v", res.Warnings)
+	}
+}
+
+// TestAnEmptyObjectLaterFilledLeavesNoPhantom. An object carries an origin of
+// its own only while it is empty, since there is no leaf to hang one on. Once
+// a later layer fills it, that entry describes a value nothing prints — and
+// `rasp config check` draws it as a row reading `providers  null`.
+func TestAnEmptyObjectLaterFilledLeavesNoPhantom(t *testing.T) {
+	res := load(t, config.Sources{
+		GlobalPath: global(t, `{"providers": {}}`),
+		Getenv:     env{"ANTHROPIC_API_KEY": "from-env"}.lookup,
+	})
+
+	if _, ok := res.Origins["providers"]; ok {
+		t.Error("providers kept an origin after a later layer filled it")
+	}
+	if _, ok := res.Origins["providers.anthropic.api_key"]; !ok {
+		t.Error("the value that filled it has no origin")
+	}
+	for _, key := range res.Origins.Paths() {
+		if _, ok := res.Values[key]; !ok {
+			t.Errorf("%s has an origin but no resolved value", key)
+		}
+	}
+}
+
+// TestAnEmptyObjectThatStaysEmptyKeepsAnOrigin is the other half: `"providers":
+// {}` says something, and it is the one shape with no leaf to say it through.
+func TestAnEmptyObjectThatStaysEmptyKeepsAnOrigin(t *testing.T) {
+	path := global(t, `{"providers": {}}`)
+	res := load(t, config.Sources{GlobalPath: path})
+
+	origin, ok := res.Origins["providers"]
+	if !ok {
+		t.Fatalf("an empty object lost its origin; got %v", res.Origins.Paths())
+	}
+	if origin.Detail != path {
+		t.Errorf("origin = %v, want %s", origin, path)
+	}
+
+	// And the precedence rule holds for it like anything else: a later layer
+	// restating `{}` is the layer that set it.
+	projectDir := project(t, `{"providers": {}}`)
+	res = load(t, config.Sources{GlobalPath: path, ProjectDir: projectDir})
+
+	want := filepath.Join(projectDir, ".rasp", config.File)
+	if got := res.Origins["providers"]; got.Detail != want {
+		t.Errorf("origin = %v, want the project file %s", got, want)
+	}
+}
+
+// TestAValueOfTheWrongSortNamesItsFile. encoding/json would report this
+// against a Go field name and lose the map key entirely — "Go struct field
+// MCP.mcp.max_total_tools" — and would never say which of the four sources
+// wrote it. Naming the file is the whole reason this package exists.
+func TestAValueOfTheWrongSortNamesItsFile(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		want string
+	}{
+		{
+			name: "a string where a number belongs",
+			file: `{"mcp": {"max_total_tools": "sixty"}}`,
+			want: "mcp.max_total_tools: want a number, got a string",
+		},
+		{
+			name: "a string where an array belongs, under a map key",
+			file: `{"providers": {"anthropic": {"models": "opus"}}}`,
+			want: "providers.anthropic.models: want an array, got a string",
+		},
+		{
+			name: "an object where a string belongs",
+			file: `{"model": {"name": "a/b"}}`,
+			want: "model: want a string, got an object",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := project(t, tc.file)
+			_, err := config.Load(config.Sources{
+				GlobalPath: filepath.Join(t.TempDir(), config.File),
+				ProjectDir: dir,
+				Getenv:     env{}.lookup,
+			})
+			if err == nil {
+				t.Fatal("Load accepted a value Config cannot hold")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to contain %q", err, tc.want)
+			}
+			if path := filepath.Join(dir, ".rasp", config.File); !strings.Contains(err.Error(), path) {
+				t.Errorf("error does not name the file it came from:\n%s", err)
+			}
+		})
+	}
+}
+
+// TestNullIsAcceptedAnywhere. JSON allows null in any position and the decoder
+// reads it as a zero value, so the shape check must not be stricter than the
+// decoder it stands in front of.
+func TestNullIsAcceptedAnywhere(t *testing.T) {
+	res := load(t, config.Sources{
+		GlobalPath: global(t, `{"model": null, "context": {"files": null}}`),
+	})
+	if len(res.Warnings) > 0 {
+		t.Errorf("a null drew a warning: %v", res.Warnings)
+	}
+}
+
 // TestUserDefinedKeysAreNotUnknown: half the schema is maps whose keys are the
 // user's to invent — provider ids, MCP server names, bash globs. A check that
 // flagged those would be worse than no check.

@@ -134,6 +134,15 @@ func TestMalformedFilesAreRejected(t *testing.T) {
 		{"a top-level array", `["model", "a/b"]`},
 		{"a top-level null", `null`},
 		{"a second document", "{\"model\": \"a/b\"}\n{\"mode\": \"plan\"}"},
+
+		// The trailing content below is malformed, which is what a hand-edit
+		// actually produces. Testing only the well-formed second document
+		// above would pass while these were silently truncated, because a
+		// failure to read the rest of the file is not evidence that there is
+		// no rest of the file.
+		{"one stray closing brace", `{"model": "a/b"}}`},
+		{"two objects spliced with a comma", "{\"model\": \"a/b\"}\n,\"mode\": \"plan\""},
+		{"a stray word after the object", `{"model": "a/b"} plan`},
 	}
 
 	for _, tc := range tests {

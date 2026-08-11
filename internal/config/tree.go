@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 
@@ -50,15 +51,25 @@ func decodeJSONC(src []byte, path string) (tree, error) {
 	if err := dec.Decode(&t); err != nil {
 		return nil, &ParseError{Path: path, Offset: syntaxOffset(err), Err: err, source: src}
 	}
-	// A file holding a second document is a mistake worth naming; the decoder
-	// would otherwise stop after the first and say nothing.
-	if _, err := dec.Token(); err == nil {
+	// Anything after the top-level object is a mistake worth naming; the
+	// decoder would otherwise stop at the first one and say nothing.
+	//
+	// Only io.EOF means "nothing follows". Testing for a nil error instead
+	// would catch a well-formed second document and wave through the far
+	// likelier hand-edit — one stray brace, a comma splicing two objects —
+	// because a *malformed* tail makes Token fail, and a failure to read the
+	// rest of the file is not evidence that there is no rest of the file.
+	switch _, err := dec.Token(); {
+	case errors.Is(err, io.EOF):
+	case err == nil:
 		return nil, &ParseError{
 			Path:   path,
 			Offset: dec.InputOffset(),
 			Err:    errors.New("unexpected content after the top-level object"),
 			source: src,
 		}
+	default:
+		return nil, &ParseError{Path: path, Offset: syntaxOffset(err), Err: err, source: src}
 	}
 	if t == nil {
 		return nil, &ParseError{
@@ -128,6 +139,17 @@ func merge(dst, src tree, origin Origin, prefix []string, origins Origins) {
 		srcSub, srcIsObj := srcVal.(tree)
 		if dstIsObj && srcIsObj {
 			merge(dstSub, srcSub, origin, path, origins)
+
+			// An object carries an origin of its own only while it is empty,
+			// since there is no leaf to hang one on. Once something lands
+			// inside it, its leaves carry the origins and the entry here would
+			// describe a value nothing prints — the row `rasp config check`
+			// would draw as `providers  null`.
+			if len(dstSub) > 0 {
+				delete(origins, joinPath(path))
+			} else {
+				origins[joinPath(path)] = origin
+			}
 			continue
 		}
 

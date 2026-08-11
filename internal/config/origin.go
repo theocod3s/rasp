@@ -73,6 +73,27 @@ func (o Origin) String() string {
 // never collapse onto one entry.
 type Origins map[string]Origin
 
+// At returns the origin of the value at a key path.
+//
+// When the key holds an object, the origins sit on its leaves rather than on
+// the key — which is exactly the case a caller asking about a *malformed*
+// value runs into, since "an object where a string belongs" has no leaf of its
+// own. So a miss falls back to the first origin recorded beneath the key. The
+// leaves under one wrongly-shaped value normally share an origin; where a
+// later layer has overridden part of it they do not, and taking the first in
+// sorted order at least makes the answer the same every run.
+func (o Origins) At(key string) (Origin, bool) {
+	if origin, ok := o[key]; ok {
+		return origin, true
+	}
+	for _, path := range o.Paths() {
+		if strings.HasPrefix(path, key+".") {
+			return o[path], true
+		}
+	}
+	return Origin{}, false
+}
+
 // Paths returns every recorded key path in sorted order.
 func (o Origins) Paths() []string {
 	paths := make([]string, 0, len(o))

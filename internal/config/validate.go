@@ -30,17 +30,14 @@ func (e *InvalidError) Error() string {
 func validate(t tree, origin Origin) ([]Warning, error) {
 	var warnings []Warning
 
+	// A mode that is not a string is left to the shape check after the merge,
+	// which names the same thing with the same origin. Two mechanisms for one
+	// kind of error would differ only in their wording.
 	if raw, ok := lookupPath(t, "mode"); ok {
-		mode, ok := raw.(string)
-		if !ok {
-			return nil, &InvalidError{
-				Origin: origin,
-				Key:    "mode",
-				Reason: fmt.Sprintf("want one of %s, got %s", modeList(), describeJSON(raw)),
+		if mode, ok := raw.(string); ok {
+			if err := checkMode(mode, origin); err != nil {
+				return nil, err
 			}
-		}
-		if err := checkMode(mode, origin); err != nil {
-			return nil, err
 		}
 	}
 
@@ -95,23 +92,3 @@ func checkMode(mode string, origin Origin) error {
 
 // modeList renders the accepted mode names for an error message.
 func modeList() string { return strings.Join(modeNames, ", ") }
-
-// describeJSON names the kind of a decoded JSON value, for an error that has
-// to say what arrived instead of what was wanted.
-func describeJSON(val any) string {
-	switch val.(type) {
-	case nil:
-		return "null"
-	case bool:
-		return "a boolean"
-	case string:
-		return "a string"
-	case []any:
-		return "an array"
-	case tree:
-		return "an object"
-	default:
-		// json.Number, and anything a future decoder produces.
-		return "a number"
-	}
-}

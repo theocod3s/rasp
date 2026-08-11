@@ -150,6 +150,7 @@ func Load(src Sources) (*Result, error) {
 		var (
 			contributions []contribution
 			source        Source
+			err           error // scoped to this layer, never carried in from the last
 		)
 		switch layer {
 		case LayerDefault:
@@ -189,15 +190,31 @@ func Load(src Sources) (*Result, error) {
 		}
 	}
 
-	// Keys nobody will read are reported once against the merged tree: a key
-	// that is unknown is unknown wherever it was written, and the origin table
-	// already says which file that was. They are then dropped, so that what
-	// Origins describes is exactly what Config holds — a report listing a
-	// setting rasp is ignoring, beside the settings it is honouring, would be
-	// a worse answer than the warning it already gave.
-	for _, key := range unknownKeys(merged) {
+	// What will not survive the decode is inspected once against the merged
+	// tree, because a key is unknown and a value is the wrong sort wherever
+	// they were written — and by now the origin table can say which file that
+	// was. encoding/json cannot: its errors are addressed to Go field names
+	// and lose map keys entirely, so `"max_total_tools": "sixty"` would be
+	// reported without naming the config file it came from.
+	unknown, mismatched := inspect(merged)
+	if len(mismatched) > 0 {
+		m := mismatched[0]
+		origin, _ := res.Origins.At(m.key)
+		return nil, &InvalidError{
+			Origin: origin,
+			Key:    m.key,
+			Reason: fmt.Sprintf("want %s, got %s", m.want, m.got),
+		}
+	}
+
+	// Unknown keys are dropped as well as reported, so that what Origins
+	// describes is exactly what Config holds — a report listing a setting rasp
+	// is ignoring, beside the settings it is honouring, would be a worse
+	// answer than the warning it already gave.
+	for _, key := range unknown {
+		origin, _ := res.Origins.At(key)
 		res.Warnings = append(res.Warnings, Warning{
-			Origin:  res.Origins[key],
+			Origin:  origin,
 			Key:     key,
 			Message: "unknown setting, ignored",
 		})
