@@ -1601,6 +1601,7 @@ config can override one model without restating providers.
 {
   "$schema": "https://rasp.dev/schema.json",
   "model": "anthropic/claude-opus-5",
+  "small_model": "anthropic/claude-haiku-4-5",   // compaction and session titles; see §11
   "mode": "manual",
 
   "providers": {
@@ -1930,6 +1931,18 @@ func shouldCompact(used, contextWindow, maxOutput int) bool {
 
 The summarization call sets no cache breakpoints and uses a fresh session ID — standalone, and
 it should not pollute the cache.
+
+**It also uses `small_model`, not the main one.** Compaction is mechanical work over a large
+number of tokens, and so is generating a session title; neither needs the model that reasons
+about code (internals §6.2). Because these calls carry their own context rather than extending
+the conversation, using a different model here costs nothing in cache terms — which is exactly
+what makes this the only model selection rasp does. It is not routing: nothing is classified and
+nothing is guessed. The job is known at the call site.
+
+`small_model` is optional and falls back to `model` when unset, so the feature is invisible to
+anyone who never opens the config. Shipping it unset would mean summarizing 100k tokens on a
+flagship model, repeatedly, on exactly the long sessions where compaction fires — so the default
+config writes it explicitly rather than leaving it to a fallback nobody sees.
 
 ---
 
