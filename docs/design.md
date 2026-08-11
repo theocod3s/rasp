@@ -1601,6 +1601,7 @@ config can override one model without restating providers.
 {
   "$schema": "https://rasp.dev/schema.json",
   "model": "anthropic/claude-opus-5",
+  "small_model": "anthropic/claude-haiku-4-5",   // compaction and session titles; see §11
   "mode": "manual",
 
   "providers": {
@@ -1775,7 +1776,7 @@ type Model struct {
 func (c *Catalog) Get(id string) (Model, bool)
 ```
 
-Four rules make this a dependency we can live with:
+Five rules make this a dependency we can live with:
 
 1. **Never on the startup path.** The fetch runs in a background goroutine after the first
    frame, bounded at **5s**. A slow or unreachable models.dev delays nothing the user sees.
@@ -1784,6 +1785,11 @@ Four rules make this a dependency we can live with:
 3. **ETag revalidation**, refreshed hourly at most, cached under `~/.cache/rasp/models.json`.
 4. **User config always wins**, so a wrong upstream entry is fixable locally in one line
    without waiting for anyone.
+5. **An id the catalog does not know is still sent.** `Get` returning `false` degrades the
+   context-window and cost display to conservative estimates, shown as estimates — it never
+   blocks a request. This is what lets `openrouter/auto` and any other provider-side router
+   work without rasp knowing routers exist, and it is rule 4's argument one level up: a model
+   we have never heard of must not require a rasp release to use.
 
 The honest cost: correctness now depends on a third-party file. pi's own catalog generator
 carries dozens of hand-written corrections to models.dev data — the clearest available evidence
@@ -1925,6 +1931,18 @@ func shouldCompact(used, contextWindow, maxOutput int) bool {
 
 The summarization call sets no cache breakpoints and uses a fresh session ID — standalone, and
 it should not pollute the cache.
+
+**It also uses `small_model`, not the main one.** Compaction is mechanical work over a large
+number of tokens, and so is generating a session title; neither needs the model that reasons
+about code (internals §6.2). Because these calls carry their own context rather than extending
+the conversation, using a different model here costs nothing in cache terms — which is exactly
+what makes this the only model selection rasp does. It is not routing: nothing is classified and
+nothing is guessed. The job is known at the call site.
+
+`small_model` is optional and falls back to `model` when unset, so the feature is invisible to
+anyone who never opens the config. Shipping it unset would mean summarizing 100k tokens on a
+flagship model, repeatedly, on exactly the long sessions where compaction fires — so the default
+config writes it explicitly rather than leaving it to a fallback nobody sees.
 
 ---
 
