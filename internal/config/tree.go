@@ -34,7 +34,16 @@ func jsonNumber(n int) json.Number {
 // and a syntax error can be reported at the line and column they would look at.
 // Stripping is string-aware: the `//` in a URL is not a comment.
 func decodeJSONC(src []byte, path string) (tree, error) {
-	dec := json.NewDecoder(bytes.NewReader(jsonc.ToJSON(src)))
+	stripped := jsonc.ToJSON(src)
+
+	// A file holding nothing but whitespace and comments overrides nothing,
+	// which is the same thing an absent file says. `touch .rasp/config.json`
+	// is not a mistake worth refusing to start over.
+	if len(bytes.TrimSpace(stripped)) == 0 {
+		return tree{}, nil
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(stripped))
 	dec.UseNumber()
 
 	var t tree

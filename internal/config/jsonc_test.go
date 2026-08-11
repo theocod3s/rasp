@@ -122,15 +122,46 @@ func TestSyntaxErrorNamesTheLine(t *testing.T) {
 	}
 }
 
-// TestUnterminatedBlockCommentFails guards the direction that matters: a
-// comment that never closes must not swallow the rest of the file quietly.
-func TestUnterminatedBlockCommentFails(t *testing.T) {
-	_, err := config.Load(config.Sources{
-		GlobalPath: filepath.Join(t.TempDir(), config.File),
-		ProjectDir: project(t, "{\n  \"model\": \"a/b\"\n  /* never closed\n}"),
-		Getenv:     env{}.lookup,
-	})
-	if err == nil {
-		t.Fatal("Load succeeded on a file with an unterminated block comment")
+// TestMalformedFilesAreRejected guards the direction that matters. Each of
+// these could be read as "nothing to add" by a tolerant parser, and each is
+// someone's config not being applied.
+func TestMalformedFilesAreRejected(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+	}{
+		{"unterminated block comment", "{\n  \"model\": \"a/b\"\n  /* never closed\n}"},
+		{"a top-level array", `["model", "a/b"]`},
+		{"a top-level null", `null`},
+		{"a second document", "{\"model\": \"a/b\"}\n{\"mode\": \"plan\"}"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := project(t, tc.file)
+			_, err := config.Load(config.Sources{
+				GlobalPath: filepath.Join(t.TempDir(), config.File),
+				ProjectDir: dir,
+				Getenv:     env{}.lookup,
+			})
+			if err == nil {
+				t.Fatal("Load succeeded")
+			}
+			if want := filepath.Join(dir, ".rasp", config.File); !strings.Contains(err.Error(), want) {
+				t.Errorf("error does not name the file:\n%s", err)
+			}
+		})
+	}
+}
+
+// TestAnEmptyFileOverridesNothing. A file holding only whitespace or comments
+// says exactly what an absent file says, and `touch .rasp/config.json` is not
+// a reason to refuse to start.
+func TestAnEmptyFileOverridesNothing(t *testing.T) {
+	for _, file := range []string{"", "\n\n", "// nothing here yet\n"} {
+		res := load(t, config.Sources{ProjectDir: project(t, file)})
+		if got := res.Config.Model; got != "anthropic/claude-opus-5" {
+			t.Errorf("model = %q for file %q, want the default to stand", got, file)
+		}
 	}
 }

@@ -128,6 +128,7 @@ internal/
 | `session` | JSONL read/append, atomic write, listing | Compaction. Message semantics |
 | `compact` | Estimation, pruning, summarization | Storage. It transforms `[]Entry` and returns a new one |
 | `prompt` | Assembling ordered blocks with cache flags | Provider-specific cache syntax; the adapter applies that |
+| `config` | The precedence chain, the deep merge, and the origin of every resolved value | Any behaviour a setting controls — it resolves values and never acts on them. And the `Mode` *type*: `permission` owns that (§7.1), so config knows only the names, since importing it would make config non-leaf |
 | `tui` | All rendering and input | Any business logic. If it needs a decision, it asks `agent` or `permission` |
 
 **The warning worth heeding:** pi's `agent-session.ts` is 3,342 lines — a carefully layered
@@ -1602,7 +1603,7 @@ The [teaching doc](internals.md) covers authoring them; this is the mechanism.
 ### Precedence
 
 ```
-1. Command-line flags              --model, --mode, --provider
+1. Command-line flags              --model, --mode
 2. Environment                     RASP_MODEL, ANTHROPIC_API_KEY, ...
 3. Project config                  ./.rasp/config.json   (+ ./.mcp.json)
 4. Global config                   ~/.config/rasp/config.json
@@ -1611,6 +1612,11 @@ The [teaching doc](internals.md) covers authoring them; this is the mechanism.
 
 Later entries lose. Merge is per-key deep merge, not whole-object replacement, so a project
 config can override one model without restating providers.
+
+**There is no `--provider`.** A model id carries its provider — `anthropic/claude-opus-5`,
+`openrouter/auto` — so a separate flag would be a second way to say the same thing and the
+first way to contradict it. Whichever won, the other would be a setting that reads as applied
+and is not.
 
 > **`--yolo` is deliberately absent from that list.** It is not a config value that happens to
 > sit at the top of a precedence chain — it is a flag that arms the rung-0 bypass in §7.7,
