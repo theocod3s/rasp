@@ -56,8 +56,10 @@ mutations that compile before the named test could be seen to fail. If your brea
 build error, it is the compiler that caught you, not the check.
 
 Once there is more than a handful, script it: apply one mutation, run the tests, restore, and
-print caught/not-caught per case. M0-04 ran eighteen that way in under a minute, which is the
-difference between doing this for the two obvious guards and doing it for all of them.
+print caught/not-caught per case. M0-04 ran twenty-four that way in under a minute, which is the
+difference between doing this for the two obvious guards and doing it for all of them. **Restore
+by writing back the bytes you replaced** — never `git checkout -- .`, which resets the whole tree
+to HEAD and takes every other uncommitted change in the working directory with it. It did.
 
 Then `just ci` — fmt-check, vet, build, test, race. Run it before pushing, not after.
 
