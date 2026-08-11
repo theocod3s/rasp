@@ -108,10 +108,17 @@ what the work is and where it stands.
 
 ## Conventions
 
-- **Report a finished task in a few lines.** What changed, and anything that genuinely needs a
-  decision. Not the reasoning, the verification narrative, or every caveat noticed along the way —
-  the reader asks when they want more. Detail earns its place *before* the work, or when something
-  failed, is uncertain, or went differently than asked. Success is the case that should be short.
+- **Report a finished task in a few plain sentences.** What changed, and anything that genuinely
+  needs a decision. Not the reasoning, the verification narrative, or every caveat noticed along
+  the way — the reader asks when they want more. Detail earns its place *before* the work, or when
+  something failed, is uncertain, or went differently than asked. Success is the case that should
+  be short.
+- **Write the summary for someone who wasn't watching.** Short is not the same as
+  understandable, and the failure mode here is a report that is technically complete and means
+  nothing to the person reading it: a wall of identifiers, flags and section numbers standing in
+  for sentences. Say what the change *does* before naming what it touched, and expand a term the
+  first time it appears rather than assuming it landed earlier. A summary that has to be
+  decoded has not been delivered.
 - Go 1.26 (`go.mod`). Any toolchain 1.21+ fetches it via `GOTOOLCHAIN` unless it is set to
   `local`.
 - `just ci` runs fmt-check, vet, build, test and race — run it before pushing. `just` is a
