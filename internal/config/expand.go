@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -137,14 +138,20 @@ func parseCommand(s string) (cmd string, n int, err error) {
 		}
 
 		switch c {
+		case '\\':
+			i++ // `$(echo \")` is valid shell; the quote it escapes opens nothing
 		case '\'', '"':
 			quote = c
 		case '(':
 			depth++
 		case ')':
-			if depth--; depth == 0 {
-				return s[2:i], i + 1, nil
+			if depth--; depth != 0 {
+				continue
 			}
+			if cmd := s[2:i]; strings.TrimSpace(cmd) != "" {
+				return cmd, i + 1, nil
+			}
+			return "", 0, errors.New("$() has no command in it")
 		}
 	}
 
@@ -153,7 +160,7 @@ func parseCommand(s string) (cmd string, n int, err error) {
 
 // parseBraced reads `${…}` from the front of s.
 func parseBraced(s string) (seg segment, n int, err error) {
-	end := strings.IndexByte(s, '}')
+	end := matchingBrace(s)
 	if end < 0 {
 		return segment{}, 0, fmt.Errorf("unterminated %q — no closing brace", "${")
 	}
@@ -188,6 +195,38 @@ func parseBraced(s string) (seg segment, n int, err error) {
 		return segment{}, 0, fmt.Errorf("${%s:%c…} is not an operator; want %q or %q",
 			name, op, ":-", ":?")
 	}
+}
+
+// matchingBrace returns the index of the `}` closing the `${` at the front of
+// s, or -1 when there is none.
+//
+// Braces nest, because a default is a value in its own right: `${A:-${B}}`
+// means "A, or B". Taking the first `}` instead would end the reference in the
+// middle of its own default and leave the rest as literal text — which for a
+// credential means handing the caller the nine characters `${B}` and calling
+// it a key. A `$(…)` is stepped over whole, since a brace inside a command is
+// the shell's to read and not ours.
+func matchingBrace(s string) int {
+	depth := 0
+	for i := 1; i < len(s); i++ {
+		if s[i] == '$' && i+1 < len(s) && s[i+1] == '(' {
+			_, n, err := parseCommand(s[i:])
+			if err != nil {
+				return -1
+			}
+			i += n - 1
+			continue
+		}
+		switch s[i] {
+		case '{':
+			depth++
+		case '}':
+			if depth--; depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // leadingName returns the environment-variable name at the front of s, or ""

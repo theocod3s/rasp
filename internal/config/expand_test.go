@@ -316,3 +316,163 @@ func TestExpandingAnAbsentKeyFails(t *testing.T) {
 		t.Error("Expand succeeded for a key that is not in the config")
 	}
 }
+
+// TestADefaultIsAValueNotText. `${A:-${B}}` means "A, or B". Taking the first
+// closing brace instead ends the reference inside its own default and leaves
+// the rest as literal text — which for a credential means handing the caller
+// the nine characters `${B}` and calling it a key. The round-trip fuzz
+// property cannot catch this: the wrong parse is a stable one.
+func TestADefaultIsAValueNotText(t *testing.T) {
+	environ := env{"TEAM_KEY": "sk-team", "KEY": "sk-set"}
+	run := func(_ context.Context, command string) ([]byte, error) {
+		return []byte("ran: " + command), nil
+	}
+
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{"a reference inside a default", "${MISSING:-${TEAM_KEY}}", "sk-team"},
+		{"a bare reference inside a default", "${MISSING:-$TEAM_KEY}", "sk-team"},
+		{"a command inside a default", "${MISSING:-$(op read k)}", "ran: op read k"},
+		{"an escape inside a default", "${MISSING:-a$$b}", "a$b"},
+		{"two levels", "${MISSING:-${ALSO_MISSING:-${TEAM_KEY}}}", "sk-team"},
+		{"text around a nested reference", "${MISSING:-pre-${TEAM_KEY}-post}", "pre-sk-team-post"},
+		{"the default is not reached when set", "${KEY:-${TEAM_KEY}}", "sk-set"},
+		{"a brace inside a nested command", "${MISSING:-$(echo })}", "ran: echo }"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := expanderOver(t, tc.value, environ, config.ExpanderOptions{Run: run})
+			if got := expand(t, e); got != tc.want {
+				t.Errorf("Expand(%q) = %q, want %q", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAnUnresolvableNestedDefaultFails, rather than falling back to the text.
+func TestAnUnresolvableNestedDefaultFails(t *testing.T) {
+	e := expanderOver(t, "${MISSING:-${ALSO_MISSING}}", env{}, config.ExpanderOptions{})
+
+	_, err := e.Expand(t.Context(), apiKey)
+	if err == nil {
+		t.Fatal("Expand succeeded although neither variable is set")
+	}
+	if !strings.Contains(err.Error(), "ALSO_MISSING") {
+		t.Errorf("error does not name the inner variable:\n%s", err)
+	}
+}
+
+// TestACommandThatPrintsNothingFails. Succeeding while printing nothing is the
+// command form of the empty variable this resolver already refuses, and it is
+// the likelier of the two: `op read` on an empty field exits 0.
+func TestACommandThatPrintsNothingFails(t *testing.T) {
+	for _, value := range []string{"$(true)", "$(printf '')"} {
+		e := expanderOver(t, value, env{}, config.ExpanderOptions{})
+
+		got, err := e.Expand(t.Context(), apiKey)
+		if err == nil {
+			t.Errorf("Expand(%q) = %q, want an error rather than an empty credential", value, got)
+			continue
+		}
+		if !strings.Contains(err.Error(), "printed nothing") {
+			t.Errorf("error does not say what happened:\n%s", err)
+		}
+	}
+}
+
+// TestAnEmptyCommandIsRejected: `$()` parses as a command and would otherwise
+// be handed to `sh -c ""`.
+func TestAnEmptyCommandIsRejected(t *testing.T) {
+	e := expanderOver(t, "$()", env{}, config.ExpanderOptions{})
+
+	if _, err := e.Expand(t.Context(), apiKey); err == nil {
+		t.Error("Expand accepted $() as a command")
+	}
+}
+
+// TestAnEmptyMessageStillSaysSomething. `${VAR:?}` is legal and carries no
+// message; an error rendering as a bare colon tells the reader nothing.
+func TestAnEmptyMessageStillSaysSomething(t *testing.T) {
+	e := expanderOver(t, "${MISSING:?}", env{}, config.ExpanderOptions{})
+
+	_, err := e.Expand(t.Context(), apiKey)
+	if err == nil {
+		t.Fatal("Expand succeeded with the variable unset")
+	}
+	if !strings.Contains(err.Error(), "MISSING") {
+		t.Errorf("error does not name the variable:\n%s", err)
+	}
+}
+
+// TestAnEscapedQuoteInACommand. `$(echo \")` is valid shell, and the quote it
+// escapes must not open a run that never closes.
+func TestAnEscapedQuoteInACommand(t *testing.T) {
+	var got string
+	e := expanderOver(t, `$(echo \" done)`, env{}, config.ExpanderOptions{
+		Run: func(_ context.Context, command string) ([]byte, error) {
+			got = command
+			return []byte("ok"), nil
+		},
+	})
+	expand(t, e)
+
+	if want := `echo \" done`; got != want {
+		t.Errorf("ran %q, want %q", got, want)
+	}
+}
+
+// TestACancelledTurnIsNotReportedAsATimeout. Both contexts are cancelled when
+// a turn is interrupted, so checking the derived one first would tell a user
+// who pressed Esc that their credential helper is slow.
+func TestACancelledTurnIsNotReportedAsATimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	e := expanderOver(t, "$(op read op://vault/key)", env{}, config.ExpanderOptions{
+		Run: func(ctx context.Context, _ string) ([]byte, error) {
+			cancel()
+			return nil, ctx.Err()
+		},
+	})
+
+	_, err := e.Expand(ctx, apiKey)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want it to carry context.Canceled", err)
+	}
+
+	// A cancellation propagates as itself. Dressing it up as a failure of the
+	// command — "$(op read …) failed" — blames the credential helper for the
+	// user's own Esc, and it is the wording the timeout branch would reach for
+	// if the parent were not checked first.
+	for _, unwanted := range []string{"did not finish", "failed", "op read"} {
+		if strings.Contains(err.Error(), unwanted) {
+			t.Errorf("a cancelled turn was reported as %q:\n%s", unwanted, err)
+		}
+	}
+}
+
+// TestNestingIsBounded. Each level parses a strict substring of the one above,
+// so no config anyone wrote on purpose reaches this — it is here because the
+// input is a file, and an error is a better answer than a stack overflow.
+func TestNestingIsBounded(t *testing.T) {
+	const depth = 64
+
+	var value strings.Builder
+	for i := range depth {
+		fmt.Fprintf(&value, "${A%d:-", i)
+	}
+	value.WriteString("fallback")
+	value.WriteString(strings.Repeat("}", depth))
+
+	e := expanderOver(t, value.String(), env{}, config.ExpanderOptions{})
+
+	_, err := e.Expand(t.Context(), apiKey)
+	if err == nil {
+		t.Fatal("Expand followed an unbounded chain of defaults")
+	}
+	if !strings.Contains(err.Error(), "nested") {
+		t.Errorf("error does not say what the limit was:\n%s", err)
+	}
+}

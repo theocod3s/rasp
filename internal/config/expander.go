@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -116,6 +114,23 @@ func (e *Expander) Expand(ctx context.Context, key string) (string, error) {
 	if err != nil {
 		return fail(err)
 	}
+	expanded, err := e.expandSegments(ctx, key, segs, 0)
+	if err != nil {
+		return fail(err)
+	}
+	return expanded, nil
+}
+
+// maxDepth bounds the recursion through nested defaults. Each level parses a
+// strict substring of the one above, so this cannot be reached by a config
+// anyone wrote on purpose — it is here because the input is a file and a
+// crash is a worse answer than an error.
+const maxDepth = 32
+
+func (e *Expander) expandSegments(ctx context.Context, key string, segs []segment, depth int) (string, error) {
+	if depth > maxDepth {
+		return "", fmt.Errorf("references nested more than %d deep", maxDepth)
+	}
 
 	var out strings.Builder
 	for _, seg := range segs {
@@ -124,16 +139,16 @@ func (e *Expander) Expand(ctx context.Context, key string) (string, error) {
 			out.WriteString(seg.text)
 
 		case segVar:
-			text, err := e.expandVar(seg)
+			text, err := e.expandVar(ctx, key, seg, depth)
 			if err != nil {
-				return fail(err)
+				return "", err
 			}
 			out.WriteString(text)
 
 		case segCommand:
 			text, err := e.expandCommand(ctx, key, seg.text)
 			if err != nil {
-				return fail(err)
+				return "", err
 			}
 			out.WriteString(text)
 		}
@@ -146,7 +161,7 @@ func (e *Expander) Expand(ctx context.Context, key string) (string, error) {
 // A variable that is set but empty counts as unset, which is both the shell's
 // rule for the `:` operators and the rule the environment layer already
 // applies when it decides whether a variable contributed anything.
-func (e *Expander) expandVar(seg segment) (string, error) {
+func (e *Expander) expandVar(ctx context.Context, key string, seg segment, depth int) (string, error) {
 	value, ok := e.getenv(seg.text)
 	if ok && value != "" {
 		return value, nil
@@ -154,8 +169,21 @@ func (e *Expander) expandVar(seg segment) (string, error) {
 
 	switch seg.op {
 	case '-':
-		return seg.arg, nil
+		// The default is a value in its own right, not text: `${A:-${B}}`
+		// means "A, or B", and `${A:-$(op read …)}` means "A, or ask the
+		// vault". Passing it through unexpanded would hand the caller the
+		// nine characters `${B}` as a credential — the exact failure this
+		// package refuses `${VAR:=x}` to avoid.
+		segs, err := parseValue(seg.arg)
+		if err != nil {
+			return "", fmt.Errorf("in the default for $%s: %w", seg.text, err)
+		}
+		return e.expandSegments(ctx, key, segs, depth+1)
+
 	case '?':
+		if seg.arg == "" {
+			return "", unsetError(seg.text)
+		}
 		return "", errors.New(seg.arg)
 	default:
 		// A bare reference to an unset variable is an error rather than the
@@ -164,13 +192,32 @@ func (e *Expander) expandVar(seg segment) (string, error) {
 		// one is never what anyone meant — it comes back later as a 401
 		// pointing at nothing, which is the failure `${VAR:?msg}` exists to
 		// turn into a sentence. Write `${VAR:-}` to ask for empty on purpose.
-		return "", fmt.Errorf("$%s is not set in the environment", seg.text)
+		return "", unsetError(seg.text)
 	}
+}
+
+// unsetError is what an unset variable says when the config gave no message of
+// its own. `${VAR:?}` is legal and carries none, and an error rendering as a
+// bare colon tells the reader nothing at all.
+func unsetError(name string) error {
+	return fmt.Errorf("$%s is not set in the environment", name)
 }
 
 // expandCommand runs one `$(command)`, or refuses to.
 func (e *Expander) expandCommand(ctx context.Context, key, command string) (string, error) {
-	if origin := e.origins[key]; origin.Layer == LayerProject {
+	origin, known := e.origins.At(key)
+	switch {
+	case !known:
+		// A guard whose signal is missing must refuse, not proceed. The zero
+		// Origin reads as LayerDefault, so looking the layer up directly
+		// would have let a command run precisely when nothing could say where
+		// it came from (AGENTS.md: a check that cannot run must fail).
+		return "", fmt.Errorf(
+			"refusing to run %s: nothing records which config set this value, and a command "+
+				"that may have arrived with a repository is not one to run on a guess",
+			strconv.Quote("$("+command+")"))
+
+	case origin.Layer == LayerProject:
 		return "", fmt.Errorf(
 			"refusing to run %s from a project config.\n"+
 				"A project config arrives with `git clone`, so running a command from one needs "+
@@ -184,12 +231,19 @@ func (e *Expander) expandCommand(ctx context.Context, key, command string) (stri
 		return value, nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	parent := ctx
+	ctx, cancel := context.WithTimeout(parent, commandTimeout)
 	defer cancel()
 
 	out, err := e.run(ctx, command)
 	if err != nil {
-		if ctx.Err() != nil {
+		// The parent is checked first. Both contexts are cancelled when a turn
+		// is interrupted, and reporting that as a ten-second timeout would
+		// tell a user who pressed Esc that their credential helper is slow.
+		if parentErr := parent.Err(); parentErr != nil {
+			return "", parentErr
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return "", fmt.Errorf("$(%s) did not finish within %s", command, commandTimeout)
 		}
 		return "", fmt.Errorf("$(%s) failed: %w", command, err)
@@ -198,6 +252,14 @@ func (e *Expander) expandCommand(ctx context.Context, key, command string) (stri
 	// Trimmed, because every credential helper worth using prints a trailing
 	// newline and no API accepts one.
 	value := strings.TrimSpace(string(out))
+
+	// Succeeding while printing nothing is the command form of the empty
+	// variable this resolver already refuses, and it is the likelier of the
+	// two: `op read` on an empty field exits 0, and so does a helper that
+	// takes a path where it writes no output.
+	if value == "" {
+		return "", fmt.Errorf("$(%s) succeeded but printed nothing", command)
+	}
 
 	// Only successes are cached. A failure is usually a locked vault or a
 	// helper that is not signed in, and both are fixed while rasp is running —
@@ -224,12 +286,7 @@ func (e *Expander) cached(command string) (string, bool) {
 // runCommand is the default runner: the command as a shell would read it, so
 // that `$(cat secret | head -1)` means what it looks like.
 func runCommand(ctx context.Context, command string) ([]byte, error) {
-	shell, flag := "sh", "-c"
-	if runtime.GOOS == "windows" {
-		shell, flag = "cmd", "/c"
-	}
-
-	cmd := exec.CommandContext(ctx, shell, flag, command)
+	cmd := shellCommand(ctx, command)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
