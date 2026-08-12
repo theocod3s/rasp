@@ -73,12 +73,24 @@ Body shape that has worked:
   is actually for.
 - Anything deliberately left out, and why.
 
+**Keep it short enough that the reader reaches the diff.** M0-04's body ran well past a thousand
+words, re-arguing reasoning that was already in the commit messages and the code comments — and
+a description nobody finishes is one that fails at the only job it has, which is to get someone
+into the diff with the right questions. A line or two per criterion. Name a judgement call and
+its alternative; don't litigate it. If a decision needs a paragraph to defend, that paragraph
+belongs in the code, where the next reader is actually standing.
+
 Reference the work by milestone ID (`M0-02`), never the Linear key (`THE-6`) — the issue title
 carries the ID, and git history outlives the tracker.
 
 Don't merge your own PR unmarked. Run `/code-review`, and treat its findings as claims to check
 rather than facts — it has a real false-positive rate, and rejecting a wrong finding with
 reasoning is as valuable as fixing a right one.
+
+**Then remember the fixes are code nobody has reviewed.** M0-04's first pass produced 345 lines
+of them, and a second pass over just that delta found four more bugs — including the worst one
+in the ticket, sitting in code written entirely in response to the first review. If the findings
+come to more than a one-line correction, review again, scoped to what changed.
 
 ## 6. Merge and close out
 
