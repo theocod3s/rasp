@@ -48,6 +48,19 @@ then restore. This is the single highest-value habit in this repo: it is how all
 bugs behind AGENTS.md's *"a check that cannot run must fail, not pass"* were caught, and none
 of them was visible from a green run.
 
+The trap inside that habit: **a break that stops the package compiling proves nothing.** M0-04
+replaced the string-aware JSONC comment stripper with a naive one and the suite went red — but
+red from the build, so no test ran and none was shown to catch anything. A mode-name check
+broken with `if false {` did the same by leaving an import unused. Both had to be redone as
+mutations that compile before the named test could be seen to fail. If your break produces a
+build error, it is the compiler that caught you, not the check.
+
+Once there is more than a handful, script it: apply one mutation, run the tests, restore, and
+print caught/not-caught per case. M0-04 ran twenty-four that way in under a minute, which is the
+difference between doing this for the two obvious guards and doing it for all of them. **Restore
+by writing back the bytes you replaced** — never `git checkout -- .`, which resets the whole tree
+to HEAD and takes every other uncommitted change in the working directory with it. It did.
+
 Then `just ci` — fmt-check, vet, build, test, race. Run it before pushing, not after.
 
 ## 5. Open the PR
@@ -60,12 +73,24 @@ Body shape that has worked:
   is actually for.
 - Anything deliberately left out, and why.
 
+**Keep it short enough that the reader reaches the diff.** M0-04's body ran well past a thousand
+words, re-arguing reasoning that was already in the commit messages and the code comments — and
+a description nobody finishes is one that fails at the only job it has, which is to get someone
+into the diff with the right questions. A line or two per criterion. Name a judgement call and
+its alternative; don't litigate it. If a decision needs a paragraph to defend, that paragraph
+belongs in the code, where the next reader is actually standing.
+
 Reference the work by milestone ID (`M0-02`), never the Linear key (`THE-6`) — the issue title
 carries the ID, and git history outlives the tracker.
 
 Don't merge your own PR unmarked. Run `/code-review`, and treat its findings as claims to check
 rather than facts — it has a real false-positive rate, and rejecting a wrong finding with
 reasoning is as valuable as fixing a right one.
+
+**Then remember the fixes are code nobody has reviewed.** M0-04's first pass produced 345 lines
+of them, and a second pass over just that delta found four more bugs — including the worst one
+in the ticket, sitting in code written entirely in response to the first review. If the findings
+come to more than a one-line correction, review again, scoped to what changed.
 
 ## 6. Merge and close out
 
@@ -74,9 +99,8 @@ only record of where the work stands, so an issue left In Progress is what will 
 next session.
 
 If the ticket's shape changed while you worked it — a criterion that turned out wrong, a
-decision taken mid-flight — edit the issue description to match what was actually built. This
-is the step that used to be "sync the two copies", and it is worth keeping now there is one:
-a ticket that no longer describes its own outcome is worse than no ticket, because it reads
+decision taken mid-flight — edit the issue description to match what was actually built. A
+ticket that no longer describes its own outcome is worse than no ticket, because it reads
 as authoritative.
 
 ## 7. Report back briefly
