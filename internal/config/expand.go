@@ -205,8 +205,12 @@ func leadingName(s string) string {
 	return s
 }
 
-// needsExpansion reports whether a value has anything to substitute. It is the
-// fast path: almost every config value is a literal.
+// needsExpansion reports whether a value has anything to substitute.
+//
+// It is an optimisation and nothing more: parseValue returns a dollar-free
+// value as a single literal segment, so skipping it changes no behaviour, only
+// the allocation. Almost every config value is a literal, which is what makes
+// the check worth its line.
 func needsExpansion(value string) bool {
 	return strings.ContainsRune(value, '$')
 }

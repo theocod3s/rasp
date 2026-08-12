@@ -295,9 +295,10 @@ func TestConcurrentExpansionIsSafe(t *testing.T) {
 	wg.Wait()
 }
 
-// TestALiteralIsNotParsed. Almost every value is a literal, and one containing
-// a brace or a parenthesis must not be dragged through the grammar.
-func TestALiteralIsNotParsed(t *testing.T) {
+// TestALiteralWithGrammarCharactersIsUnchanged. Braces, parentheses and a `:-`
+// are ordinary characters in a generated secret, and the grammar must not
+// reach for them when there is no dollar to start it.
+func TestALiteralWithGrammarCharactersIsUnchanged(t *testing.T) {
 	const value = "sk-ant-a{b}c(d)e:-f"
 	e := expanderOver(t, value, env{}, config.ExpanderOptions{})
 
