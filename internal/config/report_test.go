@@ -119,7 +119,7 @@ func TestAValueOfTheWrongSortNamesItsFile(t *testing.T) {
 		{
 			name: "a string where a number belongs",
 			file: `{"mcp": {"max_total_tools": "sixty"}}`,
-			want: "mcp.max_total_tools: want a number, got a string",
+			want: "mcp.max_total_tools: want a whole number, got a string",
 		},
 		{
 			name: "a string where an array belongs, under a map key",
@@ -130,6 +130,19 @@ func TestAValueOfTheWrongSortNamesItsFile(t *testing.T) {
 			name: "an object where a string belongs",
 			file: `{"model": {"name": "a/b"}}`,
 			want: "model: want a string, got an object",
+		},
+		{
+			// A stray decimal point is well-formed JSON and a number, so only
+			// a check that knows the field is an integer catches it. Without
+			// one it reaches encoding/json, whose error names a Go field.
+			name: "a fractional number where a whole one belongs",
+			file: `{"context": {"reserve_tokens": 16.5}}`,
+			want: "context.reserve_tokens: want a whole number, got 16.5",
+		},
+		{
+			name: "a number past what an int can hold",
+			file: `{"mcp": {"max_total_tools": 99999999999999999999}}`,
+			want: "mcp.max_total_tools: want a whole number, got 99999999999999999999",
 		},
 	}
 
@@ -154,15 +167,64 @@ func TestAValueOfTheWrongSortNamesItsFile(t *testing.T) {
 	}
 }
 
-// TestNullIsAcceptedAnywhere. JSON allows null in any position and the decoder
-// reads it as a zero value, so the shape check must not be stricter than the
-// decoder it stands in front of.
-func TestNullIsAcceptedAnywhere(t *testing.T) {
+// TestNullMeansNotSet. JSON allows null anywhere and the decoder reads it as a
+// zero value, so honouring it as a value would let `"mode": null` erase a
+// built-in default and hand on a mode that is none of the four — silently,
+// while the neighbouring typo `"manaul"` refuses to start outright. It reads
+// as "nothing" to anyone writing it, so it is treated as the key being absent.
+func TestNullMeansNotSet(t *testing.T) {
 	res := load(t, config.Sources{
-		GlobalPath: global(t, `{"model": null, "context": {"files": null}}`),
+		GlobalPath: global(t, `{
+		  "mode": null,
+		  "model": null,
+		  "context": {"files": null},
+		  "providers": {"anthropic": {"api_key": null}}
+		}`),
 	})
+
 	if len(res.Warnings) > 0 {
 		t.Errorf("a null drew a warning: %v", res.Warnings)
+	}
+	if got := res.Config.Mode; got != config.ModeManual {
+		t.Errorf("mode = %q, want the built-in default to survive a null", got)
+	}
+	if got := res.Config.Model; got != "anthropic/claude-opus-5" {
+		t.Errorf("model = %q, want the built-in default to survive a null", got)
+	}
+	if got := res.Config.Context.Files; len(got) != 2 {
+		t.Errorf("context.files = %v, want the built-in default to survive a null", got)
+	}
+	if _, ok := res.Origins["providers.anthropic.api_key"]; ok {
+		t.Error("a null created a setting that was never set")
+	}
+}
+
+// TestATypoedModeNameIsReported. `modes` looks like a free-form map, but its
+// keys are the four mode names. A typo there is an override that reads as
+// applied and is never consulted — and it lands on the permission table, where
+// believing a deny is in force and being wrong is the expensive direction.
+func TestATypoedModeNameIsReported(t *testing.T) {
+	res := load(t, config.Sources{
+		GlobalPath: global(t, `{"modes": {
+		  "manaul": {"bash": {"rm *": "deny"}},
+		  "plan": {"bash": {"just *": "allow"}}
+		}}`),
+	})
+
+	var warned bool
+	for _, w := range res.Warnings {
+		if w.Key == "modes.manaul" {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("modes.manaul drew no warning; got %v", res.Warnings)
+	}
+	if _, ok := res.Config.Modes["manaul"]; ok {
+		t.Error("modes.manaul survived into the resolved config")
+	}
+	if got := res.Config.Modes["plan"].Bash["just *"]; got != "allow" {
+		t.Errorf("modes.plan.bash[just *] = %q, want the real mode untouched", got)
 	}
 }
 

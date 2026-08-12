@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -15,6 +17,7 @@ const (
 	kindObject
 	kindString
 	kindNumber
+	kindInteger
 	kindBool
 	kindArray
 )
@@ -27,6 +30,8 @@ func (k kind) String() string {
 		return "a string"
 	case kindNumber:
 		return "a number"
+	case kindInteger:
+		return "a whole number"
 	case kindBool:
 		return "a boolean"
 	case kindArray:
@@ -80,7 +85,23 @@ const wildcardKey = "*"
 // configSpec is derived from Config's own struct tags, so it cannot drift from
 // what the decoder will actually accept.
 var configSpec = sync.OnceValue(func() *keySpec {
-	return specOf(reflect.TypeFor[Config]())
+	spec := specOf(reflect.TypeFor[Config]())
+
+	// `modes` is a Go map, so reflection reads its keys as the user's to
+	// invent. They are not: they are the four mode names. Left as a wildcard,
+	// `modes.manaul` would load clean and its rules would never be consulted
+	// — a permission override that reads as applied and is not, which is the
+	// expensive direction to be wrong in. Narrowing the spec routes a typo
+	// through the unknown-key warning that already exists rather than adding a
+	// second mechanism beside it.
+	if modes := spec.children["modes"]; modes != nil {
+		perMode := modes.children[wildcardKey]
+		modes.children = make(map[string]*keySpec, len(modeNames))
+		for _, name := range modeNames {
+			modes.children[name] = perMode
+		}
+	}
+	return spec
 })
 
 func specOf(t reflect.Type) *keySpec {
@@ -120,8 +141,10 @@ func specOf(t reflect.Type) *keySpec {
 		return &keySpec{kind: kindBool}
 
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-		reflect.Float32, reflect.Float64:
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return &keySpec{kind: kindInteger}
+
+	case reflect.Float32, reflect.Float64:
 		return &keySpec{kind: kindNumber}
 
 	default:
@@ -133,7 +156,24 @@ func specOf(t reflect.Type) *keySpec {
 type mismatch struct {
 	key  string
 	want kind
-	got  kind
+
+	// got names what arrived. It is a kind ("a string") except where the kind
+	// is not the problem — `16.5` where a whole number belongs is a number,
+	// and saying so would explain nothing — in which case it is the value.
+	got string
+}
+
+// fitsInteger reports whether a decoded JSON number is a whole number Go can
+// hold in an int. A stray decimal point and a value past the 64-bit range both
+// fail here, and both would otherwise reach encoding/json — whose error names
+// a Go field and never the file it came from.
+func fitsInteger(val any) bool {
+	num, ok := val.(json.Number)
+	if !ok {
+		return false
+	}
+	_, err := num.Int64()
+	return err == nil
 }
 
 // inspect walks the merged tree against Config's shape and reports what will
@@ -160,9 +200,21 @@ func inspect(t tree) (unknown []string, mismatched []mismatch) {
 			got, known := kindOf(node[key])
 			switch {
 			case !known || sub.kind == kindAny:
-				// null, or a key with no opinion about its contents.
+				// A key with no opinion about its contents. Nulls are gone by
+				// now — merge drops them — so `known` is defensive.
+			case sub.kind == kindInteger:
+				if got != kindNumber {
+					mismatched = append(mismatched, mismatch{joinPath(here), sub.kind, got.String()})
+					continue
+				}
+				if !fitsInteger(node[key]) {
+					mismatched = append(mismatched, mismatch{
+						joinPath(here), sub.kind, fmt.Sprint(node[key]),
+					})
+					continue
+				}
 			case got != sub.kind:
-				mismatched = append(mismatched, mismatch{joinPath(here), sub.kind, got})
+				mismatched = append(mismatched, mismatch{joinPath(here), sub.kind, got.String()})
 				continue
 			}
 

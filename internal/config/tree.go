@@ -19,6 +19,10 @@ import (
 // defaults alike — because the merge has to treat all five identically for the
 // precedence chain to be a single rule rather than five special cases. Typing
 // happens once, on the merged result.
+//
+// A tree never holds a null. Anything that builds one is responsible for that;
+// decodeJSONC is the only source that can produce one today, and dropNulls is
+// where it goes.
 type tree = map[string]any
 
 // jsonNumber makes a number that survives the round trip through the merged
@@ -79,7 +83,33 @@ func decodeJSONC(src []byte, path string) (tree, error) {
 			source: src,
 		}
 	}
+	dropNulls(t)
 	return t, nil
+}
+
+// dropNulls removes every null-valued key, because a null is "not set" — the
+// same thing leaving the key out says, and the same thing an empty environment
+// variable says.
+//
+// The alternative is that `"mode": null` quietly erases a built-in default and
+// hands on a mode that is none of the four, while the neighbouring typo
+// `"manaul"` refuses to start outright. That is a strange pair of behaviours
+// to explain, and the dangerous one is the silent half.
+//
+// It runs here rather than during the merge because the merge does not visit
+// every value: where one side has no object to descend into, a whole subtree
+// is assigned at once and any null inside it rides along.
+func dropNulls(t tree) {
+	for key, val := range t {
+		switch v := val.(type) {
+		case nil:
+			delete(t, key)
+		case tree:
+			// An object left empty is not removed: the user wrote the key, and
+			// `{"api_key": null}` should mean what `{}` means, not less.
+			dropNulls(v)
+		}
+	}
 }
 
 // syntaxOffset digs the byte offset out of an encoding/json error, or returns

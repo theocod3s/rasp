@@ -158,6 +158,32 @@ func TestEmptyEnvVarIsUnset(t *testing.T) {
 	}
 }
 
+// TestEmptyFlagValueIsUnset applies the same rule the environment gets, for
+// the same reason. `rasp --model "$MODEL"` in a script with MODEL unset is the
+// same accident as an exported empty variable, and reading it two different
+// ways would be a rule nobody could hold.
+func TestEmptyFlagValueIsUnset(t *testing.T) {
+	res := load(t, config.Sources{
+		ProjectDir: project(t, `{"model": "from/project"}`),
+		Flags:      map[string]string{"model": ""},
+	})
+
+	if got := res.Config.Model; got != "from/project" {
+		t.Errorf("model = %q, want the project value to stand against an empty --model", got)
+	}
+	if got := res.Origins["model"].Layer; got != config.LayerProject {
+		t.Errorf("origin layer = %v, want %v", got, config.LayerProject)
+	}
+
+	// And the layer reports itself as empty rather than as loaded-with-nothing.
+	i := slices.IndexFunc(res.Sources, func(s config.Source) bool {
+		return s.Origin.Layer == config.LayerFlag
+	})
+	if src := res.Sources[i]; src.Loaded {
+		t.Errorf("flag source = %+v, want it reported as contributing nothing", src)
+	}
+}
+
 // TestUnknownFlagIsRejected closes the gap between the flag table and the
 // command line. A flag nobody can place is a flag that silently does nothing.
 func TestUnknownFlagIsRejected(t *testing.T) {

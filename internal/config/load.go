@@ -305,17 +305,6 @@ func envLayer(getenv func(string) (string, bool)) ([]contribution, Source) {
 // flagLayer collects the flags that were set, one contribution each so an
 // origin can name `--mode` — which is what the user would change.
 func flagLayer(flags map[string]string) ([]contribution, Source, error) {
-	if len(flags) == 0 {
-		var candidates []string
-		for _, b := range FlagBindings() {
-			candidates = append(candidates, "--"+b.Flag)
-		}
-		return nil, Source{
-			Origin: Origin{Layer: LayerFlag, Detail: strings.Join(candidates, ", ")},
-			Note:   "none set",
-		}, nil
-	}
-
 	byFlag := map[string]FlagBinding{}
 	for _, b := range FlagBindings() {
 		byFlag[b.Flag] = b
@@ -330,6 +319,13 @@ func flagLayer(flags map[string]string) ([]contribution, Source, error) {
 		if !ok {
 			return nil, Source{}, fmt.Errorf("--%s is not a configuration flag", name)
 		}
+		// An empty value means "not set" here for the same reason it does in
+		// the environment: `rasp --model "$MODEL"` with MODEL unset is the
+		// same accident as an exported empty variable, and it would otherwise
+		// outrank every file in the chain while carrying no instruction.
+		if flags[name] == "" {
+			continue
+		}
 		t := tree{}
 		setPath(t, flags[name], strings.Split(b.Key, ".")...)
 		contributions = append(contributions, contribution{
@@ -337,6 +333,19 @@ func flagLayer(flags map[string]string) ([]contribution, Source, error) {
 			origin: Origin{Layer: LayerFlag, Detail: name},
 		})
 		set = append(set, "--"+name)
+	}
+
+	if len(set) == 0 {
+		// Reached both when no flag was given and when every one given was
+		// empty. A source that found nothing still says what it looked for.
+		var candidates []string
+		for _, b := range FlagBindings() {
+			candidates = append(candidates, "--"+b.Flag)
+		}
+		return nil, Source{
+			Origin: Origin{Layer: LayerFlag, Detail: strings.Join(candidates, ", ")},
+			Note:   "none set",
+		}, nil
 	}
 
 	return contributions, Source{
