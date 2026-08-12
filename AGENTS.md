@@ -132,6 +132,13 @@ what the work is and where it stands.
   nothing else. The §2 *table* is a separate, unenforced convention — it covers the packages worth
   calling out (14 of the 25), not every one, so add a row when the package has a boundary someone
   could plausibly get wrong.
+- **Always squash-merge a PR.** It is the only method GitHub will accept here — merge commits
+  and rebase merges are both disabled — and it is what keeps `main` linear. The consequence is
+  the part worth knowing: a squash collapses every commit on the branch into one, and GitHub's
+  default message concatenates them into something nobody can read. So **write the squash
+  message deliberately** (`gh pr merge --squash --subject … --body-file …`). The branch's own
+  commit messages are working notes; the squash message is the only one that survives, and it is
+  what a future bisect or `git log` actually lands on.
 - Refer to work items by their milestone ID — `M0-01`, `M1-09` — in commits, PR titles and
   bodies, and anything written back to Linear. Every Linear issue title carries its ID
   (`M0-02 · CI`), so the ID is the handle in both places, and it survives leaving Linear in a
