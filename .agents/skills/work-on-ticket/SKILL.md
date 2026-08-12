@@ -94,9 +94,9 @@ come to more than a one-line correction, review again, scoped to what changed.
 
 ## 6. Merge and close out
 
-Rebase-merge; `main` is linear. Then move the issue to Done in the same pass. Linear is the
-only record of where the work stands, so an issue left In Progress is what will mislead the
-next session.
+Squash-merge, with a message you wrote rather than the one GitHub concatenates — see the rule
+in `AGENTS.md`. Then move the issue to Done in the same pass. Linear is the only record of where
+the work stands, so an issue left In Progress is what will mislead the next session.
 
 If the ticket's shape changed while you worked it — a criterion that turned out wrong, a
 decision taken mid-flight — edit the issue description to match what was actually built. A
