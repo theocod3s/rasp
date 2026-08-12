@@ -1710,9 +1710,22 @@ One prompt then, shown before anything executes, listing the servers about to st
 commands about to run together. Not a second mechanism: the argument is the same argument, and
 a second prompt teaches the user to clear both without reading either.
 
-The approval is keyed to the file's **contents**, not its path — direnv's rule. Trusting a
-path once means a later `git pull` can change what runs without being asked again, which puts
-the hazard back exactly where it started.
+The approval is pinned to **what will actually execute** — a fingerprint over the set of
+`$(command)` strings and the `mcp.servers` entries. Not to the path, for direnv's reason:
+"trusted once" against a directory means a later `git pull` can change what runs without being
+asked again, which puts the hazard back exactly where it started. But not over the whole file
+either, which is where direnv stops being our precedent — an `.envrc` is executable code from
+top to bottom, while most of `.rasp/config.json` is inert settings: a model id, a theme, a diff
+style. Fingerprint all of it and `"theme": "dark"` raises a security prompt about commands
+nobody touched, and a prompt that fires when nothing dangerous changed is one people learn to
+clear without reading — the same failure the paragraph above refuses for a second prompt. So an
+unrelated setting changes silently; a new or altered command asks again, showing what changed.
+
+Where the answer is remembered matters: `~/.config/rasp/approvals/<project-key>`, under the
+user's own directory — §9's project key, so one repository checked out twice is one project,
+and the same home as §10.1's `.imported` marker, for the same reason. **Never inside the
+project.** An approval file that arrives with the clone is a repository approving itself, and
+the mechanism would fail on exactly the input it exists to catch.
 
 Say what it is worth, as §7.3a does for plan mode: this is a speed bump. Cloning a repository
 and running its build already executes code nobody read, and rasp is not a security boundary.
