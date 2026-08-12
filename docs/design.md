@@ -1721,6 +1721,13 @@ nobody touched, and a prompt that fires when nothing dangerous changed is one pe
 clear without reading — the same failure the paragraph above refuses for a second prompt. So an
 unrelated setting changes silently; a new or altered command asks again, showing what changed.
 
+Recording *what* was approved rather than *that* something was is the load-bearing part. A
+stored `trusted: true` would answer the question once and for the life of the repository: you
+approve `$(op read op://team-vault/key)` in January, someone edits that line in March, and rasp
+runs the new command without a word — because the project is trusted, and the flag cannot tell
+that the thing it was trusted for has been swapped. A fingerprint cannot be inherited by a
+command nobody approved.
+
 Where the answer is remembered matters: `~/.config/rasp/approvals/<project-key>`, under the
 user's own directory — §9's project key, so one repository checked out twice is one project,
 and the same home as §10.1's `.imported` marker, for the same reason. **Never inside the
