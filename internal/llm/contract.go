@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -58,16 +59,47 @@ func CheckStream(seq StreamResponse) ([]Event, error) {
 	case checker.terminal == "":
 		return events, fmt.Errorf("stream ended after %d events without a terminal EventDone or EventError", len(events))
 	}
-	return events, nil
+	return events, checker.checkComplete()
 }
 
 // streamChecker carries what checking one event needs to know about the events
 // before it: which message they pointed at, how much had accumulated in each
-// channel, and whether the stream was already over.
+// channel, which calls it announced, and whether the stream was already over.
 type streamChecker struct {
-	partial  *Message  // the pointer the first event carried
-	seen     []string  // per channel, what Partial held on the previous event
-	terminal EventType // the terminal event's type, once one has arrived
+	partial   *Message // the pointer the first event carried
+	seen      []string // per channel, what Partial held on the previous event
+	announced map[string]bool
+
+	terminal EventType  // the terminal event's type, once one has arrived
+	stop     StopReason // and the reason it carried
+}
+
+// checkComplete runs once the stream has ended, on the rule that needs the
+// whole of it: every tool_use block in the message was announced by an
+// EventToolCall.
+//
+// This is the mirror of the direction checkToolCall covers, and the one design
+// §4 invariant 1 states literally — a tool_use with no tool_result. An adapter
+// that never flushes its last call leaves a block the loop runs no tool for, so
+// no result answers it, and the next request is rejected. Nothing else would
+// notice: a missing event is silence, and silence reads as a pass.
+//
+// It applies only to a message the provider claims is complete. A stream that
+// failed or was truncated is expected to hold a half-built call — that is what
+// design §4 invariant 2's guard exists to fail — so demanding an announcement
+// there would reject exactly the streams the guard is written for.
+func (c *streamChecker) checkComplete() error {
+	if c.terminal != EventDone || (c.stop != StopEndTurn && c.stop != StopToolUse) {
+		return nil
+	}
+	for _, block := range c.partial.Content {
+		if block.Type == BlockToolUse && !c.announced[block.ID] {
+			return fmt.Errorf("the message holds a tool_use block %q that no EventToolCall announced; "+
+				"the loop dispatches from the event, so a call only in the message is one nothing runs "+
+				"and nothing answers", block.ID)
+		}
+	}
+	return nil
 }
 
 // channel is one of the three streams of content a message accumulates: the
@@ -129,11 +161,15 @@ func (c *streamChecker) check(index int, ev Event) error {
 		if err := checkToolCall(at, ev); err != nil {
 			return err
 		}
+		if c.announced == nil {
+			c.announced = map[string]bool{}
+		}
+		c.announced[ev.ToolCall.ID] = true
 	}
 
 	isTerminal := ev.Type == EventDone || ev.Type == EventError
 	if isTerminal {
-		c.terminal = ev.Type
+		c.terminal, c.stop = ev.Type, ev.StopReason
 	}
 	switch {
 	case isTerminal && ev.StopReason == "":
@@ -141,6 +177,9 @@ func (c *streamChecker) check(index int, ev Event) error {
 	case !isTerminal && ev.StopReason != "":
 		return fmt.Errorf("%s has StopReason %q; only the terminal event carries one, and a "+
 			"consumer reading it per event would act on max_tokens mid-stream", at, ev.StopReason)
+	case !isTerminal && ev.Partial.StopReason != "":
+		return fmt.Errorf("%s: Partial.StopReason is %q before the stream ended; consumers are "+
+			"told to read Partial, so a reason set early is the one they act on", at, ev.Partial.StopReason)
 	case isTerminal && ev.Partial.StopReason != ev.StopReason:
 		return fmt.Errorf("%s has StopReason %q but Partial.StopReason is %q; "+
 			"the message is what gets persisted and what the retry classifier reads, "+
@@ -162,9 +201,11 @@ func checkToolCall(at string, ev Event) error {
 		return fmt.Errorf("%s: ToolCall has no ID; the tool_result that answers it has nowhere to point", at)
 	case call.Name == "":
 		return fmt.Errorf("%s: ToolCall has no Name; nothing can be resolved from the registry", at)
-	case !json.Valid(call.Input):
-		return fmt.Errorf("%s: ToolCall input is not valid JSON (%q); EventToolCall means the "+
-			"arguments have arrived complete, and a call taking none still sends {}", at, call.Input)
+	}
+	called, err := arguments(call.Input)
+	if err != nil {
+		return fmt.Errorf("%s: ToolCall arguments %s; EventToolCall means they have arrived complete, "+
+			"and a call taking none still sends {}", at, err)
 	}
 
 	for _, block := range ev.Partial.Content {
@@ -175,14 +216,40 @@ func checkToolCall(at string, ev Event) error {
 			return fmt.Errorf("%s: ToolCall %s names %q but the tool_use block with that id names %q",
 				at, call.ID, call.Name, block.Name)
 		}
-		if !json.Valid(block.Input) {
-			return fmt.Errorf("%s: the tool_use block for %s holds invalid JSON (%q); the message is "+
-				"what gets persisted, so the fragments have to be finished there too", at, call.ID, block.Input)
+		recorded, err := arguments(block.Input)
+		if err != nil {
+			return fmt.Errorf("%s: the tool_use block for %s holds arguments that %s; the message is "+
+				"what gets persisted, so the fragments have to be finished there too", at, call.ID, err)
+		}
+		// By value, so whitespace and the order a provider serialized its keys
+		// in do not count as disagreement.
+		if !reflect.DeepEqual(recorded, called) {
+			return fmt.Errorf("%s: ToolCall %s runs with %s but the tool_use block records %s; "+
+				"the loop dispatches from the event and the message is what gets persisted, so a "+
+				"transcript that disagrees describes something that never ran",
+				at, call.ID, call.Input, block.Input)
 		}
 		return nil
 	}
 	return fmt.Errorf("%s: no tool_use block in Partial has id %q; the call has to exist in the "+
 		"message as well as in the event", at, call.ID)
+}
+
+// arguments decodes a tool call's arguments, requiring a JSON object rather than
+// merely valid JSON. The difference is load-bearing for `null`, which is valid
+// JSON and which json.Unmarshal decodes into a struct as a silent no-op — so a
+// tool would run with every argument zeroed instead of failing. An
+// OpenAI-compatible endpoint normalising an empty arguments string is exactly
+// how that arrives.
+func arguments(raw json.RawMessage) (map[string]any, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, fmt.Errorf("do not parse as JSON (%q)", raw)
+	}
+	if obj == nil {
+		return nil, fmt.Errorf("are %q, not a JSON object", raw)
+	}
+	return obj, nil
 }
 
 // checkAccumulation holds the half of the contract that is easiest to satisfy

@@ -259,7 +259,7 @@ func TestConsumerCanStopEarly(t *testing.T) {
 
 // TestCheckStreamRejects is the contract's own test suite: one malformed stream
 // per rule, each asserting the failure is reported as the rule it broke rather
-// than as some error. A checker that says "invalid stream" for all thirteen of
+// than as some error. A checker that answered "invalid stream" to every one of
 // these would pass a weaker version of this test and be useless in the one
 // moment it matters, which is an adapter author reading its output.
 func TestCheckStreamRejects(t *testing.T) {
@@ -387,7 +387,7 @@ func TestCheckStreamRejects(t *testing.T) {
 				Partial:  called(`{"pa`),
 				ToolCall: call("toolu_01A9", "read", `{"pa`),
 			}),
-			want: "not valid JSON",
+			want: "ToolCall arguments do not parse",
 		},
 		"a completed call the message never mentions": {
 			seq: stream(llm.Event{
@@ -427,7 +427,42 @@ func TestCheckStreamRejects(t *testing.T) {
 				Partial:  called(`{"pa`),
 				ToolCall: call("toolu_01A9", "read", `{"path":"auth.go"}`),
 			}),
-			want: "holds invalid JSON",
+			want: "holds arguments that do not parse",
+		},
+		"arguments the event and the message disagree about": {
+			seq: stream(llm.Event{
+				Type:     llm.EventToolCall,
+				Partial:  called(`{"path":"auth.go"}`),
+				ToolCall: call("toolu_01A9", "read", `{"path":"/etc/passwd"}`),
+			}),
+			want: "never ran",
+		},
+		"arguments that are not an object": {
+			seq: stream(llm.Event{
+				Type:     llm.EventToolCall,
+				Partial:  called(`null`),
+				ToolCall: call("toolu_01A9", "read", `null`),
+			}),
+			want: "not a JSON object",
+		},
+		"a stop reason the message carries early": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := streamed()
+				msg.StopReason = llm.StopMaxTokens
+				yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll", Partial: msg})
+			},
+			want: "before the stream ended",
+		},
+		"a completed turn holding a call it never announced": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := called(`{"path":"auth.go"}`)
+				if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"path":"auth.go"}`, Partial: msg}) {
+					return
+				}
+				msg.StopReason = llm.StopToolUse
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+			},
+			want: "no EventToolCall announced",
 		},
 		"a stop reason on an ordinary event": {
 			seq: stream(llm.Event{
@@ -483,5 +518,42 @@ func TestCheckStreamAcceptsAFailedStream(t *testing.T) {
 	}))
 	if err != nil {
 		t.Fatalf("CheckStream on a well-formed failure: %v", err)
+	}
+}
+
+// TestCheckStreamAcceptsAnUnfinishedCall is the boundary of the rule that every
+// tool_use block was announced. A stream cut off mid-call — the failure, or the
+// output limit — leaves a block no EventToolCall could have announced, because
+// the arguments never finished arriving. That is the input design §4 invariant
+// 2's guard is written for, so rejecting it here would fail every test of that
+// guard before it was written.
+func TestCheckStreamAcceptsAnUnfinishedCall(t *testing.T) {
+	half := func(stop llm.StopReason, terminal llm.EventType) llm.StreamResponse {
+		return func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "write", Input: []byte(`{"pa`),
+			}}}
+			if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"pa`, Partial: msg}) {
+				return
+			}
+			msg.StopReason = stop
+			ev := llm.Event{Type: terminal, StopReason: stop, Partial: msg}
+			if terminal == llm.EventError {
+				ev.Err = errors.New("stream ended before message_stop")
+			}
+			yield(ev)
+		}
+	}
+
+	cases := map[string]llm.StreamResponse{
+		"cut off by the output limit": half(llm.StopMaxTokens, llm.EventDone),
+		"cut off by a failure":        half(llm.StopError, llm.EventError),
+	}
+	for name, seq := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := llm.CheckStream(seq); err != nil {
+				t.Fatalf("CheckStream on a stream cut off mid-call: %v", err)
+			}
+		})
 	}
 }
