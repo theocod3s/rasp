@@ -30,7 +30,7 @@ silently fill it.
 
 ## 2. Branch
 
-`claude/<id-lowercased>-<slug>` — `claude/m0-02-ci`. Branch from an up-to-date `main`.
+`rasp/<id-lowercased>-<slug>` — `rasp/m0-02-ci`. Branch from an up-to-date `main`.
 
 ## 3. Implement
 
@@ -54,6 +54,11 @@ red from the build, so no test ran and none was shown to catch anything. A mode-
 broken with `if false {` did the same by leaving an import unused. Both had to be redone as
 mutations that compile before the named test could be seen to fail. If your break produces a
 build error, it is the compiler that caught you, not the check.
+
+And **assert the right failure, not just a failure.** M0-05's timeout test checked that *some*
+error came back. A later fix broke working credential helpers by returning a different error a
+second sooner, and the test stayed green — passing precisely when the thing it guarded was being
+destroyed. `err != nil` is the assertion most likely to survive its own subject.
 
 Once there is more than a handful, script it: apply one mutation, run the tests, restore, and
 print caught/not-caught per case. M0-04 ran twenty-four that way in under a minute, which is the
@@ -87,10 +92,12 @@ Don't merge your own PR unmarked. Run `/code-review`, and treat its findings as 
 rather than facts — it has a real false-positive rate, and rejecting a wrong finding with
 reasoning is as valuable as fixing a right one.
 
-**Then remember the fixes are code nobody has reviewed.** M0-04's first pass produced 345 lines
-of them, and a second pass over just that delta found four more bugs — including the worst one
-in the ticket, sitting in code written entirely in response to the first review. If the findings
-come to more than a one-line correction, review again, scoped to what changed.
+**Then remember the fixes are code nobody has reviewed** — and keep going until it converges.
+M0-04's first pass produced 345 lines of them, and a second over that delta found four more.
+M0-05 took five passes for 17 findings, and the clincher is that pass 3's fix *caused* pass 4's
+worst bug: `cmd.WaitDelay` starts its timer when the child exits, so the fix for a helper that
+hung turned into a failure for every helper that worked. Stop when a pass reports its own
+findings already fixed, not when you are tired of the loop.
 
 ## 6. Merge and close out
 
