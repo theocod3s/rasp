@@ -165,9 +165,9 @@ func parseCommand(s string) (cmd string, n int, err error) {
 
 // parseBraced reads `${…}` from the front of s.
 func parseBraced(s string) (seg segment, n int, err error) {
-	end := matchingBrace(s)
-	if end < 0 {
-		return segment{}, 0, fmt.Errorf("unterminated %q — no closing brace", "${")
+	end, err := matchingBrace(s)
+	if err != nil {
+		return segment{}, 0, err
 	}
 	body := s[2:end]
 
@@ -211,7 +211,7 @@ func parseBraced(s string) (seg segment, n int, err error) {
 // it had no closing brace at all. A `$(…)` is stepped over whole, since a
 // brace inside a command is the shell's to read, and `$$` is stepped over
 // because an escaped dollar starts nothing.
-func matchingBrace(s string) int {
+func matchingBrace(s string) (int, error) {
 	depth := 1 // the `${` at the front of s
 	for i := 2; i < len(s); i++ {
 		if s[i] == '$' && i+1 < len(s) {
@@ -226,7 +226,11 @@ func matchingBrace(s string) int {
 			case '(':
 				_, n, err := parseCommand(s[i:])
 				if err != nil {
-					return -1
+					// The inner error travels rather than collapsing into a
+					// missing brace: for `${KEY:-$()}` the brace is right
+					// there, and a diagnosis pointing at the one delimiter
+					// that is present sends the reader nowhere.
+					return 0, err
 				}
 				i += n - 1
 				continue
@@ -234,11 +238,11 @@ func matchingBrace(s string) int {
 		}
 		if s[i] == '}' {
 			if depth--; depth == 0 {
-				return i
+				return i, nil
 			}
 		}
 	}
-	return -1
+	return 0, fmt.Errorf("unterminated %q — no closing brace", "${")
 }
 
 // leadingName returns the environment-variable name at the front of s, or ""

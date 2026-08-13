@@ -223,7 +223,8 @@ func unsetError(name string, present bool) error {
 	if present {
 		return fmt.Errorf("$%s is set but empty; write ${%s:-} to accept an empty value", name, name)
 	}
-	return fmt.Errorf("$%s is not set in the environment", name)
+	return fmt.Errorf("$%s is not set in the environment; write %s if the dollar is meant literally",
+		name, dollarEscape)
 }
 
 // expandCommand runs one `$(command)`, or refuses to.

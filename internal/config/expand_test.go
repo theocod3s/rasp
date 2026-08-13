@@ -610,3 +610,46 @@ func TestAFloodOfStderrIsCapped(t *testing.T) {
 		t.Errorf("the error does not say it was cut short:\n%.200s", err)
 	}
 }
+
+// TestABadCommandInsideABraceNamesTheRealProblem. Collapsing the inner error
+// into "no closing brace" points the reader at the one delimiter that is
+// actually present, which is worse than saying nothing.
+func TestABadCommandInsideABraceNamesTheRealProblem(t *testing.T) {
+	tests := []struct{ value, want string }{
+		{"${KEY:-$()}", "no command in it"},
+		{"${KEY:-$(op read}", "no closing parenthesis"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.value, func(t *testing.T) {
+			e := expanderOver(t, tc.value, env{}, config.ExpanderOptions{})
+
+			_, err := e.Expand(t.Context(), apiKey)
+			if err == nil {
+				t.Fatalf("Expand(%q) succeeded", tc.value)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error does not name the real problem:\n%s", err)
+			}
+			if strings.Contains(err.Error(), "no closing brace") {
+				t.Errorf("error blames the brace, which is present:\n%s", err)
+			}
+		})
+	}
+}
+
+// TestTheUnsetMessageOffersTheEscape. A secret containing a literal dollar is
+// ordinary, and someone who has exported one is told about a variable they
+// never wrote. The workaround has to be in the message, not in a design
+// document they are not reading.
+func TestTheUnsetMessageOffersTheEscape(t *testing.T) {
+	e := expanderOver(t, "sk-ant-x$yz", env{}, config.ExpanderOptions{})
+
+	_, err := e.Expand(t.Context(), apiKey)
+	if err == nil {
+		t.Fatal("Expand succeeded on an unset variable")
+	}
+	if !strings.Contains(err.Error(), "$$") {
+		t.Errorf("error does not name the escape:\n%s", err)
+	}
+}
