@@ -24,6 +24,14 @@ import (
 // event rather than a copy per token. Allocating inside the loop satisfies the
 // letter of the contract and throws away the reason it is affordable.
 //
+// Two smaller decisions, recorded because a consumer would otherwise have to
+// guess. EventMessageStart is OPTIONAL — an OpenAI-compatible stream has no
+// equivalent, and requiring adapters to synthesise one buys nothing — so nothing
+// may key its initialisation on that event; when it does arrive it comes first.
+// And every event's ToolCall is its own value: the loop buffers announcements
+// and dispatches them after the stream drains, so a pointer reused across calls
+// would turn every buffered one into the last.
+//
 // CheckStream is these rules in executable form; every implementation is
 // expected to pass it.
 type StreamResponse = iter.Seq[Event]

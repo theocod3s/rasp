@@ -38,7 +38,11 @@ type Event struct {
 	// contract.
 	Partial *Message
 
-	// ToolCall is set on EventToolCall and on nothing else.
+	// ToolCall is set on EventToolCall and on nothing else, and it is a fresh
+	// value each time — unlike Partial, which is deliberately the same pointer
+	// throughout. The loop buffers every announcement and dispatches only once
+	// the stream has drained, so one reused *ToolCall would leave it holding N
+	// pointers to the last call.
 	ToolCall *ToolCall
 
 	// StopReason is set on the terminal event, and matches Partial.StopReason.

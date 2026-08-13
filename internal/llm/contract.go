@@ -117,10 +117,10 @@ func CheckStream(seq StreamResponse) ([]Event, error) {
 // before it: which message they pointed at, how much had accumulated in each
 // channel, which calls it announced, and whether the stream was already over.
 type streamChecker struct {
-	partial   *Message         // the pointer the first event carried
-	seen      []map[int]string // per channel, what each block held on the previous event
-	announced []string         // tool call ids, in the order EventToolCall reported them
-	frozen    map[int]string   // blocks whose call was announced, by the name it was announced as
+	partial   *Message          // the pointer the first event carried
+	seen      []map[int]string  // per channel, what each block held on the previous event
+	announced []string          // tool call ids, in the order EventToolCall reported them
+	frozen    map[int]announced // blocks whose call was announced, and what it was announced as
 
 	terminal EventType  // the terminal event's type, once one has arrived
 	stop     StopReason // and the reason it carried
@@ -273,6 +273,17 @@ func (c *streamChecker) checkComplete() error {
 	if c.stop == StopToolUse && len(recorded) == 0 {
 		return fmt.Errorf("the stream ended with StopReason %q and no tool calls; that reason says the "+
 			"model stopped to use one", c.stop)
+	}
+
+	// A finished turn has something in it. An empty message cannot be replayed —
+	// nil content encodes as null and an empty list is refused too — and design
+	// §4 step 6 commits whatever the turn produced without asking, so this is the
+	// only place it can be caught while the blame is still with the adapter. A
+	// turn that broke off is different: there the stream is blameless and the
+	// commit point has to decline, which is what Message's own doc comment says.
+	if len(c.partial.Content) == 0 {
+		return fmt.Errorf("the stream ended with StopReason %q and no content; a finished message with "+
+			"no blocks in it is refused by every provider the next time it is sent", c.stop)
 	}
 	return nil
 }
@@ -436,13 +447,20 @@ func (c *streamChecker) check(index int, ev Event) error {
 		}
 		c.announced = append(c.announced, ev.ToolCall.ID)
 		if c.frozen == nil {
-			c.frozen = map[int]string{}
+			c.frozen = map[int]announced{}
 		}
 		// Nothing may touch that block again. The loop dispatches from this
 		// event, so a later fragment landing there — call 2's tail mis-routed
 		// onto call 1 — changes what the transcript says was run after it ran,
 		// and the byte comparison that would have caught it has already happened.
-		c.frozen[at] = ev.ToolCall.Name
+		c.frozen[at] = announced{
+			call: ev.ToolCall,
+			id:   ev.ToolCall.ID,
+			name: ev.ToolCall.Name,
+			// Cloned, because comparing the header would not notice an adapter
+			// appending into the same array.
+			input: bytes.Clone(ev.ToolCall.Input),
+		}
 	}
 
 	isTerminal := ev.Type == EventDone || ev.Type == EventError
@@ -568,16 +586,47 @@ func checkShape(at string, msg *Message) error {
 	return nil
 }
 
+// announced is one confirmed call: the event's pointer, and a copy of what it
+// said at the time. Both halves are needed. The block can drift from the call,
+// and the call can drift from itself — an adapter that reuses one *ToolCall the
+// way it is told to reuse one *Message hands the loop N pointers to the last
+// call, and the loop buffers them all before dispatching any (design §4 step 4).
+type announced struct {
+	call     *ToolCall
+	id, name string
+	input    []byte
+}
+
 // checkFrozen re-reads the blocks whose calls have been announced. The
 // accumulation rules watch their arguments; this watches what the call IS,
 // because renaming read to write after the loop was told to run read changes the
 // transcript's account of something that already happened just as thoroughly.
 func (c *streamChecker) checkFrozen(at string, msg *Message) error {
-	for _, index := range slices.Sorted(maps.Keys(c.frozen)) {
-		name := c.frozen[index]
-		if index < len(msg.Content) && msg.Content[index].Name != name {
+	// Walking the blocks rather than the frozen map: it is index order either way,
+	// and there is no out-of-range case to guard against — a block that left the
+	// message is caught by the rules that watch content, and guarding for it here
+	// would be a branch that can never run.
+	for index, block := range msg.Content {
+		was, ok := c.frozen[index]
+		if !ok {
+			continue
+		}
+		switch {
+		case block.Name != was.name:
 			return fmt.Errorf("%s: the block at index %d was announced as a call to %q and now names "+
-				"%q; the loop dispatched the first one", at, index, name, msg.Content[index].Name)
+				"%q; the loop dispatched the first one", at, index, was.name, block.Name)
+		case block.ID != was.id:
+			return fmt.Errorf("%s: the block at index %d was announced as call %q and now carries id "+
+				"%q; the result the loop writes will name the first one", at, index, was.id, block.ID)
+		}
+
+		// And the event's own copy. Nothing above the provider re-reads it before
+		// the whole stream has drained, so a pointer reused across announcements
+		// turns every buffered call into the last one.
+		if call := was.call; call.ID != was.id || call.Name != was.name || !bytes.Equal(call.Input, was.input) {
+			return fmt.Errorf("%s: the ToolCall announced as %q (%s) now reads as %q (%s); each "+
+				"announcement is its own value, because the loop buffers them all before it runs any",
+				at, was.id, was.input, call.ID, call.Input)
 		}
 	}
 	return nil
@@ -696,7 +745,7 @@ func isJSONObject(raw json.RawMessage) bool {
 // them and nothing in Delta. That is what a no-argument tool call looks like on
 // one provider and what a late-arriving arguments field looks like on another,
 // so the latitude is deliberate and only tool arguments have it.
-func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, frozen map[int]string) error {
+func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, frozen map[int]announced) error {
 	now := ch.snapshot(ev.Partial)
 
 	// Sorted, so a message naming a block index names the same one on every run.
@@ -716,12 +765,14 @@ func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, fro
 		case text == was:
 			// Unchanged, whatever it holds — including a placeholder left alone
 			// by an event that was never going to add to it.
-		case frozen[i] != "":
+		case frozen[i].id != "":
 			return fmt.Errorf("%s: Partial %s at index %d changed from %q to %q after its call was "+
 				"announced; a completed call is finished, and the loop has already dispatched from it",
 				at, ch.name, i, was, text)
-		case ch.placeholder != "" && was == ch.placeholder:
-			// A fragment replaces the placeholder rather than extending it.
+		case ch.placeholder != "" && was == ch.placeholder && text != "":
+			// A fragment replaces the placeholder rather than extending it. Only
+			// a fragment with something in it: clearing the block is content
+			// going missing, and falls through to the rule that says so.
 			grew++
 			if grew == 1 {
 				added = text

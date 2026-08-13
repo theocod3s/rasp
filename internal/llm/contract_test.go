@@ -771,6 +771,65 @@ func TestCheckStreamRejects(t *testing.T) {
 			// and says so.
 			want: "is gone",
 		},
+		"one ToolCall pointer reused for two calls": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant}
+				shared := &llm.ToolCall{}
+				for _, spec := range []struct{ id, path string }{{"toolu_01", "a.go"}, {"toolu_02", "b.go"}} {
+					input := []byte(`{"path":"` + spec.path + `"}`)
+					msg.Content = append(msg.Content, llm.Block{
+						Type: llm.BlockToolUse, ID: spec.id, Name: "read", Input: input,
+					})
+					if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+						return
+					}
+					shared.ID, shared.Name, shared.Input = spec.id, "read", input
+					if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg, ToolCall: shared}) {
+						return
+					}
+				}
+				msg.StopReason = llm.StopToolUse
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+			},
+			want: "each announcement is its own value",
+		},
+		"a call whose id moved after it was announced": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := called(`{"path":"auth.go"}`)
+				if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+					return
+				}
+				if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg,
+					ToolCall: call("toolu_01A9", "read", `{"path":"auth.go"}`)}) {
+					return
+				}
+				msg.Content[0].ID = "toolu_ZZ"
+				msg.StopReason = llm.StopToolUse
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+			},
+			want: "the result the loop writes will name the first one",
+		},
+		"a finished turn with nothing in it": {
+			seq: stream(llm.Event{
+				Type:       llm.EventDone,
+				StopReason: llm.StopEndTurn,
+				Partial:    &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopEndTurn},
+			}),
+			want: "no blocks in it",
+		},
+		"a placeholder cleared instead of replaced": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+					Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read", Input: []byte(`{}`),
+				}}}
+				if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+					return
+				}
+				msg.Content[0].Input = nil
+				yield(llm.Event{Type: llm.EventToolInputDelta, Partial: msg})
+			},
+			want: "never rewritten or dropped",
+		},
 		"an empty-object fragment with nowhere to land": {
 			seq: func(yield func(llm.Event) bool) {
 				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
