@@ -43,7 +43,13 @@ import (
 // observe it during iteration, which is what the accumulation rules below do.
 //
 // One thing this cannot check, and it is worth knowing before trusting it: which
-// block a fragment landed in. A delta event says what arrived and not where it
+// block a fragment landed in. The same blindness is why a tool call whose
+// arguments are genuinely the empty object may be replaced wholesale later
+// without complaint — a block sitting at `{}` is indistinguishable from one
+// still holding the placeholder a provider opened it with. Tracking that
+// difference was tried and reverted: it rejected two real wire shapes to close a
+// hole whose worst outcome is an argument object the message and the event still
+// agree on. A delta event says what arrived and not where it
 // belongs — Event carries no block index, because no consumer needs one, they
 // render Partial — so an adapter that routes call 2's fragment into call 1's
 // arguments passes every rule here as long as both halves still parse. That is
@@ -110,7 +116,6 @@ func CheckStream(seq StreamResponse) ([]Event, error) {
 type streamChecker struct {
 	partial   *Message         // the pointer the first event carried
 	seen      []map[int]string // per channel, what each block held on the previous event
-	streamed  []map[int]bool   // per channel, which blocks a fragment has landed in
 	announced []string         // tool call ids, in the order EventToolCall reported them
 
 	terminal EventType  // the terminal event's type, once one has arrived
@@ -281,6 +286,12 @@ func (c *streamChecker) check(index int, ev Event) error {
 	if c.terminal != "" {
 		return fmt.Errorf("%s arrived after the terminal %s event", at, c.terminal)
 	}
+	// A stream is one message, and message_start opens it. A consumer that resets
+	// per-message state on this event would wipe a half-drawn reply.
+	if ev.Type == EventMessageStart && index > 0 {
+		return fmt.Errorf("%s: message_start arrived after %d other events; it is the event that opens "+
+			"a stream, and a stream carries one message", at, index)
+	}
 	if ev.Partial == nil {
 		return fmt.Errorf("%s has a nil Partial; every event carries the full accumulated message", at)
 	}
@@ -314,10 +325,6 @@ func (c *streamChecker) check(index int, ev Event) error {
 	// obvious implementation — would fail its first tool call. Nothing is lost
 	// by permitting it, because a fragment that went missing while Delta said
 	// something arrived is caught by the accumulation rule below.
-	if ev.Type == EventMessageStart && index > 0 {
-		return fmt.Errorf("%s is a second message_start; a stream is one message, and a consumer that "+
-			"resets its per-message state on this event would wipe the reply drawn so far", at)
-	}
 	if ev.Delta != "" && !carriesDelta(ev.Type) {
 		return fmt.Errorf("%s carries Delta %q; only a delta event has newly-arrived content, and a "+
 			"consumer that appends whatever Delta holds would render this twice", at, ev.Delta)
@@ -325,14 +332,12 @@ func (c *streamChecker) check(index int, ev Event) error {
 
 	if c.seen == nil {
 		c.seen = make([]map[int]string, len(channels))
-		c.streamed = make([]map[int]bool, len(channels))
 		for i := range c.seen {
 			c.seen[i] = map[int]string{}
-			c.streamed[i] = map[int]bool{}
 		}
 	}
 	for i, ch := range channels {
-		if err := checkAccumulation(at, ev, ch, c.seen[i], c.streamed[i]); err != nil {
+		if err := checkAccumulation(at, ev, ch, c.seen[i]); err != nil {
 			return err
 		}
 	}
@@ -487,7 +492,7 @@ func arguments(raw json.RawMessage) (map[string]any, error) {
 // them and nothing in Delta. That is what a no-argument tool call looks like on
 // one provider and what a late-arriving arguments field looks like on another,
 // so the latitude is deliberate and only tool arguments have it.
-func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, streamed map[int]bool) error {
+func checkAccumulation(at string, ev Event, ch channel, seen map[int]string) error {
 	now := ch.snapshot(ev.Partial)
 
 	// Sorted, so a message naming a block index names the same one on every run.
@@ -500,21 +505,18 @@ func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, str
 		}
 	}
 
-	grew, added, grewAt := 0, "", -1
+	grew, added := 0, ""
 	for _, i := range slices.Sorted(maps.Keys(now)) {
 		text, was := now[i], seen[i]
 		switch {
 		case text == was:
 			// Unchanged, whatever it holds — including a placeholder left alone
 			// by an event that was never going to add to it.
-		case ch.placeholder != "" && was == ch.placeholder && !streamed[i]:
-			// A fragment replaces the placeholder rather than extending it. Only
-			// while no fragment has landed in this block: once one has, a `{}`
-			// is a payload the model sent and replacing it wholesale is the
-			// rewrite this rule exists to catch.
+		case ch.placeholder != "" && was == ch.placeholder:
+			// A fragment replaces the placeholder rather than extending it.
 			grew++
 			if grew == 1 {
-				added, grewAt = text, i
+				added = text
 			}
 		case !strings.HasPrefix(text, was):
 			return fmt.Errorf("%s: Partial %s at index %d is %q, which does not start with the %q "+
@@ -522,7 +524,7 @@ func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, str
 		default:
 			grew++
 			if grew == 1 {
-				added, grewAt = text[len(was):], i
+				added = text[len(was):]
 			}
 		}
 	}
@@ -549,21 +551,6 @@ func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, str
 	case grew > 0:
 		return fmt.Errorf("%s: Partial %s grew by %q; only %v adds to it, and content nobody "+
 			"announced is content nobody draws", at, ch.name, added, append([]EventType{ch.delta}, ch.grows...))
-	}
-
-	if ev.Type == ch.delta {
-		switch {
-		case grewAt >= 0:
-			streamed[grewAt] = true
-		default:
-			// The fragment landed invisibly in a block holding the placeholder;
-			// which one is unknowable, so every candidate counts as streamed.
-			for i, text := range now {
-				if text == ch.placeholder {
-					streamed[i] = true
-				}
-			}
-		}
 	}
 
 	clear(seen)

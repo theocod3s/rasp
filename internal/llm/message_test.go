@@ -179,3 +179,26 @@ func TestTruncatedToolCallStillEncodes(t *testing.T) {
 		t.Errorf("tool_use id = %q, want %q", got, "toolu_01A9")
 	}
 }
+
+// TestToolCallWithNoArgumentsStillEncodesAnObject is the other half of the
+// truncation case: a turn can be cut off before any arguments chunk arrives at
+// all, leaving the field unset rather than half-written. Every provider rejects
+// a tool_use block with no input, so an omitted field bricks the replay as surely
+// as an unencodable one — the block has to carry an object either way.
+func TestToolCallWithNoArgumentsStillEncodesAnObject(t *testing.T) {
+	msg := llm.Message{
+		Role:       llm.RoleAssistant,
+		StopReason: llm.StopMaxTokens,
+		Content:    []llm.Block{{Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "write"}},
+	}
+
+	encoded, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshalling: %v", err)
+	}
+
+	const want = `{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01A9","name":"write","input":{}}],"stop_reason":"max_tokens"}`
+	if string(encoded) != want {
+		t.Errorf("encoding:\n got %s\nwant %s", encoded, want)
+	}
+}

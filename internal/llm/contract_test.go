@@ -661,22 +661,6 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "not the delta",
 		},
-		"arguments rewritten after the empty object was streamed": {
-			seq: func(yield func(llm.Event) bool) {
-				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
-					Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read",
-				}}}
-				// The empty object arrives as a real fragment, so it is a payload
-				// the model sent rather than a placeholder waiting to be replaced.
-				msg.Content[0].Input = []byte(`{}`)
-				if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{}`, Partial: msg}) {
-					return
-				}
-				msg.Content[0].Input = []byte(`{"path":"auth.go"}`)
-				yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"path":"auth.go"}`, Partial: msg})
-			},
-			want: "never rewritten or dropped",
-		},
 		"an empty-object fragment with nowhere to land": {
 			seq: func(yield func(llm.Event) bool) {
 				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
@@ -707,7 +691,7 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "two tool_use blocks with id",
 		},
-		"a second message_start": {
+		"a message_start that does not open the stream": {
 			seq: func(yield func(llm.Event) bool) {
 				msg := streamed()
 				if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll", Partial: msg}) {
@@ -715,7 +699,7 @@ func TestCheckStreamRejects(t *testing.T) {
 				}
 				yield(llm.Event{Type: llm.EventMessageStart, Partial: msg})
 			},
-			want: "second message_start",
+			want: "it is the event that opens a stream",
 		},
 		"a stop reason on an ordinary event": {
 			seq: stream(llm.Event{
@@ -875,6 +859,41 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
 		},
 
+		// One call's arguments genuinely are the empty object while a sibling's
+		// are still streaming. Both blocks sit at `{}` when the first fragment
+		// of the second call arrives, which is the shape that broke when this
+		// package tried to track which block had been streamed into.
+		"a no-argument call beside one still streaming": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant}
+			for _, call := range []struct{ id, name string }{{"toolu_01", "list"}, {"toolu_02", "read"}} {
+				msg.Content = append(msg.Content, llm.Block{
+					Type: llm.BlockToolUse, ID: call.id, Name: call.name, Input: []byte(`{}`),
+				})
+				if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+					return
+				}
+			}
+			// The first call's arguments are the empty object, arriving as a
+			// fragment while its sibling still sits at the placeholder.
+			if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{}`, Partial: msg}) {
+				return
+			}
+			if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg,
+				ToolCall: &llm.ToolCall{ID: "toolu_01", Name: "list", Input: []byte(`{}`)}}) {
+				return
+			}
+			msg.Content[1].Input = []byte(`{"path":"auth.go"}`)
+			if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"path":"auth.go"}`, Partial: msg}) {
+				return
+			}
+			if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg,
+				ToolCall: &llm.ToolCall{ID: "toolu_02", Name: "read", Input: msg.Content[1].Input}}) {
+				return
+			}
+			msg.StopReason = llm.StopToolUse
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+		},
+
 		// A short arguments object can arrive whole in the chunk that opens the
 		// call, so the event that starts a tool block may deliver the payload.
 		"a call whose payload arrives with the block": func(yield func(llm.Event) bool) {
@@ -903,6 +922,10 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read", Input: []byte(`{}`),
 			}}}
 			if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+				return
+			}
+			// Anthropic opens the fragment stream with an empty partial_json.
+			if !yield(llm.Event{Type: llm.EventToolInputDelta, Partial: msg}) {
 				return
 			}
 			for i, fragment := range []string{`{"pa`, `th": "auth.go"}`} {
