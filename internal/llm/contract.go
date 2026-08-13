@@ -107,6 +107,9 @@ func CheckStream(seq StreamResponse) ([]Event, error) {
 	case checker.terminal == "":
 		return events, fmt.Errorf("stream ended after %d events without a terminal EventDone or EventError", len(events))
 	}
+	if err := checker.checkSettled(); err != nil {
+		return events, err
+	}
 	return events, checker.checkComplete()
 }
 
@@ -117,7 +120,7 @@ type streamChecker struct {
 	partial   *Message         // the pointer the first event carried
 	seen      []map[int]string // per channel, what each block held on the previous event
 	announced []string         // tool call ids, in the order EventToolCall reported them
-	frozen    map[int]bool     // blocks whose call was announced, and so cannot change again
+	frozen    map[int]string   // blocks whose call was announced, by the name it was announced as
 
 	terminal EventType  // the terminal event's type, once one has arrived
 	stop     StopReason // and the reason it carried
@@ -202,19 +205,32 @@ func (c *streamChecker) checkComplete() error {
 			"order, so the two have to agree", c.announced, recorded)
 	}
 
-	if c.terminal != EventDone || !slices.Contains(finished, c.stop) {
-		return nil
-	}
-
 	// With the order rule above and uniqueness below it, this loop is the last
 	// thing needed for "the announcements are exactly the blocks": a subsequence
 	// that contains every element, of a list with no repeats, is the list.
-	for _, id := range recorded {
-		if !slices.Contains(c.announced, id) {
+	//
+	// A stream that failed, was cancelled or ran out of output is held to less,
+	// but not to nothing. What such a turn is allowed to leave behind is a call
+	// still arriving — arguments that are a fragment, which no EventToolCall
+	// could have announced. A call whose arguments are complete had nothing
+	// stopping the announcement, and leaving it out puts a tool_use in the
+	// transcript that nothing runs and nothing answers.
+	whole := c.terminal == EventDone && slices.Contains(finished, c.stop)
+	for index, block := range c.partial.Content {
+		if block.Type != BlockToolUse {
+			continue
+		}
+		if _, err := arguments(block.Input); err != nil && !whole {
+			continue
+		}
+		if !slices.Contains(c.announced, block.ID) {
 			return fmt.Errorf("the message holds a tool_use block %q that no EventToolCall announced; "+
 				"the loop dispatches from the event, so a call only in the message is one nothing runs "+
-				"and nothing answers", id)
+				"and nothing answers (block %d)", block.ID, index)
 		}
+	}
+	if !whole {
+		return nil
 	}
 	// A turn that says it stopped to use tools has to have some: design §4's
 	// termination table has no row for tool_use with nothing to run, and the loop
@@ -372,6 +388,9 @@ func (c *streamChecker) check(index int, ev Event) error {
 			return err
 		}
 	}
+	if err := c.checkFrozen(at, ev.Partial); err != nil {
+		return err
+	}
 
 	if ev.Type == EventToolCall {
 		at, err := checkToolCall(at, ev)
@@ -380,13 +399,13 @@ func (c *streamChecker) check(index int, ev Event) error {
 		}
 		c.announced = append(c.announced, ev.ToolCall.ID)
 		if c.frozen == nil {
-			c.frozen = map[int]bool{}
+			c.frozen = map[int]string{}
 		}
 		// Nothing may touch that block again. The loop dispatches from this
 		// event, so a later fragment landing there — call 2's tail mis-routed
 		// onto call 1 — changes what the transcript says was run after it ran,
 		// and the byte comparison that would have caught it has already happened.
-		c.frozen[at] = true
+		c.frozen[at] = ev.ToolCall.Name
 	}
 
 	isTerminal := ev.Type == EventDone || ev.Type == EventError
@@ -427,6 +446,45 @@ func checkStopReason(at string, ev Event) error {
 		return fmt.Errorf("%s has StopReason %q but Partial.StopReason is %q; "+
 			"the message is what gets persisted and what the retry classifier reads, "+
 			"so it carries the reason too", at, ev.StopReason, ev.Partial.StopReason)
+	}
+	return nil
+}
+
+// checkSettled re-reads the message once the stream has ended, because a
+// provider unwinding after its last yield can still touch it and nothing inside
+// the loop would see that. The agent loop commits Partial after iteration
+// finishes, so the window is real and the content it commits has to be the
+// content the events described.
+func (c *streamChecker) checkSettled() error {
+	for i, ch := range channels {
+		settled := ch.snapshot(c.partial)
+		for _, index := range slices.Sorted(maps.Keys(c.seen[i])) {
+			was, now := c.seen[i][index], settled[index]
+			if _, ok := settled[index]; !ok {
+				return fmt.Errorf("the %s block at index %d is gone after the stream ended; the message "+
+					"is committed after the last event, so what is missing here is missing from the "+
+					"transcript", ch.name, index)
+			}
+			if was != now {
+				return fmt.Errorf("Partial %s at index %d changed after the stream ended, from %q to "+
+					"%q; the message is committed after the last event, so anything touched here is "+
+					"content no event announced", ch.name, index, was, now)
+			}
+		}
+	}
+	return nil
+}
+
+// checkFrozen re-reads the blocks whose calls have been announced. The
+// accumulation rules watch their arguments; this watches what the call IS,
+// because renaming read to write after the loop was told to run read changes the
+// transcript's account of something that already happened just as thoroughly.
+func (c *streamChecker) checkFrozen(at string, msg *Message) error {
+	for index, name := range c.frozen {
+		if index < len(msg.Content) && msg.Content[index].Name != name {
+			return fmt.Errorf("%s: the block at index %d was announced as a call to %q and now names "+
+				"%q; the loop dispatched the first one", at, index, name, msg.Content[index].Name)
+		}
 	}
 	return nil
 }
@@ -544,7 +602,7 @@ func isJSONObject(raw json.RawMessage) bool {
 // them and nothing in Delta. That is what a no-argument tool call looks like on
 // one provider and what a late-arriving arguments field looks like on another,
 // so the latitude is deliberate and only tool arguments have it.
-func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, frozen map[int]bool) error {
+func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, frozen map[int]string) error {
 	now := ch.snapshot(ev.Partial)
 
 	// Sorted, so a message naming a block index names the same one on every run.
@@ -564,7 +622,7 @@ func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, fro
 		case text == was:
 			// Unchanged, whatever it holds — including a placeholder left alone
 			// by an event that was never going to add to it.
-		case frozen[i]:
+		case frozen[i] != "":
 			return fmt.Errorf("%s: Partial %s at index %d changed from %q to %q after its call was "+
 				"announced; a completed call is finished, and the loop has already dispatched from it",
 				at, ch.name, i, was, text)

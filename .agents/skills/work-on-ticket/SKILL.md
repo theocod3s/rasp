@@ -56,10 +56,9 @@ of them was visible from a green run.
 
 The trap inside that habit: **a break that stops the package compiling proves nothing.** M0-04
 replaced the string-aware JSONC comment stripper with a naive one and the suite went red — but
-red from the build, so no test ran and none was shown to catch anything. A mode-name check
-broken with `if false {` did the same by leaving an import unused. Both had to be redone as
-mutations that compile before the named test could be seen to fail. If your break produces a
-build error, it is the compiler that caught you, not the check.
+red from the build, so no test ran and none was shown to catch anything. `if false {` does it
+too, whenever it leaves a variable or an import unused. If your break produces a build error, it
+is the compiler that caught you, not the check.
 
 And **assert the right failure, not just a failure.** M0-05's timeout test checked that *some*
 error came back. A later fix broke working credential helpers by returning a different error a

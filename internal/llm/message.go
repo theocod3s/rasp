@@ -86,6 +86,19 @@ type Block struct {
 // the tool_result that fails it has something to point at. What is written stays
 // an object, so the turn replays.
 func (b Block) MarshalJSON() ([]byte, error) {
+	// Fields belonging to other block types go before anything else. Block is a
+	// flat union, so the natural mistake — copy a block, switch the type — leaves
+	// the old type's fields behind, and `content` on a tool_use is a 400 exactly
+	// like `input` on a tool_result.
+	switch b.Type {
+	case BlockText, BlockThinking:
+		b.ID, b.Name, b.ToolUseID, b.Content, b.IsError = "", "", "", "", false
+	case BlockToolUse:
+		b.Text, b.ToolUseID, b.Content, b.IsError = "", "", "", false
+	case BlockToolResult:
+		b.Text, b.ID, b.Name = "", "", ""
+	}
+
 	switch {
 	case b.Type == BlockToolUse && !isJSONObject(b.Input):
 		b.Input = json.RawMessage("{}")

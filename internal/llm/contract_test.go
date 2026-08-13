@@ -692,6 +692,52 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "after its call was announced",
 		},
+		"a call renamed after it was announced": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := called(`{"path":"auth.go"}`)
+				if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+					return
+				}
+				if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg,
+					ToolCall: call("toolu_01A9", "read", `{"path":"auth.go"}`)}) {
+					return
+				}
+				msg.Content[0].Name = "write"
+				msg.StopReason = llm.StopToolUse
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+			},
+			want: "the loop dispatched the first one",
+		},
+		"a block dropped after the stream ended": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := streamed()
+				if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll", Partial: msg}) {
+					return
+				}
+				msg.StopReason = llm.StopEndTurn
+				if !yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg}) {
+					return
+				}
+				msg.Content = nil
+			},
+			want: "is gone after the stream ended",
+		},
+		"a complete call left unannounced on a failed turn": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := called(`{"path":"auth.go"}`)
+				if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+					return
+				}
+				msg.StopReason = llm.StopError
+				yield(llm.Event{
+					Type:       llm.EventError,
+					StopReason: llm.StopError,
+					Err:        errors.New("stream ended before message_stop"),
+					Partial:    msg,
+				})
+			},
+			want: "no EventToolCall announced",
+		},
 		"an empty-object fragment with nowhere to land": {
 			seq: func(yield func(llm.Event) bool) {
 				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
@@ -770,6 +816,27 @@ func TestCheckStreamRejects(t *testing.T) {
 			mustContain(t, err, tc.want)
 		})
 	}
+}
+
+// TestCheckStreamNoticesAChangeAfterTheStream covers the window the agent loop
+// actually persists from: iteration is over, the provider is unwinding, and
+// whatever it does to the message now is what gets written down.
+func TestCheckStreamNoticesAChangeAfterTheStream(t *testing.T) {
+	seq := func(yield func(llm.Event) bool) {
+		msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText}}}
+		msg.Content[0].Text = "I'll read it."
+		if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll read it.", Partial: msg}) {
+			return
+		}
+		msg.StopReason = llm.StopEndTurn
+		if !yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg}) {
+			return
+		}
+		msg.Content[0].Text = "something else entirely"
+	}
+
+	_, err := llm.CheckStream(seq)
+	mustContain(t, err, "changed after the stream ended")
 }
 
 // TestCheckStreamAcceptsAFailedStream guards the obvious way to write a

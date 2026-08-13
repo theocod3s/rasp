@@ -254,3 +254,32 @@ func TestStrayArgumentsDoNotSinkTheMessage(t *testing.T) {
 		t.Errorf("encoding:\n got %s\nwant %s", encoded, want)
 	}
 }
+
+// TestStrayFieldsFromAnotherBlockTypeAreDropped is the mistake a flat union
+// invites: copy a block, switch the type, leave the old type's fields behind.
+// These tags are the provider's format too, so `content` on a tool_use is a 400
+// exactly like `input` on a tool_result.
+func TestStrayFieldsFromAnotherBlockTypeAreDropped(t *testing.T) {
+	msg := llm.Message{
+		Role: llm.RoleAssistant,
+		Content: []llm.Block{{
+			Type:      llm.BlockToolUse,
+			ID:        "toolu_01A9",
+			Name:      "read",
+			Input:     []byte(`{"path":"auth.go"}`),
+			Text:      "stray text",
+			ToolUseID: "toolu_09",
+			Content:   "stray result",
+			IsError:   true,
+		}},
+	}
+
+	encoded, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshalling: %v", err)
+	}
+	const want = `{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01A9","name":"read","input":{"path":"auth.go"}}]}`
+	if string(encoded) != want {
+		t.Errorf("encoding:\n got %s\nwant %s", encoded, want)
+	}
+}
