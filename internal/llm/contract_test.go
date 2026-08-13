@@ -666,6 +666,20 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "the only reason for one",
 		},
+		"fragments appended to the empty object": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+					Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read", Input: []byte(`{}`),
+				}}}
+				if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+					return
+				}
+				// Appended to the placeholder rather than replacing it.
+				msg.Content[0].Input = []byte(`{}{"path":"auth.go"}`)
+				yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"path":"auth.go"}`, Partial: msg})
+			},
+			want: "not the delta",
+		},
 		"a stop reason on an ordinary event": {
 			seq: stream(llm.Event{
 				Type:       llm.EventTextDelta,
@@ -743,6 +757,43 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 				Partial:  msg,
 				ToolCall: &llm.ToolCall{ID: "toolu_01A9", Name: "list", Input: []byte(`{}`)},
 			}) {
+				return
+			}
+			msg.StopReason = llm.StopToolUse
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+		},
+
+		// A no-argument call whose {} arrives as a fragment like any other, and
+		// the same object split across two. Both are what the regression this
+		// replaces rejected: the allowance is on the placeholder already there,
+		// not on the bytes arriving.
+		"an empty arguments object arriving as a fragment": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "list",
+			}}}
+			msg.Content[0].Input = []byte(`{}`)
+			if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{}`, Partial: msg}) {
+				return
+			}
+			if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg,
+				ToolCall: &llm.ToolCall{ID: "toolu_01A9", Name: "list", Input: []byte(`{}`)}}) {
+				return
+			}
+			msg.StopReason = llm.StopToolUse
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+		},
+		"an empty arguments object split across fragments": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "list",
+			}}}
+			for _, fragment := range []string{"{", "}"} {
+				msg.Content[0].Input = append(msg.Content[0].Input, fragment...)
+				if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: fragment, Partial: msg}) {
+					return
+				}
+			}
+			if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg,
+				ToolCall: &llm.ToolCall{ID: "toolu_01A9", Name: "list", Input: []byte(`{}`)}}) {
 				return
 			}
 			msg.StopReason = llm.StopToolUse

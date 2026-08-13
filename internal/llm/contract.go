@@ -212,6 +212,11 @@ type channel struct {
 	delta EventType
 	grows []EventType
 
+	// placeholder is a value that counts as a fresh start rather than as
+	// content: the next fragment replaces it instead of extending it. Empty
+	// means the channel has none.
+	placeholder string
+
 	text func(Block) string
 }
 
@@ -229,13 +234,16 @@ var channels = []channel{
 	// breaks an adapter, which is why they are written down here rather than
 	// discovered from an error message.
 	//
-	// The empty object is why emptyArguments exists: an adapter that copies that
-	// field faithfully starts at `{}` and then accumulates `{"pa`, which is a
-	// rewrite of the bytes and an addition to the arguments. Reading `{}` as
-	// absence is what lets the rule follow the meaning instead of the encoding.
+	// The empty object is why placeholder exists: an adapter that copies that
+	// field faithfully starts at `{}` and then accumulates `{"pa` over it, which
+	// is a rewrite of the bytes and an addition to the arguments. The allowance
+	// is on what was there before, not on the reader — arguments that genuinely
+	// ARE `{}` still have to arrive like any other payload, and a fragment
+	// appended to the placeholder is still wrong.
 	{name: "tool arguments", kind: BlockToolUse, delta: EventToolInputDelta,
-		grows: []EventType{EventToolInputStart, EventToolCall},
-		text:  emptyArguments},
+		grows:       []EventType{EventToolInputStart, EventToolCall},
+		placeholder: "{}",
+		text:        func(b Block) string { return string(b.Input) }},
 }
 
 // carriesDelta reports whether this event type is some channel's delta, which is
@@ -464,6 +472,13 @@ func checkAccumulation(at string, ev Event, ch channel, seen *map[int]string) er
 		text, was := now[i], (*seen)[i]
 		switch {
 		case text == was:
+			// Unchanged, whatever it holds — including a placeholder that stays
+			// one because the call takes no arguments.
+		case was == ch.placeholder && ch.placeholder != "":
+			grew++
+			if grew == 1 {
+				added = text
+			}
 		case !strings.HasPrefix(text, was):
 			return fmt.Errorf("%s: Partial %s at index %d is %q, which does not start with the %q "+
 				"already streamed; accumulated content is never rewritten or dropped", at, ch.name, i, text, was)
@@ -494,17 +509,6 @@ func checkAccumulation(at string, ev Event, ch channel, seen *map[int]string) er
 
 	*seen = now
 	return nil
-}
-
-// emptyArguments reads a tool call's arguments, with `{}` meaning none. The two
-// encodings of "no arguments" — absent and empty object — both have to count as
-// absence, or an adapter faithfully copying one provider's placeholder looks
-// like it rewrote the other's fragments.
-func emptyArguments(b Block) string {
-	if s := string(b.Input); s != "{}" {
-		return s
-	}
-	return ""
 }
 
 // snapshot is this channel's content per block, keyed by the block's index in
