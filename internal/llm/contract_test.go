@@ -318,7 +318,25 @@ func TestCheckStreamRejects(t *testing.T) {
 					}
 				}
 			},
+			want: "never rewritten or dropped",
+		},
+		"a delta added twice": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText}}}
+				msg.Content[0].Text = "I'llI'll"
+				yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll", Partial: msg})
+			},
 			want: "not the delta",
+		},
+		"two blocks growing on one delta": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+					{Type: llm.BlockText, Text: "one"},
+					{Type: llm.BlockText, Text: "two"},
+				}}
+				yield(llm.Event{Type: llm.EventTextDelta, Delta: "one", Partial: msg})
+			},
+			want: "grew in 2 blocks at once",
 		},
 		"thinking text poured into the text block": {
 			seq: func(yield func(llm.Event) bool) {
@@ -337,7 +355,19 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "Partial thinking",
 		},
-		"accumulated text dropped by a later event": {
+		"accumulated text emptied by a later event": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := streamed()
+				if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll", Partial: msg}) {
+					return
+				}
+				msg.Content[0].Text = ""
+				msg.StopReason = llm.StopEndTurn
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+			},
+			want: "never rewritten or dropped",
+		},
+		"a block removed by a later event": {
 			seq: func(yield func(llm.Event) bool) {
 				msg := streamed()
 				if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll", Partial: msg}) {
@@ -347,7 +377,7 @@ func TestCheckStreamRejects(t *testing.T) {
 				msg.StopReason = llm.StopEndTurn
 				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
 			},
-			want: "never rewritten or dropped",
+			want: "blocks are only ever added to",
 		},
 		"an event after the terminal one": {
 			seq: func(yield func(llm.Event) bool) {
@@ -597,6 +627,45 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "Partial.Role",
 		},
+		"two tool_use blocks sharing an id": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+					{Type: llm.BlockToolUse, ID: "toolu_01", Name: "read", Input: []byte(`{}`)},
+					{Type: llm.BlockToolUse, ID: "toolu_01", Name: "read", Input: []byte(`{}`)},
+				}}
+				for range 2 {
+					ev := llm.Event{Type: llm.EventToolCall, Partial: msg,
+						ToolCall: call("toolu_01", "read", `{}`)}
+					if !yield(ev) {
+						return
+					}
+				}
+				msg.StopReason = llm.StopToolUse
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+			},
+			want: "two tool_use blocks with id",
+		},
+		"a turn that asks for tools without asking for any": {
+			seq: stream(llm.Event{
+				Type:       llm.EventDone,
+				StopReason: llm.StopToolUse,
+				Partial:    &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopToolUse},
+			}),
+			want: "the only reason for one",
+		},
+		"a turn with tool calls that says it ended": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := called(`{"path":"auth.go"}`)
+				ev := llm.Event{Type: llm.EventToolCall, Partial: msg,
+					ToolCall: call("toolu_01A9", "read", `{"path":"auth.go"}`)}
+				if !yield(ev) {
+					return
+				}
+				msg.StopReason = llm.StopEndTurn
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+			},
+			want: "the only reason for one",
+		},
 		"a stop reason on an ordinary event": {
 			seq: stream(llm.Event{
 				Type:       llm.EventTextDelta,
@@ -696,6 +765,35 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 				ToolCall: &llm.ToolCall{ID: "toolu_01A9", Name: "read", Input: []byte(`{"path":"auth.go"}`)},
 			}) {
 				return
+			}
+			msg.StopReason = llm.StopToolUse
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+		},
+
+		// Two parallel calls whose fragments interleave, which is what the
+		// OpenAI-compatible shape allows: fragments are indexed by call, so
+		// nothing says one call's arguments finish before the next one starts.
+		"two calls whose arguments interleave": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+				{Type: llm.BlockToolUse, ID: "toolu_01", Name: "read"},
+				{Type: llm.BlockToolUse, ID: "toolu_02", Name: "read"},
+			}}
+			for _, step := range []struct {
+				block    int
+				fragment string
+			}{{0, `{"a`}, {1, `{"b`}, {0, `":1}`}, {1, `":2}`}} {
+				msg.Content[step.block].Input = append(msg.Content[step.block].Input, step.fragment...)
+				if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: step.fragment, Partial: msg}) {
+					return
+				}
+			}
+			for i, id := range []string{"toolu_01", "toolu_02"} {
+				ev := llm.Event{Type: llm.EventToolCall, Partial: msg, ToolCall: &llm.ToolCall{
+					ID: id, Name: "read", Input: msg.Content[i].Input,
+				}}
+				if !yield(ev) {
+					return
+				}
 			}
 			msg.StopReason = llm.StopToolUse
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})

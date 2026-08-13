@@ -13,8 +13,8 @@ import (
 // CheckStream drains seq, checks the StreamResponse contract on every event,
 // and returns the events in order so a caller can go on to assert what the
 // stream said rather than only that it was well formed. The error names the
-// first violation and the event that committed it; the returned events stop
-// there.
+// first violation and the event that committed it; the events are every event
+// the stream yielded, violation or not.
 //
 // The rules live here, once, because three packages have to satisfy them — the
 // two adapters and the scripted fake — and every one of them is a place where
@@ -90,9 +90,9 @@ func CheckStream(seq StreamResponse) ([]Event, error) {
 // before it: which message they pointed at, how much had accumulated in each
 // channel, which calls it announced, and whether the stream was already over.
 type streamChecker struct {
-	partial   *Message // the pointer the first event carried
-	seen      []string // per channel, what Partial held on the previous event
-	announced []string // tool call ids, in the order EventToolCall reported them
+	partial   *Message         // the pointer the first event carried
+	seen      []map[int]string // per channel, what each block held on the previous event
+	announced []string         // tool call ids, in the order EventToolCall reported them
 
 	terminal EventType  // the terminal event's type, once one has arrived
 	stop     StopReason // and the reason it carried
@@ -150,6 +150,14 @@ func (c *streamChecker) checkComplete() error {
 		}
 	}
 
+	for i, id := range recorded {
+		if slices.Index(recorded, id) != i {
+			return fmt.Errorf("the message holds two tool_use blocks with id %q; one tool_result "+
+				"would answer both, so the pairing design §4 invariant 1 rests on stops being a "+
+				"pairing at all", id)
+		}
+	}
+
 	for _, id := range recorded {
 		if !slices.Contains(c.announced, id) {
 			return fmt.Errorf("the message holds a tool_use block %q that no EventToolCall announced; "+
@@ -161,6 +169,15 @@ func (c *streamChecker) checkComplete() error {
 		return fmt.Errorf("the message records tool calls %v but the stream announced %v; results are "+
 			"answered in announcement order and persisted in block order, so any difference in order "+
 			"or in count leaves tool_result blocks that do not line up", recorded, c.announced)
+	}
+
+	// The reason and the call count have to agree. A turn that asks for tools
+	// says so, and one that says so has something to dispatch: design §4's
+	// termination table has no row for tool_use with nothing to run, and the
+	// loop would spend a step on an empty dispatch and go round again.
+	if (len(recorded) > 0) != (c.stop == StopToolUse) {
+		return fmt.Errorf("the stream ended with StopReason %q holding %d tool calls; %q is the reason "+
+			"for a turn with calls, and the only reason for one", c.stop, len(recorded), StopToolUse)
 	}
 	return nil
 }
@@ -254,7 +271,10 @@ func (c *streamChecker) check(index int, ev Event) error {
 	}
 
 	if c.seen == nil {
-		c.seen = make([]string, len(channels))
+		c.seen = make([]map[int]string, len(channels))
+		for i := range c.seen {
+			c.seen[i] = map[int]string{}
+		}
 	}
 	for i, ch := range channels {
 		if err := checkAccumulation(at, ev, ch, &c.seen[i]); err != nil {
@@ -386,54 +406,83 @@ func arguments(raw json.RawMessage) (map[string]any, error) {
 	return obj, nil
 }
 
-// checkAccumulation holds the half of the contract that is easiest to satisfy
-// on paper and get wrong in code: a delta event must leave Partial holding
-// everything so far plus the delta, and no event may lose ground. seen is what
-// the previous event held in this channel, and is advanced.
+// checkAccumulation holds the half of the contract that is easiest to satisfy on
+// paper and get wrong in code: a delta event must leave Partial holding
+// everything so far plus the delta, and no event may lose ground.
 //
-// The delta rule requires Delta to carry the fragment, which is the only thing
-// a delta event has to say. Every other event must leave the channel exactly as
-// it was — which catches it being rewritten, and equally catches it *growing*
-// where no event announced the growth: content nobody was told about is content
-// a UI keyed on event types never draws.
+// It works per block, not on the channel's blocks joined together, and that is
+// not a detail. Two parallel tool calls can stream interleaved — the
+// OpenAI-compatible wire shape indexes fragments by call — so a joined string
+// would see call 2's first fragment land in the middle of call 1's arguments and
+// call it a rewrite. Rejecting a conformant adapter is worse than missing a bug,
+// because the adapter author has no way to tell which they are looking at.
+//
+// The delta rule requires Delta to carry the fragment, which is the only thing a
+// delta event has to say, and to add it to exactly one block. Every other event
+// must leave the channel exactly as it was — which catches content being
+// rewritten, and equally catches it *growing* where no event announced the
+// growth: content nobody was told about is content a UI keyed on event types
+// never draws.
 //
 // The exception is a channel's grows list, and it is wider than "one last
 // fragment": those events may deliver the entire payload, with no delta before
 // them and nothing in Delta. That is what a no-argument tool call looks like on
 // one provider and what a late-arriving arguments field looks like on another,
 // so the latitude is deliberate and only tool arguments have it.
-func checkAccumulation(at string, ev Event, ch channel, seen *string) error {
-	got := ch.accumulated(ev.Partial)
+func checkAccumulation(at string, ev Event, ch channel, seen *map[int]string) error {
+	now := ch.snapshot(ev.Partial)
+
+	for i := range *seen {
+		if _, ok := now[i]; !ok {
+			return fmt.Errorf("%s: the %s block at index %d is gone; blocks are only ever added to, "+
+				"and a message that loses one has lost part of the reply", at, ch.name, i)
+		}
+	}
+
+	grew, added := 0, ""
+	for i, text := range now {
+		was := (*seen)[i]
+		switch {
+		case text == was:
+		case !strings.HasPrefix(text, was):
+			return fmt.Errorf("%s: Partial %s at index %d is %q, which does not start with the %q "+
+				"already streamed; accumulated content is never rewritten or dropped", at, ch.name, i, text, was)
+		default:
+			grew++
+			added = text[len(was):]
+		}
+	}
 
 	switch {
 	case ev.Type == ch.delta:
-		if want := *seen + ev.Delta; got != want {
-			return fmt.Errorf("%s: Partial %s is %q, want %q — Partial is the full accumulated message, not the delta",
-				at, ch.name, got, want)
+		switch {
+		case grew > 1:
+			return fmt.Errorf("%s: Partial %s grew in %d blocks at once; one delta adds to one block",
+				at, ch.name, grew)
+		case added != ev.Delta:
+			return fmt.Errorf("%s: Partial %s grew by %q, want %q — Partial is the full accumulated "+
+				"message, not the delta", at, ch.name, added, ev.Delta)
 		}
 	case slices.Contains(ch.grows, ev.Type):
-		if !strings.HasPrefix(got, *seen) {
-			return fmt.Errorf("%s: Partial %s is %q, which does not start with the %q already streamed; "+
-				"accumulated content is never rewritten or dropped", at, ch.name, got, *seen)
-		}
-	case got != *seen:
-		return fmt.Errorf("%s: Partial %s went from %q to %q; only %v adds to it, and accumulated "+
-			"content is never rewritten or dropped", at, ch.name, *seen, got, append([]EventType{ch.delta}, ch.grows...))
+		// Any amount, in any block: see the latitude above.
+	case grew > 0:
+		return fmt.Errorf("%s: Partial %s grew by %q; only %v adds to it, and content nobody "+
+			"announced is content nobody draws", at, ch.name, added, append([]EventType{ch.delta}, ch.grows...))
 	}
 
-	*seen = got
+	*seen = now
 	return nil
 }
 
-// accumulated joins this channel's content across every block of its kind,
-// which is how much of it the message holds regardless of how the provider
-// split it into blocks.
-func (ch channel) accumulated(m *Message) string {
-	var b strings.Builder
-	for _, block := range m.Content {
+// snapshot is this channel's content per block, keyed by the block's index in
+// the message. The index is the identity: it is what the wire formats use to
+// route fragments, and it is stable because blocks are only ever appended.
+func (ch channel) snapshot(m *Message) map[int]string {
+	out := map[int]string{}
+	for i, block := range m.Content {
 		if block.Type == ch.kind {
-			b.WriteString(ch.text(block))
+			out[i] = ch.text(block)
 		}
 	}
-	return b.String()
+	return out
 }

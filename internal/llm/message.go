@@ -38,9 +38,13 @@ const (
 type Block struct {
 	Type BlockType `json:"type"`
 
-	// Text carries BlockText and BlockThinking content. Thinking text is
-	// stored because the transcript is what gets replayed to the user, not
-	// because a provider needs it back.
+	// Text carries BlockText and BlockThinking content.
+	//
+	// Thinking is not only for the reader: Anthropic requires a thinking block
+	// to be replayed verbatim, signature and all, when a turn that thought went
+	// on to call a tool. There is no field for that signature yet, and adding
+	// one is additive — an older transcript simply has none — so the adapter
+	// that first meets the wire format settles its shape, with a test.
 	Text string `json:"text,omitempty"`
 
 	ID    string          `json:"id,omitempty"`    // BlockToolUse — the provider's call id
