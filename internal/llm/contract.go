@@ -1,10 +1,12 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -14,11 +16,21 @@ import (
 // first violation and the event that committed it; the returned events stop
 // there.
 //
-// The rules live here, once, because four packages have to satisfy them — the
-// two adapters, the retry wrapper and the scripted fake — and every one of them
-// is a place where "populate Partial" turns into "populate Partial except on
-// the event I added last week". A test per adapter that re-derives the rules
-// tests four different contracts.
+// The rules live here, once, because three packages have to satisfy them — the
+// two adapters and the scripted fake — and every one of them is a place where
+// "populate Partial" turns into "populate Partial except on the event I added
+// last week". A test per adapter that re-derives the rules tests three
+// different contracts.
+//
+// A retry wrapper is NOT one of the three, and that is not an oversight. Design
+// §12 makes "stream ended before message_stop" retryable, so a retry can happen
+// after a first attempt has already streamed text and a terminal EventError —
+// and a wrapper that simply plays attempt 2 after attempt 1 breaks three rules
+// at once: an event after the terminal one, a second *Message, and content that
+// was streamed and then dropped. Nothing here decides which way out it takes
+// (buffer each attempt until it succeeds, and lose streaming on the first one;
+// or reset the message and let the UI redraw). That belongs to the ticket that
+// builds it, with the answer written down.
 //
 // This is for tests: it consumes the stream, so nothing can read it afterwards,
 // and against a real provider it blocks until the model has finished.
@@ -68,15 +80,24 @@ func CheckStream(seq StreamResponse) ([]Event, error) {
 type streamChecker struct {
 	partial   *Message // the pointer the first event carried
 	seen      []string // per channel, what Partial held on the previous event
-	announced map[string]bool
+	announced []string // tool call ids, in the order EventToolCall reported them
 
 	terminal EventType  // the terminal event's type, once one has arrived
 	stop     StopReason // and the reason it carried
 }
 
-// checkComplete runs once the stream has ended, on the rule that needs the
-// whole of it: every tool_use block in the message was announced by an
-// EventToolCall.
+// completions are the stop reasons that claim the message is finished, and
+// failures the ones that say it is not. Design §4's termination table splits
+// them this way: StopRefusal is a normal completion, StopAborted commits what
+// exists, StopError retries.
+var (
+	completions = []StopReason{StopEndTurn, StopToolUse, StopMaxTokens, StopRefusal}
+	failures    = []StopReason{StopError, StopAborted}
+)
+
+// checkComplete runs once the stream has ended, on the rule that needs the whole
+// of it: the tool calls the events announced are exactly the tool_use blocks the
+// message holds, in the same order.
 //
 // This is the mirror of the direction checkToolCall covers, and the one design
 // §4 invariant 1 states literally — a tool_use with no tool_result. An adapter
@@ -84,20 +105,41 @@ type streamChecker struct {
 // no result answers it, and the next request is rejected. Nothing else would
 // notice: a missing event is silence, and silence reads as a pass.
 //
+// Order counts for the same reason, one step further on. The loop dispatches
+// from the events and lands results by index, so `tool_result` order follows
+// announcement order while the persisted `tool_use` order follows the blocks
+// (design §6 rule 6). An adapter that buffers its calls in a map and flushes at
+// the end announces them in Go's randomized map order, and the symptom is the
+// provider rejecting the *next* request — a long way from the cause.
+//
 // It applies only to a message the provider claims is complete. A stream that
-// failed or was truncated is expected to hold a half-built call — that is what
-// design §4 invariant 2's guard exists to fail — so demanding an announcement
-// there would reject exactly the streams the guard is written for.
+// failed, was cancelled or ran out of output is expected to hold a half-built
+// call — that is what design §4 invariant 2's guard exists to fail — so
+// demanding an announcement there would reject exactly the streams the guard is
+// written for.
 func (c *streamChecker) checkComplete() error {
-	if c.terminal != EventDone || (c.stop != StopEndTurn && c.stop != StopToolUse) {
+	if c.terminal != EventDone || c.stop == StopMaxTokens || !slices.Contains(completions, c.stop) {
 		return nil
 	}
+
+	var recorded []string
 	for _, block := range c.partial.Content {
-		if block.Type == BlockToolUse && !c.announced[block.ID] {
+		if block.Type == BlockToolUse {
+			recorded = append(recorded, block.ID)
+		}
+	}
+
+	for _, id := range recorded {
+		if !slices.Contains(c.announced, id) {
 			return fmt.Errorf("the message holds a tool_use block %q that no EventToolCall announced; "+
 				"the loop dispatches from the event, so a call only in the message is one nothing runs "+
-				"and nothing answers", block.ID)
+				"and nothing answers", id)
 		}
+	}
+	if !slices.Equal(recorded, c.announced) {
+		return fmt.Errorf("the message records tool calls %v but the stream announced %v; results are "+
+			"answered in announcement order and persisted in block order, so any difference in order "+
+			"or in count leaves tool_result blocks that do not line up", recorded, c.announced)
 	}
 	return nil
 }
@@ -112,16 +154,36 @@ func (c *streamChecker) checkComplete() error {
 // arbitrary bytes, where losing accumulation does not garble a sentence, it
 // hands the agent loop arguments that parse and mean something else.
 type channel struct {
-	name  string // how the error message says it
-	kind  BlockType
-	delta EventType
-	text  func(Block) string
+	name string // how the error message says it
+	kind BlockType
+
+	// delta is the event that adds a fragment to this channel, and the only
+	// one whose Delta has to match what arrived. completes may also add to it,
+	// for a channel that a later event finishes; the zero value means none.
+	delta     EventType
+	completes EventType
+
+	text func(Block) string
 }
 
 var channels = []channel{
-	{"text", BlockText, EventTextDelta, func(b Block) string { return b.Text }},
-	{"thinking", BlockThinking, EventThinkingDelta, func(b Block) string { return b.Text }},
-	{"tool arguments", BlockToolUse, EventToolInputDelta, func(b Block) string { return string(b.Input) }},
+	{name: "text", kind: BlockText, delta: EventTextDelta,
+		text: func(b Block) string { return b.Text }},
+	{name: "thinking", kind: BlockThinking, delta: EventThinkingDelta,
+		text: func(b Block) string { return b.Text }},
+	{name: "tool arguments", kind: BlockToolUse, delta: EventToolInputDelta, completes: EventToolCall,
+		text: func(b Block) string { return string(b.Input) }},
+}
+
+// carriesDelta reports whether this event type is some channel's delta, which is
+// the only kind of event with anything to put in Delta.
+func carriesDelta(t EventType) bool {
+	for _, ch := range channels {
+		if ch.delta == t {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *streamChecker) check(index int, ev Event) error {
@@ -136,6 +198,11 @@ func (c *streamChecker) check(index int, ev Event) error {
 	switch {
 	case c.partial == nil:
 		c.partial = ev.Partial
+		if ev.Partial.Role != RoleAssistant {
+			return fmt.Errorf("%s: Partial.Role is %q, want %q; the message is allocated before the "+
+				"first event and persisted after the last, and a transcript holding a message with no "+
+				"role is rejected the next time it is replayed", at, ev.Partial.Role, RoleAssistant)
+		}
 	case ev.Partial != c.partial:
 		return fmt.Errorf("%s carries a different *Message than the events before it; "+
 			"the message is allocated once, outside the stream loop, and mutated in place", at)
@@ -146,6 +213,10 @@ func (c *streamChecker) check(index int, ev Event) error {
 	}
 	if (ev.Err != nil) != (ev.Type == EventError) {
 		return fmt.Errorf("%s: Err is set on EventError and nothing else (here: %v)", at, ev.Err)
+	}
+	if ev.Delta != "" && !carriesDelta(ev.Type) {
+		return fmt.Errorf("%s carries Delta %q; only a delta event has newly-arrived content, and a "+
+			"consumer that appends whatever Delta holds would render this twice", at, ev.Delta)
 	}
 
 	if c.seen == nil {
@@ -161,10 +232,7 @@ func (c *streamChecker) check(index int, ev Event) error {
 		if err := checkToolCall(at, ev); err != nil {
 			return err
 		}
-		if c.announced == nil {
-			c.announced = map[string]bool{}
-		}
-		c.announced[ev.ToolCall.ID] = true
+		c.announced = append(c.announced, ev.ToolCall.ID)
 	}
 
 	isTerminal := ev.Type == EventDone || ev.Type == EventError
@@ -172,15 +240,36 @@ func (c *streamChecker) check(index int, ev Event) error {
 		c.terminal, c.stop = ev.Type, ev.StopReason
 	}
 	switch {
-	case isTerminal && ev.StopReason == "":
-		return fmt.Errorf("%s has no StopReason; the terminal event says why the model stopped", at)
 	case !isTerminal && ev.StopReason != "":
 		return fmt.Errorf("%s has StopReason %q; only the terminal event carries one, and a "+
 			"consumer reading it per event would act on max_tokens mid-stream", at, ev.StopReason)
 	case !isTerminal && ev.Partial.StopReason != "":
 		return fmt.Errorf("%s: Partial.StopReason is %q before the stream ended; consumers are "+
 			"told to read Partial, so a reason set early is the one they act on", at, ev.Partial.StopReason)
-	case isTerminal && ev.Partial.StopReason != ev.StopReason:
+	case isTerminal:
+		return checkStopReason(at, ev)
+	}
+	return nil
+}
+
+// checkStopReason holds the terminal event's own rules. The loop branches on the
+// stop reason (design §4's termination table) and the retry classifier reads it
+// off the Message, so it has to be present, has to agree with the message, and
+// has to agree with the event type: an EventError reporting end_turn is a
+// truncated reply the loop would present as complete and never retry, and an
+// EventDone reporting error retries a turn that finished.
+func checkStopReason(at string, ev Event) error {
+	want := completions
+	if ev.Type == EventError {
+		want = failures
+	}
+
+	switch {
+	case ev.StopReason == "":
+		return fmt.Errorf("%s has no StopReason; the terminal event says why the model stopped", at)
+	case !slices.Contains(want, ev.StopReason):
+		return fmt.Errorf("%s carries StopReason %q; %s carries one of %v", at, ev.StopReason, ev.Type, want)
+	case ev.Partial.StopReason != ev.StopReason:
 		return fmt.Errorf("%s has StopReason %q but Partial.StopReason is %q; "+
 			"the message is what gets persisted and what the retry classifier reads, "+
 			"so it carries the reason too", at, ev.StopReason, ev.Partial.StopReason)
@@ -221,9 +310,17 @@ func checkToolCall(at string, ev Event) error {
 			return fmt.Errorf("%s: the tool_use block for %s holds arguments that %s; the message is "+
 				"what gets persisted, so the fragments have to be finished there too", at, call.ID, err)
 		}
-		// By value, so whitespace and the order a provider serialized its keys
-		// in do not count as disagreement.
-		if !reflect.DeepEqual(recorded, called) {
+		// Byte-identical, not merely equal by value. The looser rule would
+		// contradict the accumulation rule, which compares the fragments as
+		// they arrived — and the message is meant to hold what the model sent,
+		// not our re-rendering of it.
+		if !bytes.Equal(block.Input, call.Input) {
+			if reflect.DeepEqual(recorded, called) {
+				return fmt.Errorf("%s: ToolCall %s and its tool_use block hold the same arguments "+
+					"serialized differently (%s against %s); keep the fragments verbatim on both "+
+					"sides, so the transcript is what the model actually sent",
+					at, call.ID, call.Input, block.Input)
+			}
 			return fmt.Errorf("%s: ToolCall %s runs with %s but the tool_use block records %s; "+
 				"the loop dispatches from the event and the message is what gets persisted, so a "+
 				"transcript that disagrees describes something that never ran",
@@ -241,12 +338,15 @@ func checkToolCall(at string, ev Event) error {
 // tool would run with every argument zeroed instead of failing. An
 // OpenAI-compatible endpoint normalising an empty arguments string is exactly
 // how that arrives.
+// The two failures are reported apart because they send an adapter author to
+// different places: unfinished fragments are an accumulation bug, and a JSON
+// array or number is a mapping bug.
 func arguments(raw json.RawMessage) (map[string]any, error) {
-	var obj map[string]any
-	if err := json.Unmarshal(raw, &obj); err != nil {
+	if !json.Valid(raw) {
 		return nil, fmt.Errorf("do not parse as JSON (%q)", raw)
 	}
-	if obj == nil {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
 		return nil, fmt.Errorf("are %q, not a JSON object", raw)
 	}
 	return obj, nil
@@ -258,19 +358,28 @@ func arguments(raw json.RawMessage) (map[string]any, error) {
 // the previous event held in this channel, and is advanced.
 //
 // The delta rule requires Delta to carry the fragment, which is the only thing
-// a delta event has to say. The looser rule for every other event is what
-// catches a channel being rewritten by an event that should not have touched it.
+// a delta event has to say. Every other event must leave the channel exactly as
+// it was — which catches it being rewritten, and equally catches it *growing*
+// where no event announced the growth: content nobody was told about is content
+// a UI keyed on event types never draws. The one exception is the event that
+// completes a channel, which may add the last of it.
 func checkAccumulation(at string, ev Event, ch channel, seen *string) error {
 	got := ch.accumulated(ev.Partial)
 
-	if ev.Type == ch.delta {
+	switch {
+	case ev.Type == ch.delta:
 		if want := *seen + ev.Delta; got != want {
 			return fmt.Errorf("%s: Partial %s is %q, want %q — Partial is the full accumulated message, not the delta",
 				at, ch.name, got, want)
 		}
-	} else if !strings.HasPrefix(got, *seen) {
-		return fmt.Errorf("%s: Partial %s is %q, which does not start with the %q already streamed; "+
-			"accumulated content is never rewritten or dropped", at, ch.name, got, *seen)
+	case ch.completes != "" && ev.Type == ch.completes:
+		if !strings.HasPrefix(got, *seen) {
+			return fmt.Errorf("%s: Partial %s is %q, which does not start with the %q already streamed; "+
+				"accumulated content is never rewritten or dropped", at, ch.name, got, *seen)
+		}
+	case got != *seen:
+		return fmt.Errorf("%s: Partial %s went from %q to %q; only %s adds to it, and accumulated "+
+			"content is never rewritten or dropped", at, ch.name, *seen, got, ch.delta)
 	}
 
 	*seen = got

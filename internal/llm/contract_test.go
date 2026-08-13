@@ -300,7 +300,7 @@ func TestCheckStreamRejects(t *testing.T) {
 					{"I'll", "I'll"},
 					{" read", "I'll read"},
 				} {
-					msg := &llm.Message{Content: []llm.Block{{Type: llm.BlockText, Text: step.accumulated}}}
+					msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText, Text: step.accumulated}}}
 					if !yield(llm.Event{Type: llm.EventTextDelta, Delta: step.delta, Partial: msg}) {
 						return
 					}
@@ -310,7 +310,7 @@ func TestCheckStreamRejects(t *testing.T) {
 		},
 		"a Partial carrying only the delta": {
 			seq: func(yield func(llm.Event) bool) {
-				msg := &llm.Message{Content: []llm.Block{{Type: llm.BlockText}}}
+				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText}}}
 				for _, chunk := range []string{"I'll", " read"} {
 					msg.Content[0].Text = chunk // = , not +=
 					if !yield(llm.Event{Type: llm.EventTextDelta, Delta: chunk, Partial: msg}) {
@@ -322,8 +322,18 @@ func TestCheckStreamRejects(t *testing.T) {
 		},
 		"thinking text poured into the text block": {
 			seq: func(yield func(llm.Event) bool) {
-				msg := &llm.Message{Content: []llm.Block{{Type: llm.BlockText, Text: "hmm"}}}
+				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText, Text: "hmm"}}}
 				yield(llm.Event{Type: llm.EventThinkingDelta, Delta: "hmm", Partial: msg})
+			},
+			want: "only text_delta adds to it",
+		},
+		"a thinking delta the message never recorded": {
+			seq: func(yield func(llm.Event) bool) {
+				yield(llm.Event{
+					Type:    llm.EventThinkingDelta,
+					Delta:   "hmm",
+					Partial: &llm.Message{Role: llm.RoleAssistant},
+				})
 			},
 			want: "Partial thinking",
 		},
@@ -341,7 +351,7 @@ func TestCheckStreamRejects(t *testing.T) {
 		},
 		"an event after the terminal one": {
 			seq: func(yield func(llm.Event) bool) {
-				msg := &llm.Message{StopReason: llm.StopEndTurn}
+				msg := &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopEndTurn}
 				if !yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg}) {
 					return
 				}
@@ -358,15 +368,15 @@ func TestCheckStreamRejects(t *testing.T) {
 			want: "no events",
 		},
 		"a terminal event with no stop reason": {
-			seq:  stream(llm.Event{Type: llm.EventDone, Partial: &llm.Message{}}),
+			seq:  stream(llm.Event{Type: llm.EventDone, Partial: &llm.Message{Role: llm.RoleAssistant}}),
 			want: "no StopReason",
 		},
 		"a stop reason the message does not carry": {
-			seq:  stream(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: &llm.Message{}}),
+			seq:  stream(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: &llm.Message{Role: llm.RoleAssistant}}),
 			want: "Partial.StopReason",
 		},
 		"a tool call event with no tool call": {
-			seq:  stream(llm.Event{Type: llm.EventToolCall, Partial: &llm.Message{}}),
+			seq:  stream(llm.Event{Type: llm.EventToolCall, Partial: &llm.Message{Role: llm.RoleAssistant}}),
 			want: "ToolCall is set on EventToolCall",
 		},
 		"arguments carrying only the last fragment": {
@@ -464,6 +474,117 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "no EventToolCall announced",
 		},
+		"a roleless message": {
+			seq:  stream(llm.Event{Type: llm.EventMessageStart, Partial: &llm.Message{}}),
+			want: "Partial.Role",
+		},
+		"a delta on an event that has no content": {
+			seq: stream(llm.Event{
+				Type:       llm.EventDone,
+				Delta:      "surprise",
+				StopReason: llm.StopEndTurn,
+				Partial:    &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopEndTurn},
+			}),
+			want: "carries Delta",
+		},
+		"a failure reported as a normal ending": {
+			seq: stream(llm.Event{
+				Type:       llm.EventError,
+				StopReason: llm.StopEndTurn,
+				Err:        errors.New("overloaded"),
+				Partial:    &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopEndTurn},
+			}),
+			want: "error carries one of",
+		},
+		"a normal ending reported as a failure": {
+			seq: stream(llm.Event{
+				Type:       llm.EventDone,
+				StopReason: llm.StopError,
+				Partial:    &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopError},
+			}),
+			want: "done carries one of",
+		},
+		"arguments serialized differently on each side": {
+			seq: stream(llm.Event{
+				Type:     llm.EventToolCall,
+				Partial:  called(`{"path": "auth.go"}`),
+				ToolCall: call("toolu_01A9", "read", `{"path":"auth.go"}`),
+			}),
+			want: "serialized differently",
+		},
+		"calls announced in an order the message does not hold": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+					{Type: llm.BlockToolUse, ID: "toolu_01", Name: "read", Input: []byte(`{}`)},
+					{Type: llm.BlockToolUse, ID: "toolu_02", Name: "read", Input: []byte(`{}`)},
+				}}
+				for _, id := range []string{"toolu_02", "toolu_01"} {
+					ev := llm.Event{
+						Type:     llm.EventToolCall,
+						Partial:  msg,
+						ToolCall: call(id, "read", `{}`),
+					}
+					if !yield(ev) {
+						return
+					}
+				}
+				msg.StopReason = llm.StopToolUse
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+			},
+			want: "do not line up",
+		},
+		"one call announced twice": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := called(`{"path":"auth.go"}`)
+				for range 2 {
+					ev := llm.Event{
+						Type:     llm.EventToolCall,
+						Partial:  msg,
+						ToolCall: call("toolu_01A9", "read", `{"path":"auth.go"}`),
+					}
+					if !yield(ev) {
+						return
+					}
+				}
+				msg.StopReason = llm.StopToolUse
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+			},
+			want: "do not line up",
+		},
+		"arguments that are a JSON array": {
+			seq: stream(llm.Event{
+				Type:     llm.EventToolCall,
+				Partial:  called(`[1,2]`),
+				ToolCall: call("toolu_01A9", "read", `[1,2]`),
+			}),
+			want: "not a JSON object",
+		},
+		"a refused turn holding a call it never announced": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := called(`{"path":"auth.go"}`)
+				if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"path":"auth.go"}`, Partial: msg}) {
+					return
+				}
+				msg.StopReason = llm.StopRefusal
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopRefusal, Partial: msg})
+			},
+			want: "no EventToolCall announced",
+		},
+		"arguments replaced when the call completes": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := called(`{"path":"auth.go"}`)
+				if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"path":"auth.go"}`, Partial: msg}) {
+					return
+				}
+				msg.Content[0].Input = []byte(`{}`)
+				yield(llm.Event{
+					Type:     llm.EventToolCall,
+					Partial:  msg,
+					ToolCall: call("toolu_01A9", "read", `{}`),
+				})
+			},
+			want: "does not start with",
+		},
 		"a stop reason on an ordinary event": {
 			seq: stream(llm.Event{
 				Type:       llm.EventTextDelta,
@@ -476,20 +597,20 @@ func TestCheckStreamRejects(t *testing.T) {
 		"a tool call hung off another event": {
 			seq: stream(llm.Event{
 				Type:     llm.EventMessageStart,
-				Partial:  &llm.Message{},
+				Partial:  &llm.Message{Role: llm.RoleAssistant},
 				ToolCall: &llm.ToolCall{ID: "toolu_01A9", Name: "read"},
 			}),
 			want: "ToolCall is set on EventToolCall",
 		},
 		"an error event with no error": {
-			seq:  stream(llm.Event{Type: llm.EventError, StopReason: llm.StopError, Partial: &llm.Message{StopReason: llm.StopError}}),
+			seq:  stream(llm.Event{Type: llm.EventError, StopReason: llm.StopError, Partial: &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopError}}),
 			want: "Err is set on EventError",
 		},
 		"an error hung off a successful event": {
 			seq: stream(llm.Event{
 				Type:       llm.EventDone,
 				StopReason: llm.StopEndTurn,
-				Partial:    &llm.Message{StopReason: llm.StopEndTurn},
+				Partial:    &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopEndTurn},
 				Err:        errors.New("overloaded"),
 			}),
 			want: "Err is set on EventError",
