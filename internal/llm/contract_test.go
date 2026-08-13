@@ -673,6 +673,25 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "not the order the message records them in",
 		},
+		"arguments changed after the call was announced": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+					{Type: llm.BlockToolUse, ID: "toolu_01", Name: "read", Input: []byte(`{"a":1}`)},
+				}}
+				if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"a":1}`, Partial: msg}) {
+					return
+				}
+				if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg,
+					ToolCall: call("toolu_01", "read", `{"a":1}`)}) {
+					return
+				}
+				// A second call's tail mis-routed onto the first call's block,
+				// after the loop has already been told to run it.
+				msg.Content[0].Input = []byte(`{"a":1}{"b":2}`)
+				yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"b":2}`, Partial: msg})
+			},
+			want: "after its call was announced",
+		},
 		"an empty-object fragment with nowhere to land": {
 			seq: func(yield func(llm.Event) bool) {
 				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{

@@ -234,14 +234,14 @@ func TestNullArgumentsEncodeAsAnObject(t *testing.T) {
 }
 
 // TestStrayArgumentsDoNotSinkTheMessage is the same protection for a field set on
-// a block that should not carry one. It is a bug upstream either way, and the
-// message still has to be writable: a turn that cannot be encoded cannot be
-// committed together with its results.
+// a block that should not carry one. A well-formed stray is the dangerous half:
+// these tags are the provider's format too, so an extra input key on a
+// tool_result is a 400 rather than something anyone cleans up later.
 func TestStrayArgumentsDoNotSinkTheMessage(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleUser,
 		Content: []llm.Block{{
-			Type: llm.BlockToolResult, ToolUseID: "toolu_01A9", Content: "ok", Input: []byte(`{"pa`),
+			Type: llm.BlockToolResult, ToolUseID: "toolu_01A9", Content: "ok", Input: []byte(`{"stray":true}`),
 		}},
 	}
 

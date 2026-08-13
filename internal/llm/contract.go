@@ -117,6 +117,7 @@ type streamChecker struct {
 	partial   *Message         // the pointer the first event carried
 	seen      []map[int]string // per channel, what each block held on the previous event
 	announced []string         // tool call ids, in the order EventToolCall reported them
+	frozen    map[int]bool     // blocks whose call was announced, and so cannot change again
 
 	terminal EventType  // the terminal event's type, once one has arrived
 	stop     StopReason // and the reason it carried
@@ -367,16 +368,25 @@ func (c *streamChecker) check(index int, ev Event) error {
 		}
 	}
 	for i, ch := range channels {
-		if err := checkAccumulation(at, ev, ch, c.seen[i]); err != nil {
+		if err := checkAccumulation(at, ev, ch, c.seen[i], c.frozen); err != nil {
 			return err
 		}
 	}
 
 	if ev.Type == EventToolCall {
-		if err := checkToolCall(at, ev); err != nil {
+		at, err := checkToolCall(at, ev)
+		if err != nil {
 			return err
 		}
 		c.announced = append(c.announced, ev.ToolCall.ID)
+		if c.frozen == nil {
+			c.frozen = map[int]bool{}
+		}
+		// Nothing may touch that block again. The loop dispatches from this
+		// event, so a later fragment landing there — call 2's tail mis-routed
+		// onto call 1 — changes what the transcript says was run after it ran,
+		// and the byte comparison that would have caught it has already happened.
+		c.frozen[at] = true
 	}
 
 	isTerminal := ev.Type == EventDone || ev.Type == EventError
@@ -426,32 +436,32 @@ func checkStopReason(at string, ev Event) error {
 // design §4 invariant 1 one step upstream — the loop runs the tool from the
 // event and writes a tool_result, so a call missing from the message leaves a
 // result answering nothing, and every provider rejects the next request.
-func checkToolCall(at string, ev Event) error {
+func checkToolCall(at string, ev Event) (int, error) {
 	call := ev.ToolCall
 
 	switch {
 	case call.ID == "":
-		return fmt.Errorf("%s: ToolCall has no ID; the tool_result that answers it has nowhere to point", at)
+		return 0, fmt.Errorf("%s: ToolCall has no ID; the tool_result that answers it has nowhere to point", at)
 	case call.Name == "":
-		return fmt.Errorf("%s: ToolCall has no Name; nothing can be resolved from the registry", at)
+		return 0, fmt.Errorf("%s: ToolCall has no Name; nothing can be resolved from the registry", at)
 	}
 	called, err := arguments(call.Input)
 	if err != nil {
-		return fmt.Errorf("%s: ToolCall arguments %s; EventToolCall means they have arrived complete, "+
+		return 0, fmt.Errorf("%s: ToolCall arguments %s; EventToolCall means they have arrived complete, "+
 			"and a call taking none still sends {}", at, err)
 	}
 
-	for _, block := range ev.Partial.Content {
+	for index, block := range ev.Partial.Content {
 		if block.Type != BlockToolUse || block.ID != call.ID {
 			continue
 		}
 		if block.Name != call.Name {
-			return fmt.Errorf("%s: ToolCall %s names %q but the tool_use block with that id names %q",
+			return 0, fmt.Errorf("%s: ToolCall %s names %q but the tool_use block with that id names %q",
 				at, call.ID, call.Name, block.Name)
 		}
 		recorded, err := arguments(block.Input)
 		if err != nil {
-			return fmt.Errorf("%s: the tool_use block for %s holds arguments that %s; the message is "+
+			return 0, fmt.Errorf("%s: the tool_use block for %s holds arguments that %s; the message is "+
 				"what gets persisted, so the fragments have to be finished there too", at, call.ID, err)
 		}
 		// Byte-identical, not merely equal by value, because the looser rule
@@ -463,19 +473,19 @@ func checkToolCall(at string, ev Event) error {
 		// "the event and the message agree", not "these bytes are forever".
 		if !bytes.Equal(block.Input, call.Input) {
 			if reflect.DeepEqual(recorded, called) {
-				return fmt.Errorf("%s: ToolCall %s and its tool_use block hold the same arguments "+
+				return 0, fmt.Errorf("%s: ToolCall %s and its tool_use block hold the same arguments "+
 					"serialized differently (%s against %s); keep the fragments verbatim on both "+
 					"sides, so the transcript is what the model actually sent",
 					at, call.ID, call.Input, block.Input)
 			}
-			return fmt.Errorf("%s: ToolCall %s runs with %s but the tool_use block records %s; "+
+			return 0, fmt.Errorf("%s: ToolCall %s runs with %s but the tool_use block records %s; "+
 				"the loop dispatches from the event and the message is what gets persisted, so a "+
 				"transcript that disagrees describes something that never ran",
 				at, call.ID, call.Input, block.Input)
 		}
-		return nil
+		return index, nil
 	}
-	return fmt.Errorf("%s: no tool_use block in Partial has id %q; the call has to exist in the "+
+	return 0, fmt.Errorf("%s: no tool_use block in Partial has id %q; the call has to exist in the "+
 		"message as well as in the event", at, call.ID)
 }
 
@@ -501,9 +511,14 @@ func arguments(raw json.RawMessage) (map[string]any, error) {
 
 // isJSONObject reports whether raw is a JSON object — the shape a tool call's
 // arguments have to be, as opposed to merely parseable.
+//
+// It answers from the first byte rather than through arguments(), because
+// Block.MarshalJSON asks on every session append and a write or edit call
+// carries a whole file body: decoding that tree to learn it starts with a brace
+// is an allocation per line written.
 func isJSONObject(raw json.RawMessage) bool {
-	_, err := arguments(raw)
-	return err == nil
+	trimmed := bytes.TrimLeft(raw, " \t\r\n")
+	return len(trimmed) > 0 && trimmed[0] == '{' && json.Valid(raw)
 }
 
 // checkAccumulation holds the half of the contract that is easiest to satisfy on
@@ -529,7 +544,7 @@ func isJSONObject(raw json.RawMessage) bool {
 // them and nothing in Delta. That is what a no-argument tool call looks like on
 // one provider and what a late-arriving arguments field looks like on another,
 // so the latitude is deliberate and only tool arguments have it.
-func checkAccumulation(at string, ev Event, ch channel, seen map[int]string) error {
+func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, frozen map[int]bool) error {
 	now := ch.snapshot(ev.Partial)
 
 	// Sorted, so a message naming a block index names the same one on every run.
@@ -549,6 +564,10 @@ func checkAccumulation(at string, ev Event, ch channel, seen map[int]string) err
 		case text == was:
 			// Unchanged, whatever it holds — including a placeholder left alone
 			// by an event that was never going to add to it.
+		case frozen[i]:
+			return fmt.Errorf("%s: Partial %s at index %d changed from %q to %q after its call was "+
+				"announced; a completed call is finished, and the loop has already dispatched from it",
+				at, ch.name, i, was, text)
 		case ch.placeholder != "" && was == ch.placeholder:
 			// A fragment replaces the placeholder rather than extending it.
 			grew++

@@ -72,29 +72,31 @@ difference between doing this for the two obvious guards and doing it for all of
 by writing back the bytes you replaced** — never `git checkout -- .`, which resets the whole tree
 to HEAD and takes every other uncommitted change in the working directory with it. It did.
 
-**A not-caught result has two causes, and they need opposite fixes.** Either the check is weak,
-or the test never reaches the line you mutated. M0-06 broke the guard that stops a provider
-working after its consumer walked away and the test still passed — because it had abandoned the
-stream one guard earlier. The check was fine; the test was missing a case. Confirm the mutated
-line runs before strengthening anything.
+**A not-caught result has three causes and only one is the check's fault.** The check may be
+weak; the test may never reach the line you mutated; or the `-run` pattern may match no test at
+all, which exits 0 and reads exactly like a pass. M0-06 hit the second (a guard reached only
+after the stream had already been abandoned) and the third (a subtest name with an apostrophe in
+it). Make the harness shout when nothing ran, and confirm the line runs, before touching the
+check.
 
 Then `just ci` — fmt-check, vet, build, test, race. Run it before pushing, not after.
 
 ## 5. Open the PR
 
-Body shape that has worked:
+**Write the description for an engineering director.** Someone two levels out from the code
+should be able to read it and know what shipped and why it matters — so lead with what the PR
+*does*, in plain language, and describe the capability or the fix rather than the mechanism.
+Then anything the reviewer genuinely needs: a judgement call and its alternative, a risk, a
+piece deliberately left out.
 
-- What changed and why, in the ticket's terms.
-- The acceptance criteria as a checklist, each with **how it was verified** — not just ticked.
-- Judgement calls you made, flagged as such, with the alternative. These are what the reviewer
-  is actually for.
-- Anything deliberately left out, and why.
+**Don't list the acceptance criteria.** They live in the ticket and the reviewer can open it;
+copying them across turns the description into a form nobody reads. Verification already
+happened in §4 and does not get re-staged here.
 
 **Keep it short enough that the reader reaches the diff.** M0-04's body ran well past a thousand
 words, re-arguing reasoning that was already in the commit messages and the code comments — and
 a description nobody finishes is one that fails at the only job it has, which is to get someone
-into the diff with the right questions. A line or two per criterion. Name a judgement call and
-its alternative; don't litigate it. If a decision needs a paragraph to defend, that paragraph
+into the diff with the right questions. If a decision needs a paragraph to defend, that paragraph
 belongs in the code, where the next reader is actually standing.
 
 Reference the work by milestone ID (`M0-02`), never the Linear key (`THE-6`) — the issue title
@@ -122,11 +124,20 @@ decision taken mid-flight — edit the issue description to match what was actua
 ticket that no longer describes its own outcome is worse than no ticket, because it reads
 as authoritative.
 
-## 7. Report back briefly
+## 7. Report back
 
-What changed, and anything that genuinely needs a decision. Not the reasoning or the
-verification narrative — the reader asks when they want more. Detail belongs *before* the work,
-or when something failed or went differently than asked.
+Once the PR is merged and the issue is Done, **write the closing summary for a CTO**: someone who
+knows the project but has not seen this work, will not open the diff, and cannot be assumed to
+know what any identifier or section number refers to. So expand a term the first time it appears,
+and describe every change by what it now *does* before naming what it touched.
+
+- One or two sentences on what the work delivers, in plain language.
+- Then **file by file, what changed in each** — a sentence or two per file, its new behaviour and
+  the reason for it, not a restatement of the diff.
+- Anything that genuinely needs a decision.
+
+Short, not thin: no reasoning trail, no verification narrative, no caveats gathered along the
+way. The reader asks when they want more.
 
 ---
 

@@ -89,10 +89,13 @@ func (b Block) MarshalJSON() ([]byte, error) {
 	switch {
 	case b.Type == BlockToolUse && !isJSONObject(b.Input):
 		b.Input = json.RawMessage("{}")
-	case b.Type != BlockToolUse && len(b.Input) > 0 && !json.Valid(b.Input):
+	case b.Type != BlockToolUse && len(b.Input) > 0:
 		// Arguments on a block that has no business holding them are a bug
-		// somewhere upstream, and dropping them keeps the message writable
-		// rather than making the whole turn unencodable over a stray field.
+		// somewhere upstream, and dropping them keeps the message writable rather
+		// than making the whole turn unencodable over a stray field. Valid ones
+		// go too, and are the more dangerous half: these tags are the provider's
+		// format as well as the session file's, and an extra input key on a
+		// tool_result is a 400 rather than something we quietly clean up.
 		b.Input = nil
 	}
 	type block Block // no methods, so no recursion
