@@ -1800,6 +1800,13 @@ Four rules govern it:
 4. **Name collisions resolve last-source-wins**, in the table's order, with the merged result
    shown before writing so nothing is silently shadowed.
 
+One detail the resolver forces on this. The importer writes **literals** — keys and `env` values
+copied out of another tool — into the global config, which is a layer the resolver runs over. So
+it escapes `$` as `$$` on the way in. Skip that and a Postgres server whose `PGPASSWORD` is
+`p$ssw0rd` becomes a startup failure naming a variable nobody wrote, or, if `$ssw0rd` happens to
+be set, a password that silently expands into something else — the failure §10 has just finished
+arguing must not happen, arriving by the one path where the user never typed the value at all.
+
 Afterwards rasp reads only its own config. Since values support `$(command)` expansion, anyone
 who'd rather not duplicate a secret can replace the imported literal with `$(op read …)` later
 — their choice to make, not a question to ask during setup.

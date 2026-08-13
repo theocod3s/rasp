@@ -190,8 +190,20 @@ func (e *Expander) expandSegments(ctx context.Context, key string, segs []segmen
 
 // writtenInAFile reports whether a layer is one someone edits by hand, which
 // is the only kind that can hold something worth expanding.
+//
+// Every layer is named rather than defaulted, because both wrong answers are
+// silent: a file layer left out returns `$(op read …)` to the provider as an
+// API key, and a shell-sourced layer let in misreads a key containing a
+// dollar. TestEveryLayerIsClassified fails when a new one is added without a
+// decision here.
 func writtenInAFile(l Layer) bool {
-	return l == LayerGlobal || l == LayerProject
+	switch l {
+	case LayerGlobal, LayerProject:
+		return true
+	case LayerDefault, LayerEnv, LayerFlag:
+		return false
+	}
+	return false
 }
 
 // expandVar resolves one environment reference.
@@ -252,10 +264,20 @@ func unsetError(name string, present bool) error {
 
 // expandCommand runs one `$(command)`, or refuses to.
 func (e *Expander) expandCommand(ctx context.Context, key, command string) (string, error) {
-	// The origin is known to exist and to be a file layer: Expand refuses an
-	// unrecorded origin before any command is reached, so the only question
-	// left here is which file.
-	if origin, _ := e.origins.At(key); origin.Layer == LayerProject {
+	// Expand refuses an unrecorded origin before any command is reached, so
+	// the !known arm below cannot be hit through it. It stays anyway: this
+	// function is reachable from anywhere in the package, what it stops is
+	// arbitrary command execution, and a guard that depends on its only caller
+	// checking first is a comment wearing the clothes of a check.
+	origin, known := e.origins.At(key)
+	switch {
+	case !known:
+		return "", fmt.Errorf(
+			"refusing to run %s: nothing records which config set this value, and a command "+
+				"that may have arrived with a repository is not one to run on a guess",
+			strconv.Quote("$("+command+")"))
+
+	case origin.Layer == LayerProject:
 		return "", fmt.Errorf(
 			"refusing to run %s from a project config.\n"+
 				"A project config arrives with `git clone`, so running a command from one needs "+
