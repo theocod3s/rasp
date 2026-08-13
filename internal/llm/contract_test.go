@@ -680,6 +680,26 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "not the delta",
 		},
+		"a delta event carrying nothing": {
+			seq:  stream(llm.Event{Type: llm.EventTextDelta, Partial: &llm.Message{Role: llm.RoleAssistant}}),
+			want: "carries no Delta",
+		},
+		"two tool_use blocks sharing an id on a truncated turn": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant}
+				for _, input := range []string{`{}`, `{"pa`} {
+					msg.Content = append(msg.Content, llm.Block{
+						Type: llm.BlockToolUse, ID: "toolu_01", Name: "read", Input: []byte(input),
+					})
+					if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+						return
+					}
+				}
+				msg.StopReason = llm.StopMaxTokens
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopMaxTokens, Partial: msg})
+			},
+			want: "two tool_use blocks with id",
+		},
 		"a stop reason on an ordinary event": {
 			seq: stream(llm.Event{
 				Type:       llm.EventTextDelta,
@@ -791,6 +811,26 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 				if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: fragment, Partial: msg}) {
 					return
 				}
+			}
+			if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg,
+				ToolCall: &llm.ToolCall{ID: "toolu_01A9", Name: "list", Input: []byte(`{}`)}}) {
+				return
+			}
+			msg.StopReason = llm.StopToolUse
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+		},
+
+		// The Anthropic no-argument shape end to end: the empty object opens the
+		// block, and the single fragment carries the same two bytes.
+		"a no-argument call that sends the empty object twice": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "list", Input: []byte(`{}`),
+			}}}
+			if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+				return
+			}
+			if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{}`, Partial: msg}) {
+				return
 			}
 			if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg,
 				ToolCall: &llm.ToolCall{ID: "toolu_01A9", Name: "list", Input: []byte(`{}`)}}) {

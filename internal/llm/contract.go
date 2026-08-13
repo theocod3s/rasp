@@ -150,10 +150,6 @@ var (
 // demanding an announcement there would reject exactly the streams the guard is
 // written for.
 func (c *streamChecker) checkComplete() error {
-	if c.terminal != EventDone || !slices.Contains(finished, c.stop) {
-		return nil
-	}
-
 	var recorded []string
 	for _, block := range c.partial.Content {
 		if block.Type == BlockToolUse {
@@ -161,12 +157,20 @@ func (c *streamChecker) checkComplete() error {
 		}
 	}
 
+	// Uniqueness is checked however the stream ended. It is not a question about
+	// completeness: a truncated turn fails every pending call (design §4
+	// invariant 2), so it writes a tool_result per call and two blocks sharing an
+	// id break the pairing there exactly as they would on a finished turn.
 	for i, id := range recorded {
 		if slices.Index(recorded, id) != i {
 			return fmt.Errorf("the message holds two tool_use blocks with id %q; one tool_result "+
 				"would answer both, so the pairing that design §4 invariant 1 rests on stops being "+
 				"a pairing at all", id)
 		}
+	}
+
+	if c.terminal != EventDone || !slices.Contains(finished, c.stop) {
+		return nil
 	}
 
 	for _, id := range recorded {
@@ -289,6 +293,11 @@ func (c *streamChecker) check(index int, ev Event) error {
 	}
 	if (ev.Err != nil) != (ev.Type == EventError) {
 		return fmt.Errorf("%s: Err is set on EventError and nothing else (here: %v)", at, ev.Err)
+	}
+	if ev.Delta == "" && carriesDelta(ev.Type) {
+		return fmt.Errorf("%s carries no Delta; a delta event exists to say what just arrived, so an "+
+			"empty one is a fragment dropped from the event and from Partial together — output lost "+
+			"with nothing to show it", at)
 	}
 	if ev.Delta != "" && !carriesDelta(ev.Type) {
 		return fmt.Errorf("%s carries Delta %q; only a delta event has newly-arrived content, and a "+
@@ -471,14 +480,18 @@ func checkAccumulation(at string, ev Event, ch channel, seen *map[int]string) er
 	for _, i := range slices.Sorted(maps.Keys(now)) {
 		text, was := now[i], (*seen)[i]
 		switch {
-		case text == was:
-			// Unchanged, whatever it holds — including a placeholder that stays
-			// one because the call takes no arguments.
-		case was == ch.placeholder && ch.placeholder != "":
+		case ch.placeholder != "" && was == ch.placeholder && (text != was || ev.Type == ch.delta):
+			// A fragment replaces the placeholder rather than extending it —
+			// including a fragment whose bytes ARE the placeholder, which is how
+			// a no-argument call arrives when the provider sends the empty
+			// object twice: once opening the block, once as the payload.
 			grew++
 			if grew == 1 {
 				added = text
 			}
+		case text == was:
+			// Unchanged, whatever it holds — including a placeholder left alone
+			// by an event that was never going to add to it.
 		case !strings.HasPrefix(text, was):
 			return fmt.Errorf("%s: Partial %s at index %d is %q, which does not start with the %q "+
 				"already streamed; accumulated content is never rewritten or dropped", at, ch.name, i, text, was)
