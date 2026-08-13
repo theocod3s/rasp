@@ -397,7 +397,7 @@ func TestCheckStreamRejects(t *testing.T) {
 		},
 		"a stop reason the message does not carry": {
 			seq:  stream(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: &llm.Message{Role: llm.RoleAssistant}}),
-			want: "Partial.StopReason",
+			want: "what the retry classifier reads",
 		},
 		"a tool call event with no tool call": {
 			seq:  stream(llm.Event{Type: llm.EventToolCall, Partial: &llm.Message{Role: llm.RoleAssistant}}),
@@ -500,7 +500,7 @@ func TestCheckStreamRejects(t *testing.T) {
 		},
 		"a roleless message": {
 			seq:  stream(llm.Event{Type: llm.EventMessageStart, Partial: &llm.Message{}}),
-			want: "Partial.Role",
+			want: "the next time it is replayed",
 		},
 		"a delta on an event that has no content": {
 			seq: stream(llm.Event{
@@ -608,7 +608,8 @@ func TestCheckStreamRejects(t *testing.T) {
 				*msg = llm.Message{Content: msg.Content, StopReason: llm.StopEndTurn}
 				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
 			},
-			want: "Partial.Role",
+			// Named so the per-event rule is what answers, not the settled one.
+			want: "the next time it is replayed",
 		},
 		"two tool_use blocks sharing an id": {
 			seq: func(yield func(llm.Event) bool) {
@@ -818,25 +819,74 @@ func TestCheckStreamRejects(t *testing.T) {
 	}
 }
 
-// TestCheckStreamNoticesAChangeAfterTheStream covers the window the agent loop
+// TestCheckStreamNoticesChangesAfterTheStream covers the window the agent loop
 // actually persists from: iteration is over, the provider is unwinding, and
-// whatever it does to the message now is what gets written down.
-func TestCheckStreamNoticesAChangeAfterTheStream(t *testing.T) {
-	seq := func(yield func(llm.Event) bool) {
-		msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText}}}
-		msg.Content[0].Text = "I'll read it."
-		if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll read it.", Partial: msg}) {
-			return
+// whatever it does to the message now is what gets written down. Every rule
+// inside the loop has stopped looking by then, which is why each of these
+// mutations has to be caught here or not at all.
+func TestCheckStreamNoticesChangesAfterTheStream(t *testing.T) {
+	// after runs a well-formed stream and lets the caller meddle with the message
+	// once it has ended.
+	after := func(meddle func(*llm.Message)) llm.StreamResponse {
+		return func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+				{Type: llm.BlockText, Text: "I'll read it."},
+			}}
+			if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll read it.", Partial: msg}) {
+				return
+			}
+			msg.Content = append(msg.Content, llm.Block{
+				Type: llm.BlockToolUse, ID: "toolu_01", Name: "read", Input: []byte(`{"path":"a.go"}`),
+			})
+			if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+				return
+			}
+			if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg,
+				ToolCall: &llm.ToolCall{ID: "toolu_01", Name: "read", Input: []byte(`{"path":"a.go"}`)}}) {
+				return
+			}
+			msg.StopReason = llm.StopToolUse
+			if !yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg}) {
+				return
+			}
+			meddle(msg)
 		}
-		msg.StopReason = llm.StopEndTurn
-		if !yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg}) {
-			return
-		}
-		msg.Content[0].Text = "something else entirely"
 	}
 
-	_, err := llm.CheckStream(seq)
-	mustContain(t, err, "changed after the stream ended")
+	cases := map[string]struct {
+		meddle func(*llm.Message)
+		want   string
+	}{
+		"text rewritten": {
+			meddle: func(m *llm.Message) { m.Content[0].Text = "something else entirely" },
+			want:   "changed after the stream ended",
+		},
+		"a block appended": {
+			meddle: func(m *llm.Message) {
+				m.Content = append(m.Content, llm.Block{Type: llm.BlockText, Text: "nobody announced me"})
+			},
+			want: "appeared at index 2 after the stream ended",
+		},
+		"the role cleared": {
+			meddle: func(m *llm.Message) { m.Role = "" },
+			want:   "Partial.Role is \"\" after the stream ended",
+		},
+		"the stop reason cleared": {
+			meddle: func(m *llm.Message) { m.StopReason = "" },
+			want:   "the terminal event said",
+		},
+		"an announced call renamed": {
+			meddle: func(m *llm.Message) { m.Content[1].Name = "write" },
+			want:   "the loop dispatched the first one",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := llm.CheckStream(after(tc.meddle))
+			mustContain(t, err, tc.want)
+		})
+	}
 }
 
 // TestCheckStreamAcceptsAFailedStream guards the obvious way to write a
@@ -1127,6 +1177,25 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			}
 			msg.StopReason = llm.StopRefusal
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopRefusal, Partial: msg})
+		},
+
+		// A stream that dies right after a tool block opens leaves that block
+		// holding the empty object a provider puts there — indistinguishable from
+		// one nothing has arrived in, and impossible to have announced.
+		"a turn that broke off just after a tool block opened": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+				Type: llm.BlockToolUse, ID: "toolu_01", Name: "read", Input: []byte(`{}`),
+			}}}
+			if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+				return
+			}
+			msg.StopReason = llm.StopError
+			yield(llm.Event{
+				Type:       llm.EventError,
+				StopReason: llm.StopError,
+				Err:        errors.New("stream ended before message_stop"),
+				Partial:    msg,
+			})
 		},
 
 		// A cancelled turn is an error to the code that was streaming and a

@@ -220,7 +220,7 @@ func (c *streamChecker) checkComplete() error {
 		if block.Type != BlockToolUse {
 			continue
 		}
-		if _, err := arguments(block.Input); err != nil && !whole {
+		if stillArriving(block) && !whole {
 			continue
 		}
 		if !slices.Contains(c.announced, block.ID) {
@@ -312,9 +312,15 @@ var channels = []channel{
 	// appended to the placeholder is still wrong.
 	{name: "tool arguments", kind: BlockToolUse, delta: EventToolInputDelta,
 		grows:       []EventType{EventToolInputStart, EventToolCall},
-		placeholder: "{}",
+		placeholder: emptyArguments,
 		text:        func(b Block) string { return string(b.Input) }},
 }
+
+// emptyArguments is what a provider puts in a tool block's input field before any
+// fragment has arrived, and equally what a call taking no arguments ends up with.
+// The two being the same string is the ambiguity several rules here have to work
+// around.
+const emptyArguments = "{}"
 
 // carriesDelta reports whether this event type is some channel's delta, which is
 // the only kind of event with anything to put in Delta.
@@ -458,6 +464,18 @@ func checkStopReason(at string, ev Event) error {
 func (c *streamChecker) checkSettled() error {
 	for i, ch := range channels {
 		settled := ch.snapshot(c.partial)
+
+		// Both directions: a block that vanished, and one that appeared. An
+		// appended block is the more tempting bug — it looks like finishing the
+		// message off — and it is content the events never announced, so nothing
+		// above the provider will ever draw it.
+		for _, index := range slices.Sorted(maps.Keys(settled)) {
+			if _, ok := c.seen[i][index]; !ok {
+				return fmt.Errorf("a %s block appeared at index %d after the stream ended; the message "+
+					"is committed after the last event, so content added here was announced by nothing",
+					ch.name, index)
+			}
+		}
 		for _, index := range slices.Sorted(maps.Keys(c.seen[i])) {
 			was, now := c.seen[i][index], settled[index]
 			if _, ok := settled[index]; !ok {
@@ -472,7 +490,35 @@ func (c *streamChecker) checkSettled() error {
 			}
 		}
 	}
-	return nil
+
+	// The two fields the message is read for after the fact: session storage
+	// needs the role, and the retry classifier is a pure function over the stop
+	// reason. A provider that clears either while unwinding leaves a transcript
+	// rejected on replay, or a failure nothing retries.
+	if c.partial.Role != RoleAssistant {
+		return fmt.Errorf("Partial.Role is %q after the stream ended, want %q", c.partial.Role, RoleAssistant)
+	}
+	if c.partial.StopReason != c.stop {
+		return fmt.Errorf("Partial.StopReason is %q after the stream ended; the terminal event said %q",
+			c.partial.StopReason, c.stop)
+	}
+
+	// And what the announced calls are: checkFrozen runs per event, which stops
+	// looking at exactly the point the loop starts reading.
+	return c.checkFrozen("after the stream ended", c.partial)
+}
+
+// stillArriving reports whether a tool call's arguments have yet to finish
+// showing up — either they do not parse, or they are the empty object a provider
+// opens the block with, which at this point is indistinguishable from nothing
+// having arrived at all. A turn that broke off is not held to announcing one of
+// these, because no EventToolCall could have been emitted for it.
+func stillArriving(block Block) bool {
+	if string(block.Input) == emptyArguments {
+		return true
+	}
+	_, err := arguments(block.Input)
+	return err != nil
 }
 
 // checkFrozen re-reads the blocks whose calls have been announced. The
@@ -480,7 +526,8 @@ func (c *streamChecker) checkSettled() error {
 // because renaming read to write after the loop was told to run read changes the
 // transcript's account of something that already happened just as thoroughly.
 func (c *streamChecker) checkFrozen(at string, msg *Message) error {
-	for index, name := range c.frozen {
+	for _, index := range slices.Sorted(maps.Keys(c.frozen)) {
+		name := c.frozen[index]
 		if index < len(msg.Content) && msg.Content[index].Name != name {
 			return fmt.Errorf("%s: the block at index %d was announced as a call to %q and now names "+
 				"%q; the loop dispatched the first one", at, index, name, msg.Content[index].Name)
