@@ -42,11 +42,18 @@ import (
 // observe it during iteration, which is what the accumulation rules below do.
 //
 // One rule is deliberately not here: a provider must stop producing when yield
-// returns false, and must not leave a goroutine behind when it does. CheckStream
-// reads a stream to the end, so it never abandons one — and the useful half of
-// that assertion is how much work the provider did after being abandoned, which
-// only its own package can see. Each adapter tests that locally, with goleak in
-// TestMain for the other half.
+// returns false, and must not leave a goroutine behind when it does. The useful
+// half of that assertion is how much work the provider did after being
+// abandoned, which only its own package can see. Each adapter tests that
+// locally, with goleak in TestMain for the other half.
+//
+// Which is why this reads every stream to the end even after a violation. The
+// alternative — return at the first one — would abandon the stream, so a
+// provider that ignores yield's false return dies of the runtime's
+// range-function panic instead of being told which rule it broke, and one that
+// pumps events from a goroutine leaks it into an unrelated goleak failure. The
+// diagnostic is the whole point of this function; it should not be the thing
+// that gets lost.
 func CheckStream(seq StreamResponse) ([]Event, error) {
 	if seq == nil {
 		return nil, errors.New("nil StreamResponse; Stream always returns a sequence, and a " +
@@ -56,13 +63,18 @@ func CheckStream(seq StreamResponse) ([]Event, error) {
 	var (
 		events  []Event
 		checker streamChecker
+		first   error // the first violation, which is the one worth reporting
 	)
 
 	for ev := range seq {
 		events = append(events, ev)
-		if err := checker.check(len(events)-1, ev); err != nil {
-			return events, err
+		if first != nil {
+			continue
 		}
+		first = checker.check(len(events)-1, ev)
+	}
+	if first != nil {
+		return events, first
 	}
 
 	switch {
@@ -86,13 +98,22 @@ type streamChecker struct {
 	stop     StopReason // and the reason it carried
 }
 
-// completions are the stop reasons that claim the message is finished, and
-// failures the ones that say it is not. Design §4's termination table splits
-// them this way: StopRefusal is a normal completion, StopAborted commits what
-// exists, StopError retries.
+// Three sets, because "which terminal event may carry this reason" and "does
+// this reason claim the message is finished" are different questions, and one
+// list answering both is a list whose clauses go quietly unreachable.
+//
+// StopAborted appears in both terminal sets on purpose. A cancelled turn is an
+// error to the code that was streaming and a completion to design §4's
+// termination table, which commits what exists — so an adapter may end that
+// stream either way, and neither reading is wrong enough to reject.
 var (
-	completions = []StopReason{StopEndTurn, StopToolUse, StopMaxTokens, StopRefusal}
-	failures    = []StopReason{StopError, StopAborted}
+	doneReasons  = []StopReason{StopEndTurn, StopToolUse, StopMaxTokens, StopRefusal, StopAborted}
+	errorReasons = []StopReason{StopError, StopAborted}
+
+	// finished are the reasons that claim a whole message arrived. Truncation
+	// and cancellation are not among them: both stop mid-flight, and what they
+	// leave behind is what design §4 invariant 2's guard exists to fail.
+	finished = []StopReason{StopEndTurn, StopToolUse, StopRefusal}
 )
 
 // checkComplete runs once the stream has ended, on the rule that needs the whole
@@ -118,7 +139,7 @@ var (
 // demanding an announcement there would reject exactly the streams the guard is
 // written for.
 func (c *streamChecker) checkComplete() error {
-	if c.terminal != EventDone || c.stop == StopMaxTokens || !slices.Contains(completions, c.stop) {
+	if c.terminal != EventDone || !slices.Contains(finished, c.stop) {
 		return nil
 	}
 
@@ -157,11 +178,11 @@ type channel struct {
 	name string // how the error message says it
 	kind BlockType
 
-	// delta is the event that adds a fragment to this channel, and the only
-	// one whose Delta has to match what arrived. completes may also add to it,
-	// for a channel that a later event finishes; the zero value means none.
-	delta     EventType
-	completes EventType
+	// delta is the event that adds a fragment to this channel, and the only one
+	// whose Delta has to match what arrived exactly. grows lists the other
+	// events allowed to add to it at all.
+	delta EventType
+	grows []EventType
 
 	text func(Block) string
 }
@@ -171,8 +192,16 @@ var channels = []channel{
 		text: func(b Block) string { return b.Text }},
 	{name: "thinking", kind: BlockThinking, delta: EventThinkingDelta,
 		text: func(b Block) string { return b.Text }},
-	{name: "tool arguments", kind: BlockToolUse, delta: EventToolInputDelta, completes: EventToolCall,
-		text: func(b Block) string { return string(b.Input) }},
+	// Tool arguments accept content from two more events, and both are real wire
+	// shapes rather than latitude. Anthropic's content_block_start for a tool_use
+	// carries `"input": {}`, so a tool taking no arguments has its whole payload
+	// before any delta arrives; and an OpenAI-compatible endpoint may not reveal
+	// `arguments` until its final chunk, so the whole payload can equally arrive
+	// at the completed call. Tightening either one back breaks an adapter, which
+	// is why they are written down here rather than discovered.
+	{name: "tool arguments", kind: BlockToolUse, delta: EventToolInputDelta,
+		grows: []EventType{EventToolInputStart, EventToolCall},
+		text:  func(b Block) string { return string(b.Input) }},
 }
 
 // carriesDelta reports whether this event type is some channel's delta, which is
@@ -198,14 +227,19 @@ func (c *streamChecker) check(index int, ev Event) error {
 	switch {
 	case c.partial == nil:
 		c.partial = ev.Partial
-		if ev.Partial.Role != RoleAssistant {
-			return fmt.Errorf("%s: Partial.Role is %q, want %q; the message is allocated before the "+
-				"first event and persisted after the last, and a transcript holding a message with no "+
-				"role is rejected the next time it is replayed", at, ev.Partial.Role, RoleAssistant)
-		}
 	case ev.Partial != c.partial:
 		return fmt.Errorf("%s carries a different *Message than the events before it; "+
 			"the message is allocated once, outside the stream loop, and mutated in place", at)
+	}
+
+	// On every event, not only the first. The pointer is stable, so an adapter
+	// that overwrites the message wholesale when it maps the final chunk keeps
+	// the address and loses the role — and the rule that watches the address
+	// cannot see that.
+	if ev.Partial.Role != RoleAssistant {
+		return fmt.Errorf("%s: Partial.Role is %q, want %q; the message is allocated before the "+
+			"first event and persisted after the last, and a transcript holding a message with no "+
+			"role is rejected the next time it is replayed", at, ev.Partial.Role, RoleAssistant)
 	}
 
 	if (ev.ToolCall != nil) != (ev.Type == EventToolCall) {
@@ -259,9 +293,9 @@ func (c *streamChecker) check(index int, ev Event) error {
 // truncated reply the loop would present as complete and never retry, and an
 // EventDone reporting error retries a turn that finished.
 func checkStopReason(at string, ev Event) error {
-	want := completions
+	want := doneReasons
 	if ev.Type == EventError {
-		want = failures
+		want = errorReasons
 	}
 
 	switch {
@@ -361,8 +395,13 @@ func arguments(raw json.RawMessage) (map[string]any, error) {
 // a delta event has to say. Every other event must leave the channel exactly as
 // it was — which catches it being rewritten, and equally catches it *growing*
 // where no event announced the growth: content nobody was told about is content
-// a UI keyed on event types never draws. The one exception is the event that
-// completes a channel, which may add the last of it.
+// a UI keyed on event types never draws.
+//
+// The exception is a channel's grows list, and it is wider than "one last
+// fragment": those events may deliver the entire payload, with no delta before
+// them and nothing in Delta. That is what a no-argument tool call looks like on
+// one provider and what a late-arriving arguments field looks like on another,
+// so the latitude is deliberate and only tool arguments have it.
 func checkAccumulation(at string, ev Event, ch channel, seen *string) error {
 	got := ch.accumulated(ev.Partial)
 
@@ -372,14 +411,14 @@ func checkAccumulation(at string, ev Event, ch channel, seen *string) error {
 			return fmt.Errorf("%s: Partial %s is %q, want %q — Partial is the full accumulated message, not the delta",
 				at, ch.name, got, want)
 		}
-	case ch.completes != "" && ev.Type == ch.completes:
+	case slices.Contains(ch.grows, ev.Type):
 		if !strings.HasPrefix(got, *seen) {
 			return fmt.Errorf("%s: Partial %s is %q, which does not start with the %q already streamed; "+
 				"accumulated content is never rewritten or dropped", at, ch.name, got, *seen)
 		}
 	case got != *seen:
-		return fmt.Errorf("%s: Partial %s went from %q to %q; only %s adds to it, and accumulated "+
-			"content is never rewritten or dropped", at, ch.name, *seen, got, ch.delta)
+		return fmt.Errorf("%s: Partial %s went from %q to %q; only %v adds to it, and accumulated "+
+			"content is never rewritten or dropped", at, ch.name, *seen, got, append([]EventType{ch.delta}, ch.grows...))
 	}
 
 	*seen = got

@@ -325,7 +325,7 @@ func TestCheckStreamRejects(t *testing.T) {
 				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText, Text: "hmm"}}}
 				yield(llm.Event{Type: llm.EventThinkingDelta, Delta: "hmm", Partial: msg})
 			},
-			want: "only text_delta adds to it",
+			want: "only [text_delta] adds to it",
 		},
 		"a thinking delta the message never recorded": {
 			seq: func(yield func(llm.Event) bool) {
@@ -585,6 +585,18 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "does not start with",
 		},
+		"a role dropped part way through": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := streamed()
+				if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll", Partial: msg}) {
+					return
+				}
+				// The pointer survives; the role does not.
+				*msg = llm.Message{Content: msg.Content, StopReason: llm.StopEndTurn}
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+			},
+			want: "Partial.Role",
+		},
 		"a stop reason on an ordinary event": {
 			seq: stream(llm.Event{
 				Type:       llm.EventTextDelta,
@@ -639,6 +651,102 @@ func TestCheckStreamAcceptsAFailedStream(t *testing.T) {
 	}))
 	if err != nil {
 		t.Fatalf("CheckStream on a well-formed failure: %v", err)
+	}
+}
+
+// TestCheckStreamAcceptsRealWireShapes pins three things the checker must not
+// reject, because each is what some provider actually sends and a rule tight
+// enough to forbid it would be discovered by an adapter author rather than by
+// us.
+func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
+	cases := map[string]llm.StreamResponse{
+		// Anthropic's content_block_start carries "input": {}, so a tool taking
+		// no arguments has its whole payload before any delta arrives.
+		"a no-argument call whose payload arrives at the start": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "list", Input: []byte(`{}`),
+			}}}
+			if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+				return
+			}
+			if !yield(llm.Event{
+				Type:     llm.EventToolCall,
+				Partial:  msg,
+				ToolCall: &llm.ToolCall{ID: "toolu_01A9", Name: "list", Input: []byte(`{}`)},
+			}) {
+				return
+			}
+			msg.StopReason = llm.StopToolUse
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+		},
+
+		// An OpenAI-compatible endpoint may not reveal arguments until its final
+		// chunk, so the whole payload can equally arrive at the completed call.
+		"a call whose payload arrives at the end": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read",
+			}}}
+			if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+				return
+			}
+			msg.Content[0].Input = []byte(`{"path":"auth.go"}`)
+			if !yield(llm.Event{
+				Type:     llm.EventToolCall,
+				Partial:  msg,
+				ToolCall: &llm.ToolCall{ID: "toolu_01A9", Name: "read", Input: []byte(`{"path":"auth.go"}`)},
+			}) {
+				return
+			}
+			msg.StopReason = llm.StopToolUse
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+		},
+
+		// A cancelled turn is an error to the code that was streaming and a
+		// completion to design §4's termination table, so it may end either way.
+		"an abort reported as a normal ending": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopAborted}
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopAborted, Partial: msg})
+		},
+	}
+
+	for name, seq := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := llm.CheckStream(seq); err != nil {
+				t.Fatalf("CheckStream: %v", err)
+			}
+		})
+	}
+}
+
+// TestCheckStreamReadsPastAViolation is the other half of the early-stop rule
+// CheckStream declines to check. It must not be the thing that abandons a
+// stream: a provider that ignores a false yield would die of the runtime's
+// range-function panic instead of being told which rule it broke, which loses
+// the diagnostic exactly when it is needed.
+func TestCheckStreamReadsPastAViolation(t *testing.T) {
+	yielded := 0
+	seq := func(yield func(llm.Event) bool) {
+		msg := &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopEndTurn}
+		// The first event breaks a rule; the next two are well formed.
+		for _, ev := range []llm.Event{
+			{Type: llm.EventMessageStart, Delta: "stray", Partial: msg},
+			{Type: llm.EventMessageStart, Partial: msg},
+			{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg},
+		} {
+			yielded++
+			if !yield(ev) {
+				return
+			}
+		}
+	}
+
+	events, err := llm.CheckStream(seq)
+	mustContain(t, err, "carries Delta")
+	if yielded != 3 {
+		t.Errorf("provider yielded %d events before being abandoned, want all 3", yielded)
+	}
+	if len(events) != 3 {
+		t.Errorf("CheckStream returned %d events, want all 3", len(events))
 	}
 }
 
