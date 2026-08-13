@@ -117,12 +117,29 @@ func (e *Expander) Expand(ctx context.Context, key string) (string, error) {
 		return "", &ExpandError{Key: key, Origin: e.origins[key],
 			Err: fmt.Errorf("want a string to expand, got %s", displayKind(raw))}
 	}
+	fail := func(err error) (string, error) {
+		return "", &ExpandError{Key: key, Origin: e.origins[key], Err: err}
+	}
+
 	if !needsExpansion(value) {
 		return value, nil
 	}
-
-	fail := func(err error) (string, error) {
-		return "", &ExpandError{Key: key, Origin: e.origins[key], Err: err}
+	origin, known := e.origins.At(key)
+	if !known {
+		// The layer decides whether this value is a recipe or a secret, so
+		// without it there is nothing to decide on. Refusing is loud where
+		// returning the text would be silent, and a check that cannot run must
+		// fail rather than pass (AGENTS.md).
+		return fail(errors.New(
+			"nothing records which config set this value, so there is no telling whether it " +
+				"is a literal or something to resolve"))
+	}
+	// Only a config file holds a recipe. A value from the environment or a
+	// flag has already been through a shell, so running the grammar over it
+	// again cannot expand anything — it can only misread a secret that happens
+	// to contain a dollar (design §10).
+	if !writtenInAFile(origin.Layer) {
+		return value, nil
 	}
 
 	segs, err := parseValue(value)
@@ -169,6 +186,30 @@ func (e *Expander) expandSegments(ctx context.Context, key string, segs []segmen
 		}
 	}
 	return out.String(), nil
+}
+
+// writtenInAFile reports whether a layer is one someone edits by hand, which
+// is the only kind that can hold something worth expanding.
+//
+// Every layer is named rather than defaulted, because both wrong answers are
+// silent: a file layer left out returns `$(op read …)` to the provider as an
+// API key, and a shell-sourced layer let in misreads a key containing a
+// dollar. TestEveryLayerIsClassified fails when a new one is added without a
+// decision here.
+func writtenInAFile(l Layer) bool {
+	switch l {
+	case LayerGlobal, LayerProject:
+		return true
+	case LayerDefault, LayerEnv, LayerFlag:
+		return false
+	}
+	// Unreachable while every layer is named above, and the compiler enforces
+	// none of that — TestEveryLayerIsClassified is what does. The fallback is
+	// false because it has to be something, and it is worth knowing that the
+	// two callers disagree about which way that errs: expandCommand refuses,
+	// while Expand hands the value back untouched, so an unclassified *file*
+	// layer would return `$(op read …)` to the provider as an API key.
+	return false
 }
 
 // expandVar resolves one environment reference.
@@ -229,17 +270,29 @@ func unsetError(name string, present bool) error {
 
 // expandCommand runs one `$(command)`, or refuses to.
 func (e *Expander) expandCommand(ctx context.Context, key, command string) (string, error) {
+	// Expand refuses an unrecorded origin before any command is reached, so
+	// the !known arm below cannot be hit through it. It stays anyway: this
+	// function is reachable from anywhere in the package, what it stops is
+	// arbitrary command execution, and a guard that depends on its only caller
+	// checking first is a comment wearing the clothes of a check.
 	origin, known := e.origins.At(key)
 	switch {
 	case !known:
-		// A guard whose signal is missing must refuse, not proceed. The zero
-		// Origin reads as LayerDefault, so looking the layer up directly
-		// would have let a command run precisely when nothing could say where
-		// it came from (AGENTS.md: a check that cannot run must fail).
 		return "", fmt.Errorf(
 			"refusing to run %s: nothing records which config set this value, and a command "+
 				"that may have arrived with a repository is not one to run on a guess",
 			strconv.Quote("$("+command+")"))
+
+	case !writtenInAFile(origin.Layer):
+		// Expand returns a shell-sourced value literally long before a command
+		// is reached, so this arm is unreachable through it — and stays for
+		// the same reason the one above does. The MCP server `env` resolution
+		// §10 has in scope is a second entry point waiting to happen, and it
+		// would run `$(…)` out of an environment variable with nothing red.
+		return "", fmt.Errorf(
+			"refusing to run %s: this value came from the %s, which a shell has already "+
+				"resolved — it is a value, not a recipe (design §10)",
+			strconv.Quote("$("+command+")"), origin.Layer)
 
 	case origin.Layer == LayerProject:
 		return "", fmt.Errorf(

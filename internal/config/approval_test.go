@@ -2,7 +2,6 @@ package config_test
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -51,51 +50,97 @@ func TestACommandFromAProjectConfigIsRefused(t *testing.T) {
 	}
 }
 
-// TestTheOtherLayersMayRunCommands. The refusal is about a file that arrived
-// with a repository, not about commands. A global config, an environment
-// variable and a flag are all the user's own act on their own machine, and
-// design §10 names the global config as one of the places this is expected.
-func TestTheOtherLayersMayRunCommands(t *testing.T) {
-	const command = `$(op read op://vault/key)`
+// TestTheGlobalConfigMayRunCommands. The refusal is about a file that arrived
+// with a repository, not about commands: the global config is the user's own
+// file on their own machine, and design §10 names it as one of the places this
+// is expected.
+func TestTheGlobalConfigMayRunCommands(t *testing.T) {
+	res := load(t, config.Sources{
+		GlobalPath: global(t, `{"providers": {"anthropic": {"api_key": "$(op read op://vault/key)"}}}`),
+	})
+	e := config.NewExpander(res, config.ExpanderOptions{
+		Getenv: env{}.lookup,
+		Run: func(context.Context, string) ([]byte, error) {
+			return []byte("secret"), nil
+		},
+	})
 
+	if got := expand(t, e); got != "secret" {
+		t.Errorf("Expand = %q, want %q", got, "secret")
+	}
+}
+
+// TestAValueFromTheEnvironmentIsLiteral. The resolver exists because a config
+// *file* holds a recipe rather than a secret. Something already handed to us
+// through a shell has nothing left to expand, and running the grammar over it
+// again is not a second chance to resolve anything — it is a chance to misread
+// a key that happens to contain a dollar.
+func TestAValueFromTheEnvironmentIsLiteral(t *testing.T) {
 	tests := []struct {
-		name string
-		src  config.Sources
+		name  string
+		value string
 	}{
-		{
-			name: "global config",
-			src: config.Sources{
-				GlobalPath: global(t, fmt.Sprintf(
-					`{"providers": {"anthropic": {"api_key": %q}}}`, command)),
-			},
-		},
-		{
-			name: "environment",
-			src:  config.Sources{Getenv: env{"ANTHROPIC_API_KEY": command}.lookup},
-		},
+		{"a dollar inside a generated key", "sk-ant-x$yz"},
+		{"something shaped like a reference", "${HOME}"},
+		{"something shaped like a command", "$(id)"},
+		{"a doubled dollar is not an escape here", "sk-ant-x$$yz"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			src := tc.src
-			if src.Getenv == nil {
-				src.Getenv = env{}.lookup
-			}
-			e := config.NewExpander(load(t, src), config.ExpanderOptions{
-				Getenv: env{}.lookup,
+			var ran bool
+			res := load(t, config.Sources{
+				Getenv: env{"ANTHROPIC_API_KEY": tc.value}.lookup,
+			})
+			e := config.NewExpander(res, config.ExpanderOptions{
+				Getenv: env{"HOME": "/home/someone", "yz": "swallowed"}.lookup,
 				Run: func(context.Context, string) ([]byte, error) {
-					return []byte("secret"), nil
+					ran = true
+					return []byte("owned"), nil
 				},
 			})
 
 			got, err := e.Expand(t.Context(), apiKey)
 			if err != nil {
-				t.Fatalf("Expand from the %s: %v", tc.name, err)
+				t.Fatalf("Expand: %v", err)
 			}
-			if got != "secret" {
-				t.Errorf("Expand = %q, want %q", got, "secret")
+			if got != tc.value {
+				t.Errorf("Expand = %q, want it exactly as exported: %q", got, tc.value)
+			}
+			if ran {
+				t.Error("a command from the environment was executed")
 			}
 		})
+	}
+}
+
+// TestAValueFromAFlagIsLiteral. The rule is stated for flags as well as the
+// environment — `rasp --model "$FOO"` has already been through the user's
+// shell — and a rule nothing exercises is one a later edit can drop without
+// turning the suite red. No flag reaches a secret-bearing key today, so this
+// drives `model`, which the resolver is equally willing to expand.
+func TestAValueFromAFlagIsLiteral(t *testing.T) {
+	const value = "$(id)"
+
+	var ran bool
+	res := load(t, config.Sources{Flags: map[string]string{"model": value}})
+	e := config.NewExpander(res, config.ExpanderOptions{
+		Getenv: env{}.lookup,
+		Run: func(context.Context, string) ([]byte, error) {
+			ran = true
+			return []byte("owned"), nil
+		},
+	})
+
+	got, err := e.Expand(t.Context(), "model")
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if got != value {
+		t.Errorf("Expand = %q, want it exactly as typed: %q", got, value)
+	}
+	if ran {
+		t.Error("a command from a flag was executed")
 	}
 }
 
@@ -141,5 +186,35 @@ func TestACommandWithNoRecordedOriginIsRefused(t *testing.T) {
 	}
 	if ran {
 		t.Error("the command was executed although nothing recorded where it came from")
+	}
+}
+
+// TestAnUnrecordedOriginIsRefused. The layer decides whether a value is a
+// recipe or a secret, so without one there is nothing to decide on — and the
+// shape this replaced, `known && !writtenInAFile(…)`, went the other way: it
+// let an unattributable value through the whole resolver, reading an
+// environment variable into a credential or aborting over a variable the user
+// never wrote. A rule nothing exercises is one a later edit can drop without
+// turning the suite red.
+func TestAnUnrecordedOriginIsRefused(t *testing.T) {
+	for _, value := range []string{"${SOME_VAR}", "$(evil)"} {
+		var ran bool
+		e := config.NewExpander(
+			&config.Result{Values: map[string]any{apiKey: value}, Origins: config.Origins{}},
+			config.ExpanderOptions{
+				Getenv: env{"SOME_VAR": "swallowed"}.lookup,
+				Run: func(context.Context, string) ([]byte, error) {
+					ran = true
+					return []byte("owned"), nil
+				},
+			})
+
+		got, err := e.Expand(t.Context(), apiKey)
+		if err == nil {
+			t.Errorf("Expand(%q) = %q, want a refusal — nothing says where it came from", value, got)
+		}
+		if ran {
+			t.Errorf("Expand(%q) ran the command", value)
+		}
 	}
 }

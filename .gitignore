@@ -26,3 +26,4 @@ go.work.sum
 .claude/settings.local.json
 CLAUDE.local.md
 .rasp/
+doppler.yaml

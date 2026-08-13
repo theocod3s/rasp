@@ -1800,14 +1800,21 @@ Four rules govern it:
 4. **Name collisions resolve last-source-wins**, in the table's order, with the merged result
    shown before writing so nothing is silently shadowed.
 
+One detail the resolver forces on this. The importer writes **literals** — keys and `env` values
+copied out of another tool — into the global config, which is a layer the resolver runs over. So
+it escapes `$` as `$$` on the way in. Skip that and a Postgres server whose `PGPASSWORD` is
+`p$ssw0rd` becomes a startup failure naming a variable nobody wrote, or, if `$ssw0rd` happens to
+be set, a password that silently expands into something else — the failure §10 has just finished
+arguing must not happen, arriving by the one path where the user never typed the value at all.
+
 Afterwards rasp reads only its own config. Since values support `$(command)` expansion, anyone
 who'd rather not duplicate a secret can replace the imported literal with `$(op read …)` later
 — their choice to make, not a question to ask during setup.
 
 ### Auth: API keys only in the MVP
 
-OAuth is phase 2. Every string in `providers.*.api_key` and `mcp.servers.*.env.*` goes through
-one resolver:
+OAuth is phase 2. Every string in `providers.*.api_key` and `mcp.servers.*.env.*` **that was
+written in a config file** goes through one resolver:
 
 | Form | Meaning |
 |---|---|
@@ -1816,6 +1823,15 @@ one resolver:
 | `${VAR:-default}` | Environment with fallback |
 | `${VAR:?msg}` | Environment, or refuse to start and print `msg` |
 | `$(command)` | Run it, take trimmed stdout |
+
+The resolver runs on the two file layers and nowhere else. A value that arrived from the
+environment or from a flag has already been through a shell, and running the grammar over it a
+second time is not a second chance to expand something — it is a chance to misread a secret.
+`export ANTHROPIC_API_KEY='sk-ant-x$yz'` would refuse to start, naming a variable the user never
+wrote, and the `$$` escape is no way out: the same variable is read by other tools, which would
+see the doubled dollar. A `$` in a generated key is ordinary; wanting `$(op read …)` inside an
+environment variable is not, and the config file is where that belongs. The whole reason the
+resolver exists is that a *file* holds a recipe rather than a secret.
 
 This is Crush's design, and it is why we ship no keyring integration: `$(op read …)`,
 `$(pass show …)`, `$(gh auth token)` all work with zero code. Results are cached ~30s so we are
