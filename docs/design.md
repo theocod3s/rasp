@@ -1806,8 +1806,8 @@ who'd rather not duplicate a secret can replace the imported literal with `$(op 
 
 ### Auth: API keys only in the MVP
 
-OAuth is phase 2. Every string in `providers.*.api_key` and `mcp.servers.*.env.*` goes through
-one resolver:
+OAuth is phase 2. Every string in `providers.*.api_key` and `mcp.servers.*.env.*` **that was
+written in a config file** goes through one resolver:
 
 | Form | Meaning |
 |---|---|
@@ -1816,6 +1816,15 @@ one resolver:
 | `${VAR:-default}` | Environment with fallback |
 | `${VAR:?msg}` | Environment, or refuse to start and print `msg` |
 | `$(command)` | Run it, take trimmed stdout |
+
+The resolver runs on the two file layers and nowhere else. A value that arrived from the
+environment or from a flag has already been through a shell, and running the grammar over it a
+second time is not a second chance to expand something — it is a chance to misread a secret.
+`export ANTHROPIC_API_KEY='sk-ant-x$yz'` would refuse to start, naming a variable the user never
+wrote, and the `$$` escape is no way out: the same variable is read by other tools, which would
+see the doubled dollar. A `$` in a generated key is ordinary; wanting `$(op read …)` inside an
+environment variable is not, and the config file is where that belongs. The whole reason the
+resolver exists is that a *file* holds a recipe rather than a secret.
 
 This is Crush's design, and it is why we ship no keyring integration: `$(op read …)`,
 `$(pass show …)`, `$(gh auth token)` all work with zero code. Results are cached ~30s so we are

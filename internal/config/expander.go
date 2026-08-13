@@ -120,6 +120,13 @@ func (e *Expander) Expand(ctx context.Context, key string) (string, error) {
 	if !needsExpansion(value) {
 		return value, nil
 	}
+	// Only a config file holds a recipe. A value from the environment or a
+	// flag has already been through a shell, so running the grammar over it
+	// again cannot expand anything — it can only misread a secret that happens
+	// to contain a dollar (design §10).
+	if origin, known := e.origins.At(key); known && !writtenInAFile(origin.Layer) {
+		return value, nil
+	}
 
 	fail := func(err error) (string, error) {
 		return "", &ExpandError{Key: key, Origin: e.origins[key], Err: err}
@@ -169,6 +176,12 @@ func (e *Expander) expandSegments(ctx context.Context, key string, segs []segmen
 		}
 	}
 	return out.String(), nil
+}
+
+// writtenInAFile reports whether a layer is one someone edits by hand, which
+// is the only kind that can hold something worth expanding.
+func writtenInAFile(l Layer) bool {
+	return l == LayerGlobal || l == LayerProject
 }
 
 // expandVar resolves one environment reference.

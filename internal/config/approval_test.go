@@ -2,7 +2,6 @@ package config_test
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -51,49 +50,65 @@ func TestACommandFromAProjectConfigIsRefused(t *testing.T) {
 	}
 }
 
-// TestTheOtherLayersMayRunCommands. The refusal is about a file that arrived
-// with a repository, not about commands. A global config, an environment
-// variable and a flag are all the user's own act on their own machine, and
-// design §10 names the global config as one of the places this is expected.
-func TestTheOtherLayersMayRunCommands(t *testing.T) {
-	const command = `$(op read op://vault/key)`
+// TestTheGlobalConfigMayRunCommands. The refusal is about a file that arrived
+// with a repository, not about commands: the global config is the user's own
+// file on their own machine, and design §10 names it as one of the places this
+// is expected.
+func TestTheGlobalConfigMayRunCommands(t *testing.T) {
+	res := load(t, config.Sources{
+		GlobalPath: global(t, `{"providers": {"anthropic": {"api_key": "$(op read op://vault/key)"}}}`),
+	})
+	e := config.NewExpander(res, config.ExpanderOptions{
+		Getenv: env{}.lookup,
+		Run: func(context.Context, string) ([]byte, error) {
+			return []byte("secret"), nil
+		},
+	})
 
+	if got := expand(t, e); got != "secret" {
+		t.Errorf("Expand = %q, want %q", got, "secret")
+	}
+}
+
+// TestAValueFromTheEnvironmentIsLiteral. The resolver exists because a config
+// *file* holds a recipe rather than a secret. Something already handed to us
+// through a shell has nothing left to expand, and running the grammar over it
+// again is not a second chance to resolve anything — it is a chance to misread
+// a key that happens to contain a dollar.
+func TestAValueFromTheEnvironmentIsLiteral(t *testing.T) {
 	tests := []struct {
-		name string
-		src  config.Sources
+		name  string
+		value string
 	}{
-		{
-			name: "global config",
-			src: config.Sources{
-				GlobalPath: global(t, fmt.Sprintf(
-					`{"providers": {"anthropic": {"api_key": %q}}}`, command)),
-			},
-		},
-		{
-			name: "environment",
-			src:  config.Sources{Getenv: env{"ANTHROPIC_API_KEY": command}.lookup},
-		},
+		{"a dollar inside a generated key", "sk-ant-x$yz"},
+		{"something shaped like a reference", "${HOME}"},
+		{"something shaped like a command", "$(id)"},
+		{"a doubled dollar is not an escape here", "sk-ant-x$$yz"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			src := tc.src
-			if src.Getenv == nil {
-				src.Getenv = env{}.lookup
-			}
-			e := config.NewExpander(load(t, src), config.ExpanderOptions{
-				Getenv: env{}.lookup,
+			var ran bool
+			res := load(t, config.Sources{
+				Getenv: env{"ANTHROPIC_API_KEY": tc.value}.lookup,
+			})
+			e := config.NewExpander(res, config.ExpanderOptions{
+				Getenv: env{"HOME": "/home/someone", "yz": "swallowed"}.lookup,
 				Run: func(context.Context, string) ([]byte, error) {
-					return []byte("secret"), nil
+					ran = true
+					return []byte("owned"), nil
 				},
 			})
 
 			got, err := e.Expand(t.Context(), apiKey)
 			if err != nil {
-				t.Fatalf("Expand from the %s: %v", tc.name, err)
+				t.Fatalf("Expand: %v", err)
 			}
-			if got != "secret" {
-				t.Errorf("Expand = %q, want %q", got, "secret")
+			if got != tc.value {
+				t.Errorf("Expand = %q, want it exactly as exported: %q", got, tc.value)
+			}
+			if ran {
+				t.Error("a command from the environment was executed")
 			}
 		})
 	}
