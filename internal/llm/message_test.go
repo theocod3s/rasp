@@ -283,3 +283,33 @@ func TestStrayFieldsFromAnotherBlockTypeAreDropped(t *testing.T) {
 		t.Errorf("encoding:\n got %s\nwant %s", encoded, want)
 	}
 }
+
+// TestAnUnknownBlockTypeKeepsNothing is about the next person to add a BlockType.
+// A type this encoder has not been taught about emits its type and no fields,
+// because the alternative is shipping whichever variant's fields happen to be
+// set — the 400 the scrubbing exists to prevent. Content vanishing is a loud way
+// to be told to add a case.
+func TestAnUnknownBlockTypeKeepsNothing(t *testing.T) {
+	msg := llm.Message{
+		Role: llm.RoleAssistant,
+		Content: []llm.Block{{
+			Type:      "redacted_thinking",
+			Text:      "kept secret",
+			ID:        "toolu_01",
+			Name:      "read",
+			Input:     []byte(`{"path":"a.go"}`),
+			ToolUseID: "toolu_09",
+			Content:   "stray",
+			IsError:   true,
+		}},
+	}
+
+	encoded, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshalling: %v", err)
+	}
+	const want = `{"role":"assistant","content":[{"type":"redacted_thinking"}]}`
+	if string(encoded) != want {
+		t.Errorf("encoding:\n got %s\nwant %s", encoded, want)
+	}
+}

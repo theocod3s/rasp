@@ -216,6 +216,12 @@ func (c *streamChecker) checkComplete() error {
 	// writes toolu_02's result against toolu_01's tool_use. What a half-finished
 	// turn cannot be held to is announcing everything — only announcing what it
 	// did announce in the order the message records.
+	for i, id := range c.announced {
+		if slices.Index(c.announced, id) != i {
+			return fmt.Errorf("the stream announced tool call %q twice; the loop dispatches once per "+
+				"announcement, so the second one runs a tool the model asked for once", id)
+		}
+	}
 	if !inOrder(c.announced, recorded) {
 		return fmt.Errorf("the stream announced tool calls %v, which is not the order the message "+
 			"records them in (%v); results are answered in announcement order and persisted in block "+
@@ -226,18 +232,26 @@ func (c *streamChecker) checkComplete() error {
 	// thing needed for "the announcements are exactly the blocks": a subsequence
 	// that contains every element, of a list with no repeats, is the list.
 	//
-	// A stream that failed, was cancelled or ran out of output is held to less,
-	// but not to nothing. What such a turn is allowed to leave behind is a call
-	// still arriving — arguments that are a fragment, which no EventToolCall
-	// could have announced. A call whose arguments are complete had nothing
-	// stopping the announcement, and leaving it out puts a tool_use in the
-	// transcript that nothing runs and nothing answers.
-	whole := c.terminal == EventDone && slices.Contains(finished, c.stop)
+	// A stream that failed, was cancelled or ran out of output is not held to
+	// this at all, and the reason is worth spelling out because the rule has been
+	// tried the other way round. Requiring an announcement from a broken-off turn
+	// looks stricter and is more dangerous: the connection can drop after the
+	// last argument fragment and before the event that confirms the call, so the
+	// message holds something complete-looking that the provider never finished
+	// asking for. The only way for an adapter to satisfy the check is to announce
+	// it anyway — and then the loop dispatches a tool call nobody confirmed,
+	// which for `write` means a file changed on the strength of a dropped
+	// connection.
+	//
+	// So the shape is allowed to reach the transcript, and failing those calls is
+	// the loop's job, which is exactly what design §4 invariant 2 already says it
+	// does with every pending call on a truncated turn.
+	if c.terminal != EventDone || !slices.Contains(finished, c.stop) {
+		return nil
+	}
+
 	for index, block := range c.partial.Content {
 		if block.Type != BlockToolUse {
-			continue
-		}
-		if stillArriving(block) && !whole {
 			continue
 		}
 		if !slices.Contains(c.announced, block.ID) {
@@ -245,9 +259,6 @@ func (c *streamChecker) checkComplete() error {
 				"the loop dispatches from the event, so a call only in the message is one nothing runs "+
 				"and nothing answers (block %d)", block.ID, index)
 		}
-	}
-	if !whole {
-		return nil
 	}
 	// A turn that says it stopped to use tools has to have some: design §4's
 	// termination table has no row for tool_use with nothing to run, and the loop
@@ -414,6 +425,9 @@ func (c *streamChecker) check(index int, ev Event) error {
 	if err := c.checkFrozen(at, ev.Partial); err != nil {
 		return err
 	}
+	if err := checkShape(at, ev.Partial); err != nil {
+		return err
+	}
 
 	if ev.Type == EventToolCall {
 		at, err := checkToolCall(at, ev)
@@ -520,22 +534,38 @@ func (c *streamChecker) checkSettled() error {
 			c.partial.StopReason, c.stop)
 	}
 
-	// And what the announced calls are: checkFrozen runs per event, which stops
-	// looking at exactly the point the loop starts reading.
+	// And what the announced calls are, and what blocks there are at all:
+	// checkFrozen and checkShape run per event, which stops looking at exactly
+	// the point the loop starts reading. Nothing may be appended here either —
+	// after the last event, an append is content no event announced.
+	if err := checkShape("after the stream ended", c.partial); err != nil {
+		return err
+	}
 	return c.checkFrozen("after the stream ended", c.partial)
 }
 
-// stillArriving reports whether a tool call's arguments have yet to finish
-// showing up — either they do not parse, or they are the empty object a provider
-// opens the block with, which at this point is indistinguishable from nothing
-// having arrived at all. A turn that broke off is not held to announcing one of
-// these, because no EventToolCall could have been emitted for it.
-func stillArriving(block Block) bool {
-	if string(block.Input) == emptyArguments {
-		return true
+// checkShape is the one thing the per-channel rules cannot see. They watch the
+// three kinds a stream produces, so a block of any other type — a tool_result, a
+// zero value, whatever the next spec revision adds — is invisible to every one of
+// them, whether it arrives during the stream or while the provider unwinds after
+// it. A streamed message is an assistant message: a tool_result in one is a 400
+// on the next request, and an unrecognised block is content nothing above the
+// provider knows how to draw.
+//
+// Everything else about the block list is already covered, and by rules that run
+// first: retyping a block, inserting one, or dropping one all read as a channel
+// losing content.
+func checkShape(at string, msg *Message) error {
+	for index, block := range msg.Content {
+		switch block.Type {
+		case BlockText, BlockThinking, BlockToolUse:
+		default:
+			return fmt.Errorf("%s: the block at index %d is a %q; a stream produces an assistant "+
+				"message, which holds text, thinking and tool_use blocks and nothing else",
+				at, index, block.Type)
+		}
 	}
-	_, err := arguments(block.Input)
-	return err != nil
+	return nil
 }
 
 // checkFrozen re-reads the blocks whose calls have been announced. The

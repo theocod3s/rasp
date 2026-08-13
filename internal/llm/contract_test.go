@@ -573,7 +573,7 @@ func TestCheckStreamRejects(t *testing.T) {
 				msg.StopReason = llm.StopToolUse
 				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
 			},
-			want: "not the order the message records them in",
+			want: "announced tool call \"toolu_01A9\" twice",
 		},
 		"arguments that are a JSON array": {
 			seq: stream(llm.Event{
@@ -749,21 +749,27 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "is gone after the stream ended",
 		},
-		"a complete call left unannounced on a failed turn": {
+		"a tool_result block in a streamed message": {
+			seq: stream(llm.Event{
+				Type: llm.EventMessageStart,
+				Partial: &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+					Type: llm.BlockToolResult, ToolUseID: "toolu_01", Content: "nope",
+				}}},
+			}),
+			want: "and nothing else",
+		},
+		"a block retyped mid-stream": {
 			seq: func(yield func(llm.Event) bool) {
-				msg := called(`{"path":"auth.go"}`)
-				if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+				msg := streamed()
+				if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll", Partial: msg}) {
 					return
 				}
-				msg.StopReason = llm.StopError
-				yield(llm.Event{
-					Type:       llm.EventError,
-					StopReason: llm.StopError,
-					Err:        errors.New("stream ended before message_stop"),
-					Partial:    msg,
-				})
+				msg.Content[0].Type = llm.BlockThinking
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
 			},
-			want: "no EventToolCall announced",
+			// Retyping reads as the block going missing, which is caught first
+			// and says so.
+			want: "is gone",
 		},
 		"an empty-object fragment with nowhere to land": {
 			seq: func(yield func(llm.Event) bool) {
@@ -904,6 +910,17 @@ func TestCheckStreamNoticesChangesAfterTheStream(t *testing.T) {
 		"an announced call renamed": {
 			meddle: func(m *llm.Message) { m.Content[1].Name = "write" },
 			want:   "the loop dispatched the first one",
+		},
+		"a tool_result appended": {
+			// The per-channel rules cannot see this one: no channel watches a
+			// tool_result, so without the block-type check it lands in the
+			// transcript and 400s the next request.
+			meddle: func(m *llm.Message) {
+				m.Content = append(m.Content, llm.Block{
+					Type: llm.BlockToolResult, ToolUseID: "toolu_01", Content: "nope",
+				})
+			},
+			want: "and nothing else",
 		},
 	}
 
@@ -1220,6 +1237,28 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 				Type:       llm.EventError,
 				StopReason: llm.StopError,
 				Err:        errors.New("stream ended before message_stop"),
+				Partial:    msg,
+			})
+		},
+
+		// The connection can drop after the last argument fragment and before the
+		// event that confirms the call. Holding that turn to an announcement
+		// would leave an adapter no way through except to announce a call the
+		// provider never finished asking for — and then the loop writes a file
+		// on the strength of a dropped connection. Failing those calls is the
+		// loop's job, per design §4 invariant 2.
+		"a call complete but unconfirmed when the stream broke": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+				Type: llm.BlockToolUse, ID: "toolu_01", Name: "write", Input: []byte(`{"path":"a.go"}`),
+			}}}
+			if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+				return
+			}
+			msg.StopReason = llm.StopAborted
+			yield(llm.Event{
+				Type:       llm.EventError,
+				StopReason: llm.StopAborted,
+				Err:        context.Canceled,
 				Partial:    msg,
 			})
 		},

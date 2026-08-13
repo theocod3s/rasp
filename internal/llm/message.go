@@ -97,6 +97,14 @@ func (b Block) MarshalJSON() ([]byte, error) {
 		b.Text, b.ToolUseID, b.Content, b.IsError = "", "", "", false
 	case BlockToolResult:
 		b.Text, b.ID, b.Name = "", "", ""
+	default:
+		// A type this switch has not been taught about keeps nothing but its
+		// type. The alternative is emitting whichever variant's fields happen to
+		// be set, which is the 400 this scrubbing exists to prevent — and the
+		// case that most plausibly triggers it is someone adding a fifth block
+		// type by copying a fourth. Their content coming out empty is a loud way
+		// to be told to add a case here.
+		b.Text, b.ID, b.Name, b.Input, b.ToolUseID, b.Content, b.IsError = "", "", "", nil, "", "", false
 	}
 
 	switch {
