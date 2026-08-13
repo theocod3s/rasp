@@ -680,9 +680,19 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "not the delta",
 		},
-		"a delta event carrying nothing": {
-			seq:  stream(llm.Event{Type: llm.EventTextDelta, Partial: &llm.Message{Role: llm.RoleAssistant}}),
-			want: "carries no Delta",
+		"an empty-object fragment with nowhere to land": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+					Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read",
+				}}}
+				msg.Content[0].Input = []byte(`{"path":"auth.go"}`)
+				if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"path":"auth.go"}`, Partial: msg}) {
+					return
+				}
+				// No block holds the placeholder, so this fragment went nowhere.
+				yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{}`, Partial: msg})
+			},
+			want: "grew by",
 		},
 		"two tool_use blocks sharing an id on a truncated turn": {
 			seq: func(yield func(llm.Event) bool) {
@@ -818,6 +828,24 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			}
 			msg.StopReason = llm.StopToolUse
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+		},
+
+		// Anthropic opens a tool block's fragment stream with an empty
+		// partial_json, so an adapter forwarding its events one-for-one emits a
+		// delta that carries nothing. Permitted on purpose: nothing is lost, and
+		// a fragment that went missing while Delta said something arrived is
+		// caught by the accumulation rule.
+		"a delta event whose fragment is empty": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText}}}
+			if !yield(llm.Event{Type: llm.EventTextDelta, Partial: msg}) {
+				return
+			}
+			msg.Content[0].Text = "I'll read it."
+			if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll read it.", Partial: msg}) {
+				return
+			}
+			msg.StopReason = llm.StopEndTurn
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
 		},
 
 		// The Anthropic no-argument shape end to end: the empty object opens the

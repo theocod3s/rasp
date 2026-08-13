@@ -294,11 +294,12 @@ func (c *streamChecker) check(index int, ev Event) error {
 	if (ev.Err != nil) != (ev.Type == EventError) {
 		return fmt.Errorf("%s: Err is set on EventError and nothing else (here: %v)", at, ev.Err)
 	}
-	if ev.Delta == "" && carriesDelta(ev.Type) {
-		return fmt.Errorf("%s carries no Delta; a delta event exists to say what just arrived, so an "+
-			"empty one is a fragment dropped from the event and from Partial together — output lost "+
-			"with nothing to show it", at)
-	}
+	// An empty Delta on a delta event is allowed, and that is a decision rather
+	// than an omission: Anthropic opens a tool block's fragment stream with an
+	// empty partial_json, so an adapter forwarding its events one-for-one — the
+	// obvious implementation — would fail its first tool call. Nothing is lost
+	// by permitting it, because a fragment that went missing while Delta said
+	// something arrived is caught by the accumulation rule below.
 	if ev.Delta != "" && !carriesDelta(ev.Type) {
 		return fmt.Errorf("%s carries Delta %q; only a delta event has newly-arrived content, and a "+
 			"consumer that appends whatever Delta holds would render this twice", at, ev.Delta)
@@ -480,18 +481,15 @@ func checkAccumulation(at string, ev Event, ch channel, seen *map[int]string) er
 	for _, i := range slices.Sorted(maps.Keys(now)) {
 		text, was := now[i], (*seen)[i]
 		switch {
-		case ch.placeholder != "" && was == ch.placeholder && (text != was || ev.Type == ch.delta):
-			// A fragment replaces the placeholder rather than extending it —
-			// including a fragment whose bytes ARE the placeholder, which is how
-			// a no-argument call arrives when the provider sends the empty
-			// object twice: once opening the block, once as the payload.
+		case text == was:
+			// Unchanged, whatever it holds — including a placeholder left alone
+			// by an event that was never going to add to it.
+		case ch.placeholder != "" && was == ch.placeholder:
+			// A fragment replaces the placeholder rather than extending it.
 			grew++
 			if grew == 1 {
 				added = text
 			}
-		case text == was:
-			// Unchanged, whatever it holds — including a placeholder left alone
-			// by an event that was never going to add to it.
 		case !strings.HasPrefix(text, was):
 			return fmt.Errorf("%s: Partial %s at index %d is %q, which does not start with the %q "+
 				"already streamed; accumulated content is never rewritten or dropped", at, ch.name, i, text, was)
@@ -509,6 +507,13 @@ func checkAccumulation(at string, ev Event, ch channel, seen *map[int]string) er
 		case grew > 1:
 			return fmt.Errorf("%s: Partial %s grew in %d blocks at once; one delta adds to one block",
 				at, ch.name, grew)
+		case grew == 0 && ev.Delta == ch.placeholder && ch.holdsPlaceholder(now):
+			// The fragment was the placeholder itself, landing in a block that
+			// already held one, so nothing observably changed. Which block it
+			// was is unknowable here — see the attribution note on CheckStream —
+			// and this is how a no-argument call arrives when the provider sends
+			// the empty object twice: once opening the block, once as the
+			// payload.
 		case added != ev.Delta:
 			return fmt.Errorf("%s: Partial %s grew by %q, want %q — Partial is the full accumulated "+
 				"message, not the delta", at, ch.name, added, ev.Delta)
@@ -522,6 +527,20 @@ func checkAccumulation(at string, ev Event, ch channel, seen *map[int]string) er
 
 	*seen = now
 	return nil
+}
+
+// holdsPlaceholder reports whether any block in the snapshot is still sitting at
+// this channel's placeholder.
+func (ch channel) holdsPlaceholder(blocks map[int]string) bool {
+	if ch.placeholder == "" {
+		return false
+	}
+	for _, text := range blocks {
+		if text == ch.placeholder {
+			return true
+		}
+	}
+	return false
 }
 
 // snapshot is this channel's content per block, keyed by the block's index in
