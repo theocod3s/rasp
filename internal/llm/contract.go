@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -40,6 +41,16 @@ import (
 // returned slice shows the FINAL message — not the message as it stood when
 // that event was yielded. Anything that needs the intermediate state has to
 // observe it during iteration, which is what the accumulation rules below do.
+//
+// One thing this cannot check, and it is worth knowing before trusting it: which
+// block a fragment landed in. A delta event says what arrived and not where it
+// belongs — Event carries no block index, because no consumer needs one, they
+// render Partial — so an adapter that routes call 2's fragment into call 1's
+// arguments passes every rule here as long as both halves still parse. That is
+// internals §4.2's own hazard, arguments that parse and mean something else, and
+// closing it means putting the wire's block index on delta events: a change to
+// the event union, for the benefit of a check rather than a consumer, which is a
+// decision for whoever writes the first adapter against real traffic.
 //
 // One rule is deliberately not here: a provider must stop producing when yield
 // returns false, and must not leave a goroutine behind when it does. The useful
@@ -153,8 +164,8 @@ func (c *streamChecker) checkComplete() error {
 	for i, id := range recorded {
 		if slices.Index(recorded, id) != i {
 			return fmt.Errorf("the message holds two tool_use blocks with id %q; one tool_result "+
-				"would answer both, so the pairing design §4 invariant 1 rests on stops being a "+
-				"pairing at all", id)
+				"would answer both, so the pairing that design §4 invariant 1 rests on stops being "+
+				"a pairing at all", id)
 		}
 	}
 
@@ -209,16 +220,22 @@ var channels = []channel{
 		text: func(b Block) string { return b.Text }},
 	{name: "thinking", kind: BlockThinking, delta: EventThinkingDelta,
 		text: func(b Block) string { return b.Text }},
-	// Tool arguments accept content from two more events, and both are real wire
-	// shapes rather than latitude. Anthropic's content_block_start for a tool_use
-	// carries `"input": {}`, so a tool taking no arguments has its whole payload
-	// before any delta arrives; and an OpenAI-compatible endpoint may not reveal
-	// `arguments` until its final chunk, so the whole payload can equally arrive
-	// at the completed call. Tightening either one back breaks an adapter, which
-	// is why they are written down here rather than discovered.
+	// Tool arguments carry two allowances past their delta, and both are real
+	// wire shapes rather than latitude. Anthropic's content_block_start for a
+	// tool_use carries `"input": {}` — for every tool, not only the ones taking
+	// no arguments — and the fragments follow it; an OpenAI-compatible endpoint
+	// may instead not reveal `arguments` until its final chunk, so the whole
+	// payload can arrive at the completed call. Tightening either one back
+	// breaks an adapter, which is why they are written down here rather than
+	// discovered from an error message.
+	//
+	// The empty object is why emptyArguments exists: an adapter that copies that
+	// field faithfully starts at `{}` and then accumulates `{"pa`, which is a
+	// rewrite of the bytes and an addition to the arguments. Reading `{}` as
+	// absence is what lets the rule follow the meaning instead of the encoding.
 	{name: "tool arguments", kind: BlockToolUse, delta: EventToolInputDelta,
 		grows: []EventType{EventToolInputStart, EventToolCall},
-		text:  func(b Block) string { return string(b.Input) }},
+		text:  emptyArguments},
 }
 
 // carriesDelta reports whether this event type is some channel's delta, which is
@@ -432,7 +449,10 @@ func arguments(raw json.RawMessage) (map[string]any, error) {
 func checkAccumulation(at string, ev Event, ch channel, seen *map[int]string) error {
 	now := ch.snapshot(ev.Partial)
 
-	for i := range *seen {
+	// Sorted, so a message naming a block index names the same one on every run.
+	// The error string is this function's whole product; a flaky one is a flaky
+	// test in the package that exists to be depended on.
+	for _, i := range slices.Sorted(maps.Keys(*seen)) {
 		if _, ok := now[i]; !ok {
 			return fmt.Errorf("%s: the %s block at index %d is gone; blocks are only ever added to, "+
 				"and a message that loses one has lost part of the reply", at, ch.name, i)
@@ -440,8 +460,8 @@ func checkAccumulation(at string, ev Event, ch channel, seen *map[int]string) er
 	}
 
 	grew, added := 0, ""
-	for i, text := range now {
-		was := (*seen)[i]
+	for _, i := range slices.Sorted(maps.Keys(now)) {
+		text, was := now[i], (*seen)[i]
 		switch {
 		case text == was:
 		case !strings.HasPrefix(text, was):
@@ -449,7 +469,9 @@ func checkAccumulation(at string, ev Event, ch channel, seen *map[int]string) er
 				"already streamed; accumulated content is never rewritten or dropped", at, ch.name, i, text, was)
 		default:
 			grew++
-			added = text[len(was):]
+			if grew == 1 {
+				added = text[len(was):]
+			}
 		}
 	}
 
@@ -472,6 +494,17 @@ func checkAccumulation(at string, ev Event, ch channel, seen *map[int]string) er
 
 	*seen = now
 	return nil
+}
+
+// emptyArguments reads a tool call's arguments, with `{}` meaning none. The two
+// encodings of "no arguments" — absent and empty object — both have to count as
+// absence, or an adapter faithfully copying one provider's placeholder looks
+// like it rewrote the other's fragments.
+func emptyArguments(b Block) string {
+	if s := string(b.Input); s != "{}" {
+		return s
+	}
+	return ""
 }
 
 // snapshot is this channel's content per block, keyed by the block's index in

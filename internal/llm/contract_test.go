@@ -749,6 +749,57 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
 		},
 
+		// A short arguments object can arrive whole in the chunk that opens the
+		// call, so the event that starts a tool block may deliver the payload.
+		"a call whose payload arrives with the block": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read", Input: []byte(`{"path":"auth.go"}`),
+			}}}
+			if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+				return
+			}
+			if !yield(llm.Event{
+				Type:     llm.EventToolCall,
+				Partial:  msg,
+				ToolCall: &llm.ToolCall{ID: "toolu_01A9", Name: "read", Input: msg.Content[0].Input},
+			}) {
+				return
+			}
+			msg.StopReason = llm.StopToolUse
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+		},
+
+		// Anthropic's content_block_start carries "input": {} for every tool_use,
+		// so an adapter that copies the field faithfully starts at the empty
+		// object and then accumulates fragments over it.
+		"a call whose fragments replace the empty object": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read", Input: []byte(`{}`),
+			}}}
+			if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+				return
+			}
+			for i, fragment := range []string{`{"pa`, `th": "auth.go"}`} {
+				if i == 0 {
+					msg.Content[0].Input = []byte(fragment)
+				} else {
+					msg.Content[0].Input = append(msg.Content[0].Input, fragment...)
+				}
+				if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: fragment, Partial: msg}) {
+					return
+				}
+			}
+			if !yield(llm.Event{
+				Type:     llm.EventToolCall,
+				Partial:  msg,
+				ToolCall: &llm.ToolCall{ID: "toolu_01A9", Name: "read", Input: msg.Content[0].Input},
+			}) {
+				return
+			}
+			msg.StopReason = llm.StopToolUse
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+		},
+
 		// An OpenAI-compatible endpoint may not reveal arguments until its final
 		// chunk, so the whole payload can equally arrive at the completed call.
 		"a call whose payload arrives at the end": func(yield func(llm.Event) bool) {
