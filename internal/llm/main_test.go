@@ -69,32 +69,26 @@ func (s scripted) Stream(ctx context.Context, _ llm.Request) llm.StreamResponse 
 // listening.
 type action func(msg *llm.Message, yield func(llm.Event) bool) bool
 
-// text streams one text block, one event per chunk, the way a provider splits a
-// sentence at arbitrary boundaries.
+// text and thinking stream one block each, one event per chunk, the way a
+// provider splits a sentence at arbitrary boundaries. They accumulate
+// separately, and a provider that pours one into the other is a bug the
+// contract check is meant to see — so the pairing of block type to event type
+// lives in one place here, as it does in checkAccumulation.
 func text(chunks ...string) action {
-	return func(msg *llm.Message, yield func(llm.Event) bool) bool {
-		msg.Content = append(msg.Content, llm.Block{Type: llm.BlockText})
-		at := len(msg.Content) - 1
-		for _, chunk := range chunks {
-			msg.Content[at].Text += chunk
-			if !yield(llm.Event{Type: llm.EventTextDelta, Delta: chunk, Partial: msg}) {
-				return false
-			}
-		}
-		return true
-	}
+	return deltas(llm.BlockText, llm.EventTextDelta, chunks)
 }
 
-// thinking streams one thinking block. Thinking accumulates separately from
-// text, and a provider that pours one into the other is a bug the contract
-// check is meant to see.
 func thinking(chunks ...string) action {
+	return deltas(llm.BlockThinking, llm.EventThinkingDelta, chunks)
+}
+
+func deltas(kind llm.BlockType, event llm.EventType, chunks []string) action {
 	return func(msg *llm.Message, yield func(llm.Event) bool) bool {
-		msg.Content = append(msg.Content, llm.Block{Type: llm.BlockThinking})
+		msg.Content = append(msg.Content, llm.Block{Type: kind})
 		at := len(msg.Content) - 1
 		for _, chunk := range chunks {
 			msg.Content[at].Text += chunk
-			if !yield(llm.Event{Type: llm.EventThinkingDelta, Delta: chunk, Partial: msg}) {
+			if !yield(llm.Event{Type: event, Delta: chunk, Partial: msg}) {
 				return false
 			}
 		}
@@ -164,6 +158,22 @@ func types(events []llm.Event) []llm.EventType {
 		out[i] = ev.Type
 	}
 	return out
+}
+
+// toolCallIn is the one completed tool call in a stream, or a fatal test
+// failure if the stream did not report exactly one.
+func toolCallIn(t *testing.T, events []llm.Event) *llm.ToolCall {
+	t.Helper()
+	var found []*llm.ToolCall
+	for _, ev := range events {
+		if ev.Type == llm.EventToolCall {
+			found = append(found, ev.ToolCall)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("stream reported %d completed tool calls, want 1", len(found))
+	}
+	return found[0]
 }
 
 // last is the terminal event, or a fatal test failure if there is none.

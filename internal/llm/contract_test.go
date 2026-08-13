@@ -101,7 +101,7 @@ func TestEveryEventCarriesTheAccumulatedMessage(t *testing.T) {
 
 	// The fragments that made up the arguments do not individually parse; the
 	// completed call does, and that is the only version a consumer ever sees.
-	call := events[len(events)-2].ToolCall
+	call := toolCallIn(t, events)
 	var args struct{ Path string }
 	if err := json.Unmarshal(call.Input, &args); err != nil {
 		t.Fatalf("unmarshalling the completed tool call: %v", err)
