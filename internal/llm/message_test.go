@@ -202,3 +202,55 @@ func TestToolCallWithNoArgumentsStillEncodesAnObject(t *testing.T) {
 		t.Errorf("encoding:\n got %s\nwant %s", encoded, want)
 	}
 }
+
+// TestNullArgumentsEncodeAsAnObject covers the shape that is valid JSON and still
+// rejected on replay. `null` is how an OpenAI-compatible endpoint normalises an
+// empty arguments string, so a transcript can hold one — and a tool_use whose
+// input is null fails the next request exactly like one with no input.
+func TestNullArgumentsEncodeAsAnObject(t *testing.T) {
+	cases := map[string]string{
+		"null":     `null`,
+		"a number": `42`,
+		"an array": `[1]`,
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			msg := llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.Block{{
+					Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "write", Input: []byte(input),
+				}},
+			}
+			encoded, err := json.Marshal(msg)
+			if err != nil {
+				t.Fatalf("marshalling: %v", err)
+			}
+			const want = `{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01A9","name":"write","input":{}}]}`
+			if string(encoded) != want {
+				t.Errorf("encoding:\n got %s\nwant %s", encoded, want)
+			}
+		})
+	}
+}
+
+// TestStrayArgumentsDoNotSinkTheMessage is the same protection for a field set on
+// a block that should not carry one. It is a bug upstream either way, and the
+// message still has to be writable: a turn that cannot be encoded cannot be
+// committed together with its results.
+func TestStrayArgumentsDoNotSinkTheMessage(t *testing.T) {
+	msg := llm.Message{
+		Role: llm.RoleUser,
+		Content: []llm.Block{{
+			Type: llm.BlockToolResult, ToolUseID: "toolu_01A9", Content: "ok", Input: []byte(`{"pa`),
+		}},
+	}
+
+	encoded, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshalling: %v", err)
+	}
+	const want = `{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01A9","content":"ok"}]}`
+	if string(encoded) != want {
+		t.Errorf("encoding:\n got %s\nwant %s", encoded, want)
+	}
+}

@@ -555,7 +555,7 @@ func TestCheckStreamRejects(t *testing.T) {
 				msg.StopReason = llm.StopToolUse
 				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
 			},
-			want: "do not line up",
+			want: "not the order the message records them in",
 		},
 		"one call announced twice": {
 			seq: func(yield func(llm.Event) bool) {
@@ -573,7 +573,7 @@ func TestCheckStreamRejects(t *testing.T) {
 				msg.StopReason = llm.StopToolUse
 				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
 			},
-			want: "do not line up",
+			want: "not the order the message records them in",
 		},
 		"arguments that are a JSON array": {
 			seq: stream(llm.Event{
@@ -582,17 +582,6 @@ func TestCheckStreamRejects(t *testing.T) {
 				ToolCall: call("toolu_01A9", "read", `[1,2]`),
 			}),
 			want: "not a JSON object",
-		},
-		"a refused turn holding a call it never announced": {
-			seq: func(yield func(llm.Event) bool) {
-				msg := called(`{"path":"auth.go"}`)
-				if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"path":"auth.go"}`, Partial: msg}) {
-					return
-				}
-				msg.StopReason = llm.StopRefusal
-				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopRefusal, Partial: msg})
-			},
-			want: "no EventToolCall announced",
 		},
 		"arguments replaced when the call completes": {
 			seq: func(yield func(llm.Event) bool) {
@@ -660,6 +649,29 @@ func TestCheckStreamRejects(t *testing.T) {
 				yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"path":"auth.go"}`, Partial: msg})
 			},
 			want: "not the delta",
+		},
+		"calls announced out of order on a truncated turn": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant}
+				for _, id := range []string{"toolu_01", "toolu_02"} {
+					msg.Content = append(msg.Content, llm.Block{
+						Type: llm.BlockToolUse, ID: id, Name: "read", Input: []byte(`{}`),
+					})
+					if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+						return
+					}
+				}
+				for _, id := range []string{"toolu_02", "toolu_01"} {
+					ev := llm.Event{Type: llm.EventToolCall, Partial: msg,
+						ToolCall: call(id, "read", `{}`)}
+					if !yield(ev) {
+						return
+					}
+				}
+				msg.StopReason = llm.StopMaxTokens
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopMaxTokens, Partial: msg})
+			},
+			want: "not the order the message records them in",
 		},
 		"an empty-object fragment with nowhere to land": {
 			seq: func(yield func(llm.Event) bool) {
@@ -1015,6 +1027,20 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			}
 			msg.StopReason = llm.StopEndTurn
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+		},
+
+		// A model can decline part way through a tool call, so a refusal is not
+		// held to a full set of announcements — design §4's termination table
+		// covers a refusal with no tool calls and says nothing about this.
+		"a refusal that stops mid-call": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "write", Input: []byte(`{"pa`),
+			}}}
+			if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"pa`, Partial: msg}) {
+				return
+			}
+			msg.StopReason = llm.StopRefusal
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopRefusal, Partial: msg})
 		},
 
 		// A cancelled turn is an error to the code that was streaming and a

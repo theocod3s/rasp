@@ -71,6 +71,11 @@ type Block struct {
 // message that cannot be written cannot be committed together with its results,
 // which is invariant 1.
 //
+// An object rather than merely valid JSON, because `null` is both valid and how
+// an OpenAI-compatible endpoint normalises an empty arguments string — and a
+// tool_use whose input is null is rejected on replay exactly like one with no
+// input at all.
+//
 // Absent arguments go the same way, and for the same reason: a turn can be cut
 // off before any arguments chunk arrives, and every provider rejects a tool_use
 // block with no input at all — so omitting the field would brick the replay this
@@ -81,8 +86,14 @@ type Block struct {
 // the tool_result that fails it has something to point at. What is written stays
 // an object, so the turn replays.
 func (b Block) MarshalJSON() ([]byte, error) {
-	if b.Type == BlockToolUse && !json.Valid(b.Input) {
+	switch {
+	case b.Type == BlockToolUse && !isJSONObject(b.Input):
 		b.Input = json.RawMessage("{}")
+	case b.Type != BlockToolUse && len(b.Input) > 0 && !json.Valid(b.Input):
+		// Arguments on a block that has no business holding them are a bug
+		// somewhere upstream, and dropping them keeps the message writable
+		// rather than making the whole turn unencodable over a stray field.
+		b.Input = nil
 	}
 	type block Block // no methods, so no recursion
 	return json.Marshal(block(b))

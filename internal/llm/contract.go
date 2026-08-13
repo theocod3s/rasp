@@ -134,10 +134,17 @@ var (
 	doneReasons  = []StopReason{StopEndTurn, StopToolUse, StopMaxTokens, StopRefusal, StopAborted}
 	errorReasons = []StopReason{StopError, StopAborted}
 
-	// finished are the reasons that claim a whole message arrived. Truncation
-	// and cancellation are not among them: both stop mid-flight, and what they
-	// leave behind is what design §4 invariant 2's guard exists to fail.
-	finished = []StopReason{StopEndTurn, StopToolUse, StopRefusal}
+	// finished are the reasons that claim a whole message arrived. Truncation and
+	// cancellation are not among them: both stop mid-flight, and what they leave
+	// behind is what design §4 invariant 2's guard exists to fail.
+	//
+	// Refusal is not among them either, which reads oddly against design §4's
+	// termination table until you notice the table's row is "StopEndTurn /
+	// StopRefusal, NO TOOL CALLS". It says nothing about a refusal that arrives
+	// part way through one, and a model can decline mid-call — so holding that
+	// turn to a full set of announcements would reject an adapter that mapped it
+	// faithfully. This branch has already paid twice for guessing the other way.
+	finished = []StopReason{StopEndTurn, StopToolUse}
 )
 
 // checkComplete runs once the stream has ended, on the rule that needs the whole
@@ -182,10 +189,25 @@ func (c *streamChecker) checkComplete() error {
 		}
 	}
 
+	// Order, too, is not a question about completeness. Results land by index in
+	// announcement order (design §6 rule 6) while the message keeps block order,
+	// so an adapter that flushes a map's worth of calls on a truncated turn
+	// writes toolu_02's result against toolu_01's tool_use. What a half-finished
+	// turn cannot be held to is announcing everything — only announcing what it
+	// did announce in the order the message records.
+	if !inOrder(c.announced, recorded) {
+		return fmt.Errorf("the stream announced tool calls %v, which is not the order the message "+
+			"records them in (%v); results are answered in announcement order and persisted in block "+
+			"order, so the two have to agree", c.announced, recorded)
+	}
+
 	if c.terminal != EventDone || !slices.Contains(finished, c.stop) {
 		return nil
 	}
 
+	// With the order rule above and uniqueness below it, this loop is the last
+	// thing needed for "the announcements are exactly the blocks": a subsequence
+	// that contains every element, of a list with no repeats, is the list.
 	for _, id := range recorded {
 		if !slices.Contains(c.announced, id) {
 			return fmt.Errorf("the message holds a tool_use block %q that no EventToolCall announced; "+
@@ -193,12 +215,6 @@ func (c *streamChecker) checkComplete() error {
 				"and nothing answers", id)
 		}
 	}
-	if !slices.Equal(recorded, c.announced) {
-		return fmt.Errorf("the message records tool calls %v but the stream announced %v; results are "+
-			"answered in announcement order and persisted in block order, so any difference in order "+
-			"or in count leaves tool_result blocks that do not line up", recorded, c.announced)
-	}
-
 	// A turn that says it stopped to use tools has to have some: design §4's
 	// termination table has no row for tool_use with nothing to run, and the loop
 	// would spend a step dispatching an empty batch and go round again.
@@ -214,6 +230,20 @@ func (c *streamChecker) checkComplete() error {
 			"model stopped to use one", c.stop)
 	}
 	return nil
+}
+
+// inOrder reports whether every id in announced appears in recorded, in the same
+// relative order and no more often.
+func inOrder(announced, recorded []string) bool {
+	at := 0
+	for _, id := range announced {
+		next := slices.Index(recorded[at:], id)
+		if next < 0 {
+			return false
+		}
+		at += next + 1
+	}
+	return true
 }
 
 // channel is one of the three streams of content a message accumulates: the
@@ -467,6 +497,13 @@ func arguments(raw json.RawMessage) (map[string]any, error) {
 		return nil, fmt.Errorf("are %q, not a JSON object", raw)
 	}
 	return obj, nil
+}
+
+// isJSONObject reports whether raw is a JSON object — the shape a tool call's
+// arguments have to be, as opposed to merely parseable.
+func isJSONObject(raw json.RawMessage) bool {
+	_, err := arguments(raw)
+	return err == nil
 }
 
 // checkAccumulation holds the half of the contract that is easiest to satisfy on
