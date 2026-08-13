@@ -1,0 +1,111 @@
+package llm
+
+import "encoding/json"
+
+// Role is who produced a message.
+//
+// There is no system role. The system prompt travels in Request.System as
+// ordered blocks with cache breakpoints (design §11), because a prefix-matched
+// cache needs to know where the stable text ends — something a message in the
+// transcript cannot express.
+type Role string
+
+const (
+	RoleUser      Role = "user"
+	RoleAssistant Role = "assistant"
+)
+
+// BlockType names what a Block carries. It is the JSON discriminant as well as
+// the Go one, so the on-disk transcript reads the way the wire does.
+type BlockType string
+
+const (
+	BlockText       BlockType = "text"
+	BlockThinking   BlockType = "thinking"
+	BlockToolUse    BlockType = "tool_use"
+	BlockToolResult BlockType = "tool_result"
+)
+
+// Block is one piece of a message's content: a union with a discriminant rather
+// than an interface, because every consumer already switches on the type and an
+// interface would buy nothing but a MarshalJSON per variant. The field comments
+// say which type owns which field; a field set on the wrong type is a bug that
+// the adapters, not the type system, have to avoid.
+//
+// The json tags are the session file's format (design §9), not only the
+// provider's: session storage persists llm.Message verbatim, so renaming a tag
+// here breaks every transcript already on disk.
+type Block struct {
+	Type BlockType `json:"type"`
+
+	// Text carries BlockText and BlockThinking content. Thinking text is
+	// stored because the transcript is what gets replayed to the user, not
+	// because a provider needs it back.
+	Text string `json:"text,omitempty"`
+
+	ID    string          `json:"id,omitempty"`    // BlockToolUse — the provider's call id
+	Name  string          `json:"name,omitempty"`  // BlockToolUse
+	Input json.RawMessage `json:"input,omitempty"` // BlockToolUse — arguments, as they arrived
+
+	// ToolUseID must match the ID of a BlockToolUse. Providers reject a
+	// tool_result that names no tool_use and a tool_use with no result, which
+	// is the invariant the agent loop and session.Sanitize exist to hold
+	// (design §4 invariant 1).
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	Content   string `json:"content,omitempty"`  // BlockToolResult — what the model sees
+	IsError   bool   `json:"is_error,omitempty"` // BlockToolResult
+}
+
+// Message is the provider-neutral message. The model is Anthropic-shaped
+// because Anthropic's block model is the more expressive of the two and
+// translating down to OpenAI is easier than the reverse (design §3.1).
+//
+// A streaming provider allocates exactly one of these per call and mutates it
+// in place, handing the same pointer back as Event.Partial on every event. See
+// the StreamResponse contract.
+type Message struct {
+	Role       Role       `json:"role"`
+	Content    []Block    `json:"content"`
+	StopReason StopReason `json:"stop_reason,omitempty"`
+
+	// Usage is what the provider reported, and it is authoritative: context
+	// estimation trusts the last reported usage and only guesses at the tail
+	// after it (design §11). omitzero keeps it out of user messages, which
+	// never have any.
+	Usage Usage `json:"usage,omitzero"`
+
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// Usage is the token count for one model call.
+//
+// The two cache fields are separate because Anthropic reports them separately
+// and they price differently, but the reason both are here rather than one
+// merged number is context estimation: input excludes anything served from or
+// written to the cache, so the size of the context actually sent is the sum of
+// all three. A cache write is counted once, on the turn that creates it.
+type Usage struct {
+	Input      int `json:"input,omitempty"`
+	Output     int `json:"output,omitempty"`
+	CacheRead  int `json:"cache_read,omitempty"`
+	CacheWrite int `json:"cache_write,omitempty"`
+}
+
+// StopReason is why the model stopped generating.
+type StopReason string
+
+const (
+	StopEndTurn StopReason = "end_turn"
+	StopToolUse StopReason = "tool_use"
+
+	// StopMaxTokens means the response was cut off at the output limit. It is
+	// not merely informational: it fails every pending tool call in that step,
+	// because truncated arguments can parse and validate while being
+	// semantically wrong (design §4 invariant 2).
+	StopMaxTokens StopReason = "max_tokens"
+
+	StopRefusal StopReason = "refusal"
+	StopAborted StopReason = "aborted"
+	StopError   StopReason = "error"
+)
