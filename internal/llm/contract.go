@@ -52,6 +52,13 @@ import (
 // the event union, for the benefit of a check rather than a consumer, which is a
 // decision for whoever writes the first adapter against real traffic.
 //
+// Token usage is deliberately not checked either. It is authoritative for
+// context estimation (design §11), so an adapter that never maps it is a real
+// bug — but requiring it would reject an endpoint that does not report usage at
+// all, and design §10.2's answer to missing metadata is to degrade to estimates
+// rather than refuse. An adapter that knows its endpoint reports usage should
+// assert that itself.
+//
 // One rule is deliberately not here: a provider must stop producing when yield
 // returns false, and must not leave a goroutine behind when it does. The useful
 // half of that assertion is how much work the provider did after being
@@ -103,6 +110,7 @@ func CheckStream(seq StreamResponse) ([]Event, error) {
 type streamChecker struct {
 	partial   *Message         // the pointer the first event carried
 	seen      []map[int]string // per channel, what each block held on the previous event
+	streamed  []map[int]bool   // per channel, which blocks a fragment has landed in
 	announced []string         // tool call ids, in the order EventToolCall reported them
 
 	terminal EventType  // the terminal event's type, once one has arrived
@@ -186,13 +194,19 @@ func (c *streamChecker) checkComplete() error {
 			"or in count leaves tool_result blocks that do not line up", recorded, c.announced)
 	}
 
-	// The reason and the call count have to agree. A turn that asks for tools
-	// says so, and one that says so has something to dispatch: design §4's
-	// termination table has no row for tool_use with nothing to run, and the
-	// loop would spend a step on an empty dispatch and go round again.
-	if (len(recorded) > 0) != (c.stop == StopToolUse) {
-		return fmt.Errorf("the stream ended with StopReason %q holding %d tool calls; %q is the reason "+
-			"for a turn with calls, and the only reason for one", c.stop, len(recorded), StopToolUse)
+	// A turn that says it stopped to use tools has to have some: design §4's
+	// termination table has no row for tool_use with nothing to run, and the loop
+	// would spend a step dispatching an empty batch and go round again.
+	//
+	// The converse is not required, and that is the interesting half. Ollama and
+	// llama.cpp-style servers report finish_reason "stop" alongside tool_calls,
+	// so demanding tool_use whenever calls are present would make every
+	// OpenAI-compatible adapter rewrite the reason to get through here — a
+	// normalization nothing asked for and nowhere records. The loop dispatches on
+	// the calls it was given, not on the reason, so the mismatch costs nothing.
+	if c.stop == StopToolUse && len(recorded) == 0 {
+		return fmt.Errorf("the stream ended with StopReason %q and no tool calls; that reason says the "+
+			"model stopped to use one", c.stop)
 	}
 	return nil
 }
@@ -300,6 +314,10 @@ func (c *streamChecker) check(index int, ev Event) error {
 	// obvious implementation — would fail its first tool call. Nothing is lost
 	// by permitting it, because a fragment that went missing while Delta said
 	// something arrived is caught by the accumulation rule below.
+	if ev.Type == EventMessageStart && index > 0 {
+		return fmt.Errorf("%s is a second message_start; a stream is one message, and a consumer that "+
+			"resets its per-message state on this event would wipe the reply drawn so far", at)
+	}
 	if ev.Delta != "" && !carriesDelta(ev.Type) {
 		return fmt.Errorf("%s carries Delta %q; only a delta event has newly-arrived content, and a "+
 			"consumer that appends whatever Delta holds would render this twice", at, ev.Delta)
@@ -307,12 +325,14 @@ func (c *streamChecker) check(index int, ev Event) error {
 
 	if c.seen == nil {
 		c.seen = make([]map[int]string, len(channels))
+		c.streamed = make([]map[int]bool, len(channels))
 		for i := range c.seen {
 			c.seen[i] = map[int]string{}
+			c.streamed[i] = map[int]bool{}
 		}
 	}
 	for i, ch := range channels {
-		if err := checkAccumulation(at, ev, ch, &c.seen[i]); err != nil {
+		if err := checkAccumulation(at, ev, ch, c.seen[i], c.streamed[i]); err != nil {
 			return err
 		}
 	}
@@ -399,10 +419,13 @@ func checkToolCall(at string, ev Event) error {
 			return fmt.Errorf("%s: the tool_use block for %s holds arguments that %s; the message is "+
 				"what gets persisted, so the fragments have to be finished there too", at, call.ID, err)
 		}
-		// Byte-identical, not merely equal by value. The looser rule would
-		// contradict the accumulation rule, which compares the fragments as
-		// they arrived — and the message is meant to hold what the model sent,
-		// not our re-rendering of it.
+		// Byte-identical, not merely equal by value, because the looser rule
+		// would contradict the accumulation rule that compares the fragments as
+		// they arrived. This is a rule about one stream: json.Marshal compacts a
+		// RawMessage, so the bytes on disk are already normalized and the block
+		// stops being byte-for-byte what arrived the first time it is saved.
+		// Harmless for arguments, which get re-parsed — but the guarantee is
+		// "the event and the message agree", not "these bytes are forever".
 		if !bytes.Equal(block.Input, call.Input) {
 			if reflect.DeepEqual(recorded, called) {
 				return fmt.Errorf("%s: ToolCall %s and its tool_use block hold the same arguments "+
@@ -464,31 +487,34 @@ func arguments(raw json.RawMessage) (map[string]any, error) {
 // them and nothing in Delta. That is what a no-argument tool call looks like on
 // one provider and what a late-arriving arguments field looks like on another,
 // so the latitude is deliberate and only tool arguments have it.
-func checkAccumulation(at string, ev Event, ch channel, seen *map[int]string) error {
+func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, streamed map[int]bool) error {
 	now := ch.snapshot(ev.Partial)
 
 	// Sorted, so a message naming a block index names the same one on every run.
 	// The error string is this function's whole product; a flaky one is a flaky
 	// test in the package that exists to be depended on.
-	for _, i := range slices.Sorted(maps.Keys(*seen)) {
+	for _, i := range slices.Sorted(maps.Keys(seen)) {
 		if _, ok := now[i]; !ok {
 			return fmt.Errorf("%s: the %s block at index %d is gone; blocks are only ever added to, "+
 				"and a message that loses one has lost part of the reply", at, ch.name, i)
 		}
 	}
 
-	grew, added := 0, ""
+	grew, added, grewAt := 0, "", -1
 	for _, i := range slices.Sorted(maps.Keys(now)) {
-		text, was := now[i], (*seen)[i]
+		text, was := now[i], seen[i]
 		switch {
 		case text == was:
 			// Unchanged, whatever it holds — including a placeholder left alone
 			// by an event that was never going to add to it.
-		case ch.placeholder != "" && was == ch.placeholder:
-			// A fragment replaces the placeholder rather than extending it.
+		case ch.placeholder != "" && was == ch.placeholder && !streamed[i]:
+			// A fragment replaces the placeholder rather than extending it. Only
+			// while no fragment has landed in this block: once one has, a `{}`
+			// is a payload the model sent and replacing it wholesale is the
+			// rewrite this rule exists to catch.
 			grew++
 			if grew == 1 {
-				added = text
+				added, grewAt = text, i
 			}
 		case !strings.HasPrefix(text, was):
 			return fmt.Errorf("%s: Partial %s at index %d is %q, which does not start with the %q "+
@@ -496,7 +522,7 @@ func checkAccumulation(at string, ev Event, ch channel, seen *map[int]string) er
 		default:
 			grew++
 			if grew == 1 {
-				added = text[len(was):]
+				added, grewAt = text[len(was):], i
 			}
 		}
 	}
@@ -525,7 +551,23 @@ func checkAccumulation(at string, ev Event, ch channel, seen *map[int]string) er
 			"announced is content nobody draws", at, ch.name, added, append([]EventType{ch.delta}, ch.grows...))
 	}
 
-	*seen = now
+	if ev.Type == ch.delta {
+		switch {
+		case grewAt >= 0:
+			streamed[grewAt] = true
+		default:
+			// The fragment landed invisibly in a block holding the placeholder;
+			// which one is unknowable, so every candidate counts as streamed.
+			for i, text := range now {
+				if text == ch.placeholder {
+					streamed[i] = true
+				}
+			}
+		}
+	}
+
+	clear(seen)
+	maps.Copy(seen, now)
 	return nil
 }
 

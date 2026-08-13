@@ -144,3 +144,38 @@ func TestFailedToolResultRoundTrips(t *testing.T) {
 		t.Fatalf("round trip through %s:\n got %+v\nwant %+v", encoded, got, want)
 	}
 }
+
+// TestTruncatedToolCallStillEncodes is the state design §4 invariant 2 commits: a
+// response cut off at the output limit, holding a tool_use block whose arguments
+// stop mid-object. json.Marshal validates a json.RawMessage, so without the
+// substitution in Block.MarshalJSON the whole message encodes to nothing and the
+// turn cannot be written at all — which is invariant 1 broken by an encoder.
+func TestTruncatedToolCallStillEncodes(t *testing.T) {
+	msg := llm.Message{
+		Role:       llm.RoleAssistant,
+		StopReason: llm.StopMaxTokens,
+		Content: []llm.Block{{
+			Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "write", Input: []byte(`{"pa`),
+		}},
+	}
+
+	encoded, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshalling a truncated turn: %v", err)
+	}
+
+	const want = `{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01A9","name":"write","input":{}}],"stop_reason":"max_tokens"}`
+	if string(encoded) != want {
+		t.Errorf("encoding:\n got %s\nwant %s", encoded, want)
+	}
+
+	// What has to survive is the block, so the tool_result that fails the call
+	// has something to point at.
+	var loaded llm.Message
+	if err := json.Unmarshal(encoded, &loaded); err != nil {
+		t.Fatalf("unmarshalling: %v", err)
+	}
+	if got := loaded.Content[0].ID; got != "toolu_01A9" {
+		t.Errorf("tool_use id = %q, want %q", got, "toolu_01A9")
+	}
+}

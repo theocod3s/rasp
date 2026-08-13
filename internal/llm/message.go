@@ -60,6 +60,29 @@ type Block struct {
 	IsError   bool   `json:"is_error,omitempty"` // BlockToolResult
 }
 
+// MarshalJSON writes a block, substituting an empty object for tool-call
+// arguments that are not valid JSON.
+//
+// The substitution exists because of one state the rest of the system requires:
+// a response truncated at the output limit is committed, tool_use block and all
+// (design §4 invariant 2 fails every call in it), and that block's arguments are
+// a fragment cut mid-object. json.Marshal validates a json.RawMessage, so
+// without this the whole message fails to encode and returns zero bytes — and a
+// message that cannot be written cannot be committed together with its results,
+// which is invariant 1.
+//
+// Dropping the fragment loses nothing that means anything: those arguments are
+// the ones the guard exists to refuse, and what has to survive is the block, so
+// the tool_result that fails it has something to point at. What is written stays
+// an object, so the turn replays.
+func (b Block) MarshalJSON() ([]byte, error) {
+	if len(b.Input) > 0 && !json.Valid(b.Input) {
+		b.Input = json.RawMessage("{}")
+	}
+	type block Block // no methods, so no recursion
+	return json.Marshal(block(b))
+}
+
 // Message is the provider-neutral message. The model is Anthropic-shaped
 // because Anthropic's block model is the more expressive of the two and
 // translating down to OpenAI is easier than the reverse (design §3.1).

@@ -38,12 +38,6 @@ func TestStreamHasNoErrorResult(t *testing.T) {
 		t.Fatalf("StreamResponse is %s, want it to stay the same type as %s", got, want)
 	}
 
-	errType := reflect.TypeFor[error]()
-	for i := range method.Type.NumOut() {
-		if out := method.Type.Out(i); out.Implements(errType) {
-			t.Fatalf("Provider.Stream result %d is %s, which implements error", i, out)
-		}
-	}
 }
 
 // TestEveryEventCarriesTheAccumulatedMessage drives a stream that thinks,
@@ -651,20 +645,7 @@ func TestCheckStreamRejects(t *testing.T) {
 				StopReason: llm.StopToolUse,
 				Partial:    &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopToolUse},
 			}),
-			want: "the only reason for one",
-		},
-		"a turn with tool calls that says it ended": {
-			seq: func(yield func(llm.Event) bool) {
-				msg := called(`{"path":"auth.go"}`)
-				ev := llm.Event{Type: llm.EventToolCall, Partial: msg,
-					ToolCall: call("toolu_01A9", "read", `{"path":"auth.go"}`)}
-				if !yield(ev) {
-					return
-				}
-				msg.StopReason = llm.StopEndTurn
-				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
-			},
-			want: "the only reason for one",
+			want: "stopped to use one",
 		},
 		"fragments appended to the empty object": {
 			seq: func(yield func(llm.Event) bool) {
@@ -679,6 +660,22 @@ func TestCheckStreamRejects(t *testing.T) {
 				yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"path":"auth.go"}`, Partial: msg})
 			},
 			want: "not the delta",
+		},
+		"arguments rewritten after the empty object was streamed": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+					Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read",
+				}}}
+				// The empty object arrives as a real fragment, so it is a payload
+				// the model sent rather than a placeholder waiting to be replaced.
+				msg.Content[0].Input = []byte(`{}`)
+				if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{}`, Partial: msg}) {
+					return
+				}
+				msg.Content[0].Input = []byte(`{"path":"auth.go"}`)
+				yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"path":"auth.go"}`, Partial: msg})
+			},
+			want: "never rewritten or dropped",
 		},
 		"an empty-object fragment with nowhere to land": {
 			seq: func(yield func(llm.Event) bool) {
@@ -709,6 +706,16 @@ func TestCheckStreamRejects(t *testing.T) {
 				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopMaxTokens, Partial: msg})
 			},
 			want: "two tool_use blocks with id",
+		},
+		"a second message_start": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := streamed()
+				if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll", Partial: msg}) {
+					return
+				}
+				yield(llm.Event{Type: llm.EventMessageStart, Partial: msg})
+			},
+			want: "second message_start",
 		},
 		"a stop reason on an ordinary event": {
 			seq: stream(llm.Event{
@@ -967,6 +974,24 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			}
 			msg.StopReason = llm.StopToolUse
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+		},
+
+		// Ollama and llama.cpp-style servers report finish_reason "stop" next to
+		// tool_calls, so an adapter that maps the reason faithfully ends a turn
+		// with calls in it and no claim to have stopped for them.
+		"tool calls reported alongside a plain ending": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read", Input: []byte(`{"path":"auth.go"}`),
+			}}}
+			if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+				return
+			}
+			if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg,
+				ToolCall: &llm.ToolCall{ID: "toolu_01A9", Name: "read", Input: msg.Content[0].Input}}) {
+				return
+			}
+			msg.StopReason = llm.StopEndTurn
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
 		},
 
 		// A cancelled turn is an error to the code that was streaming and a
