@@ -1,10 +1,10 @@
 package config
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -26,16 +26,20 @@ const (
 	// the turn behind it.
 	commandTimeout = 10 * time.Second
 
-	// commandWaitDelay is how long the pipes are given to close after the
-	// deadline passes.
-	//
-	// Without it the deadline does not bind at all. Cancelling the context
-	// kills the shell, but not whatever the shell left running, and reading
-	// stdout waits for every writer to let go of it — so `$(pass show key)`,
-	// where pass starts a gpg-agent that outlives it, blocks for as long as
-	// the agent lives and then reports success. Credentials are re-resolved
-	// every model call, so that is every turn.
+	// commandWaitDelay bounds a child that ignores the kill when its context
+	// ends. It is a backstop; the pipes are handled separately below.
 	commandWaitDelay = time.Second
+
+	// drainDelay is how long the output pipes are read after the command has
+	// exited. Whatever it wrote is already in the pipe buffer by then, so this
+	// only has to be long enough to copy it out.
+	drainDelay = 200 * time.Millisecond
+
+	// maxStderr caps what a failing command contributes to an error message.
+	// The stream is untrusted in size, the message reaches the UI and the log,
+	// and the actionable part of a credential helper's complaint is its first
+	// line.
+	maxStderr = 4 << 10
 )
 
 // Expander resolves the shell forms in a config value: the environment
@@ -304,23 +308,99 @@ func (e *Expander) cached(command string) (string, bool) {
 
 // runCommand is the default runner: the command as a shell would read it, so
 // that `$(cat secret | head -1)` means what it looks like.
+//
+// The output pipes are built here rather than left to cmd.Output, because
+// waiting for end-of-file on stdout means waiting for every process that
+// inherited it — and a credential helper leaving something behind is the
+// ordinary case, not the exotic one: `pass` starts a gpg-agent that outlives
+// it by design. Waiting on that hung the turn; asking exec to force the pipes
+// shut instead threw the secret away on a race. So the command is waited for,
+// and only then is what it already wrote copied out.
 func runCommand(ctx context.Context, command string) ([]byte, error) {
 	cmd := shellCommand(ctx, command)
 	cmd.WaitDelay = commandWaitDelay
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
 
-	out, err := cmd.Output()
-	if err == nil {
-		return out, nil
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		return nil, err
 	}
+	defer outR.Close()
 
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		outW.Close()
+		return nil, err
+	}
+	defer errR.Close()
+
+	cmd.Stdout, cmd.Stderr = outW, errW
+
+	if err := cmd.Start(); err != nil {
+		outW.Close()
+		errW.Close()
+		return nil, err
+	}
+	// Our own ends go now, so the command's are the only ones left open and a
+	// command that exits cleanly gives us end-of-file straight away.
+	outW.Close()
+	errW.Close()
+
+	// Reading runs alongside the command rather than after it: a pipe holds
+	// about 64KB, and a command that filled it would otherwise block forever
+	// waiting for a reader that had not started.
+	out := readPipe(outR)
+	msg := readPipe(errR)
+
+	waitErr := cmd.Wait()
+
+	// Past this point the command has gone. Anything still holding the write
+	// end is something it left running, and none of it is ours to wait for.
+	stdout := out.take()
+	stderr := msg.take()
+
+	if waitErr == nil {
+		return stdout, nil
+	}
 	// The exit status alone is not actionable — `exit status 1` from `op` says
 	// nothing, while its stderr says "you are not currently signed in".
-	if msg := strings.TrimSpace(stderr.String()); msg != "" {
-		return nil, fmt.Errorf("%w: %s", err, msg)
+	if text := strings.TrimSpace(string(stderr)); text != "" {
+		return nil, fmt.Errorf("%w: %s", waitErr, truncate(text, maxStderr))
 	}
-	return nil, err
+	return nil, waitErr
+}
+
+// pending is a pipe being drained in the background.
+type pending struct {
+	file *os.File
+	data []byte
+	done chan struct{}
+}
+
+// readPipe starts draining f and returns a handle to the result.
+func readPipe(f *os.File) *pending {
+	p := &pending{file: f, done: make(chan struct{})}
+	go func() {
+		defer close(p.done)
+		p.data, _ = io.ReadAll(f)
+	}()
+	return p
+}
+
+// take stops the drain shortly and returns what it read. The deadline is what
+// releases the reader when a lingering process still holds the write end, so
+// the goroutine always finishes and never becomes the leak goleak looks for.
+func (p *pending) take() []byte {
+	_ = p.file.SetReadDeadline(time.Now().Add(drainDelay))
+	<-p.done
+	return p.data
+}
+
+// truncate shortens text to n bytes, saying so.
+func truncate(text string, n int) string {
+	if len(text) <= n {
+		return text
+	}
+	return text[:n] + "… (truncated)"
 }
 
 // ExpandError is a config value that could not be resolved. It names the key

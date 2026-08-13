@@ -477,34 +477,57 @@ func TestNestingIsBounded(t *testing.T) {
 	}
 }
 
-// TestTheDeadlineActuallyBinds. Cancelling the context kills the shell but not
-// what the shell left running, and reading stdout waits for every writer to
-// let go of it — so without a WaitDelay a command that backgrounds anything
-// blocks for as long as that lives and then reports success. `pass` starting a
-// gpg-agent is the ordinary case, and credentials are re-resolved every model
-// call, so it would be every turn.
-func TestTheDeadlineActuallyBinds(t *testing.T) {
-	res := load(t, config.Sources{
-		GlobalPath: global(t, `{"providers": {"anthropic": {"api_key": "$(sleep 30 & echo hi)"}}}`),
-	})
-	e := config.NewExpander(res, config.ExpanderOptions{Getenv: env{}.lookup})
+// TestACommandThatLeavesSomethingRunningReturnsAtOnce. This is the ordinary
+// case, not an exotic one: `pass` starts a gpg-agent that outlives it by
+// design, and so do several `op` and ssh-agent wrappers. The agent inherits
+// stdout, so waiting for end-of-file means waiting for the agent — which hung
+// the turn, and, once exec was asked to force the pipes shut instead, threw
+// the secret away on a race. The command has exited and its output is here;
+// nothing else is ours to wait for.
+func TestACommandThatLeavesSomethingRunningReturnsAtOnce(t *testing.T) {
+	e := expanderOver(t, "$(sleep 5 & printf hunter2)", env{}, config.ExpanderOptions{})
+
+	start := time.Now()
+	got := expand(t, e)
+
+	if got != "hunter2" {
+		t.Errorf("Expand = %q, want the secret the command printed", got)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("Expand took %s, want it back as soon as the command exited", elapsed)
+	}
+}
+
+// TestACommandThatNeverFinishesTimesOut is the other half. A vault that is
+// unreachable, or a helper waiting on a prompt nobody can see, must fail
+// rather than hang the turn behind it.
+func TestACommandThatNeverFinishesTimesOut(t *testing.T) {
+	e := expanderOver(t, "$(sleep 30)", env{}, config.ExpanderOptions{})
 
 	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 	defer cancel()
 
-	done := make(chan error, 1)
-	go func() {
-		_, err := e.Expand(ctx, apiKey)
-		done <- err
-	}()
+	start := time.Now()
+	if _, err := e.Expand(ctx, apiKey); err == nil {
+		t.Fatal("Expand waited out a command that never finished, and called it success")
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("Expand took %s to give up, want it bounded by the deadline", elapsed)
+	}
+}
 
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Error("Expand reported success after its deadline had passed")
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("Expand outlived its deadline by 20s — the timeout does not bind")
+// TestLargeOutputDoesNotDeadlock. A pipe holds about 64KB; a command that
+// filled it while nothing was reading would block forever, which is why the
+// drain runs alongside the command rather than after it.
+func TestLargeOutputDoesNotDeadlock(t *testing.T) {
+	const size = 300 << 10
+	// No newlines: the result is trimmed, and a trailing one would make the
+	// length assertion say something other than what it means.
+	e := expanderOver(t, fmt.Sprintf("$(head -c %d /dev/zero | tr '\\0' x)", size),
+		env{}, config.ExpanderOptions{})
+
+	if got := len(expand(t, e)); got != size {
+		t.Errorf("got %d bytes, want %d", got, size)
 	}
 }
 
@@ -546,5 +569,44 @@ func TestSetButEmptySaysSo(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "set but empty") {
 		t.Errorf("error does not distinguish empty from unset:\n%s", err)
+	}
+}
+
+// TestABareBraceInADefaultIsAnOrdinaryCharacter. Only `${` opens a level.
+// Counting every brace instead rejects `${KEY:-a{b}`, which is legal and ends
+// in a perfectly good closing brace — and rejects it by claiming there is no
+// closing brace at all, which leaves the reader nowhere to go.
+func TestABareBraceInADefaultIsAnOrdinaryCharacter(t *testing.T) {
+	tests := []struct{ value, want string }{
+		{"${MISSING:-a{b}", "a{b"},
+		{"${MISSING:-{}", "{"},
+		{"${MISSING:-a{b{c}", "a{b{c"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.value, func(t *testing.T) {
+			e := expanderOver(t, tc.value, env{}, config.ExpanderOptions{})
+			if got := expand(t, e); got != tc.want {
+				t.Errorf("Expand(%q) = %q, want %q", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAFloodOfStderrIsCapped. The stream is untrusted in size, and all of it
+// would otherwise land in an error that reaches the UI and the log file.
+func TestAFloodOfStderrIsCapped(t *testing.T) {
+	e := expanderOver(t, `$(head -c 100000 /dev/zero | tr '\0' x >&2; exit 1)`,
+		env{}, config.ExpanderOptions{})
+
+	_, err := e.Expand(t.Context(), apiKey)
+	if err == nil {
+		t.Fatal("Expand succeeded although the command failed")
+	}
+	if len(err.Error()) > 16<<10 {
+		t.Errorf("error is %d bytes; the captured stream is not bounded", len(err.Error()))
+	}
+	if !strings.Contains(err.Error(), "truncated") {
+		t.Errorf("the error does not say it was cut short:\n%.200s", err)
 	}
 }

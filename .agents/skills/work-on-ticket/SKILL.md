@@ -30,7 +30,7 @@ silently fill it.
 
 ## 2. Branch
 
-`claude/<id-lowercased>-<slug>` — `claude/m0-02-ci`. Branch from an up-to-date `main`.
+`rasp/<id-lowercased>-<slug>` — `rasp/m0-02-ci`. Branch from an up-to-date `main`.
 
 ## 3. Implement
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // A value in a config file may reference the environment or a command instead
@@ -103,8 +104,12 @@ func parseValue(s string) ([]segment, error) {
 		default:
 			name := leadingName(s[i+1:])
 			if name == "" {
+				// Decoded rather than sliced: the whole job of this message is
+				// to show the user what they wrote, and `s[i:i+2]` cuts a
+				// multi-byte character in half to say it.
+				bad, _ := utf8.DecodeRuneInString(s[i+1:])
 				return nil, fmt.Errorf("%q is not a variable reference; write %q for a literal dollar",
-					s[i:i+2], dollarEscape)
+					"$"+string(bad), dollarEscape)
 			}
 			segs = append(segs, segment{kind: segVar, text: name})
 			i += 1 + len(name)
@@ -200,21 +205,22 @@ func parseBraced(s string) (seg segment, n int, err error) {
 // matchingBrace returns the index of the `}` closing the `${` at the front of
 // s, or -1 when there is none.
 //
-// Braces nest, because a default is a value in its own right: `${A:-${B}}`
-// means "A, or B". Taking the first `}` instead would end the reference in the
-// middle of its own default and leave the rest as literal text — which for a
-// credential means handing the caller the nine characters `${B}` and calling
-// it a key. A `$(…)` is stepped over whole, since a brace inside a command is
-// the shell's to read and not ours.
+// Only `${` opens a new level. A bare `{` is an ordinary character in a
+// default — `${KEY:-a{b}` has the default `a{b` and a perfectly good closing
+// brace — so counting every brace would reject a legal value while claiming
+// it had no closing brace at all. A `$(…)` is stepped over whole, since a
+// brace inside a command is the shell's to read, and `$$` is stepped over
+// because an escaped dollar starts nothing.
 func matchingBrace(s string) int {
-	depth := 0
-	for i := 1; i < len(s); i++ {
+	depth := 1 // the `${` at the front of s
+	for i := 2; i < len(s); i++ {
 		if s[i] == '$' && i+1 < len(s) {
 			switch s[i+1] {
 			case '$':
-				// An escaped dollar starts nothing. Reading `$$(` as a command
-				// here while parseValue reads it as a literal would leave the
-				// two disagreeing about where the reference ends.
+				i++
+				continue
+			case '{':
+				depth++
 				i++
 				continue
 			case '(':
@@ -226,10 +232,7 @@ func matchingBrace(s string) int {
 				continue
 			}
 		}
-		switch s[i] {
-		case '{':
-			depth++
-		case '}':
+		if s[i] == '}' {
 			if depth--; depth == 0 {
 				return i
 			}
