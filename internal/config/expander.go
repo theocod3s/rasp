@@ -25,6 +25,17 @@ const (
 	// helper waiting on a prompt nobody can see, must fail rather than hang
 	// the turn behind it.
 	commandTimeout = 10 * time.Second
+
+	// commandWaitDelay is how long the pipes are given to close after the
+	// deadline passes.
+	//
+	// Without it the deadline does not bind at all. Cancelling the context
+	// kills the shell, but not whatever the shell left running, and reading
+	// stdout waits for every writer to let go of it — so `$(pass show key)`,
+	// where pass starts a gpg-agent that outlives it, blocks for as long as
+	// the agent lives and then reports success. Credentials are re-resolved
+	// every model call, so that is every turn.
+	commandWaitDelay = time.Second
 )
 
 // Expander resolves the shell forms in a config value: the environment
@@ -162,8 +173,8 @@ func (e *Expander) expandSegments(ctx context.Context, key string, segs []segmen
 // rule for the `:` operators and the rule the environment layer already
 // applies when it decides whether a variable contributed anything.
 func (e *Expander) expandVar(ctx context.Context, key string, seg segment, depth int) (string, error) {
-	value, ok := e.getenv(seg.text)
-	if ok && value != "" {
+	value, present := e.getenv(seg.text)
+	if present && value != "" {
 		return value, nil
 	}
 
@@ -182,7 +193,7 @@ func (e *Expander) expandVar(ctx context.Context, key string, seg segment, depth
 
 	case '?':
 		if seg.arg == "" {
-			return "", unsetError(seg.text)
+			return "", unsetError(seg.text, present)
 		}
 		return "", errors.New(seg.arg)
 	default:
@@ -192,14 +203,22 @@ func (e *Expander) expandVar(ctx context.Context, key string, seg segment, depth
 		// one is never what anyone meant — it comes back later as a 401
 		// pointing at nothing, which is the failure `${VAR:?msg}` exists to
 		// turn into a sentence. Write `${VAR:-}` to ask for empty on purpose.
-		return "", unsetError(seg.text)
+		return "", unsetError(seg.text, present)
 	}
 }
 
 // unsetError is what an unset variable says when the config gave no message of
-// its own. `${VAR:?}` is legal and carries none, and an error rendering as a
-// bare colon tells the reader nothing at all.
-func unsetError(name string) error {
+// its own — `${VAR:?}` is legal and carries none, and an error rendering as a
+// bare colon tells the reader nothing.
+//
+// Set-but-empty gets its own sentence. The two are the same to the operators,
+// which is the shell's rule, but they are not the same to the reader: someone
+// with `export ANTHROPIC_API_KEY=""` in their profile who is told the variable
+// is not set will go and look, find it, and have nowhere left to go.
+func unsetError(name string, present bool) error {
+	if present {
+		return fmt.Errorf("$%s is set but empty; write ${%s:-} to accept an empty value", name, name)
+	}
 	return fmt.Errorf("$%s is not set in the environment", name)
 }
 
@@ -287,6 +306,7 @@ func (e *Expander) cached(command string) (string, bool) {
 // that `$(cat secret | head -1)` means what it looks like.
 func runCommand(ctx context.Context, command string) ([]byte, error) {
 	cmd := shellCommand(ctx, command)
+	cmd.WaitDelay = commandWaitDelay
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 

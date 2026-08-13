@@ -476,3 +476,75 @@ func TestNestingIsBounded(t *testing.T) {
 		t.Errorf("error does not say what the limit was:\n%s", err)
 	}
 }
+
+// TestTheDeadlineActuallyBinds. Cancelling the context kills the shell but not
+// what the shell left running, and reading stdout waits for every writer to
+// let go of it — so without a WaitDelay a command that backgrounds anything
+// blocks for as long as that lives and then reports success. `pass` starting a
+// gpg-agent is the ordinary case, and credentials are re-resolved every model
+// call, so it would be every turn.
+func TestTheDeadlineActuallyBinds(t *testing.T) {
+	res := load(t, config.Sources{
+		GlobalPath: global(t, `{"providers": {"anthropic": {"api_key": "$(sleep 30 & echo hi)"}}}`),
+	})
+	e := config.NewExpander(res, config.ExpanderOptions{Getenv: env{}.lookup})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.Expand(ctx, apiKey)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("Expand reported success after its deadline had passed")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Expand outlived its deadline by 20s — the timeout does not bind")
+	}
+}
+
+// TestAnEscapedDollarDoesNotStartACommand. `$$` is a literal dollar, so `$$(`
+// is a dollar followed by a parenthesis and not a substitution. The brace
+// matcher has to read it the same way parseValue does, or the two disagree
+// about where a reference ends and a well-formed value is rejected — with a
+// message naming the wrong problem.
+func TestAnEscapedDollarDoesNotStartACommand(t *testing.T) {
+	tests := []struct {
+		value string
+		want  string
+	}{
+		{"${MISSING:-$$(x}", "$(x"},
+		{"${MISSING:-a$$(b}", "a$(b"},
+		{"${MISSING:-$$}", "$"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.value, func(t *testing.T) {
+			e := expanderOver(t, tc.value, env{}, config.ExpanderOptions{})
+			if got := expand(t, e); got != tc.want {
+				t.Errorf("Expand(%q) = %q, want %q", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSetButEmptySaysSo. The operators treat "set to empty" and "unset" alike,
+// which is the shell's rule and the right one. The message must not: someone
+// with `export ANTHROPIC_API_KEY=""` in their profile who is told the variable
+// is not set will go and look, find it, and have nowhere left to go.
+func TestSetButEmptySaysSo(t *testing.T) {
+	e := expanderOver(t, "$ANTHROPIC_API_KEY", env{"ANTHROPIC_API_KEY": ""}, config.ExpanderOptions{})
+
+	_, err := e.Expand(t.Context(), apiKey)
+	if err == nil {
+		t.Fatal("Expand succeeded on an empty variable")
+	}
+	if !strings.Contains(err.Error(), "set but empty") {
+		t.Errorf("error does not distinguish empty from unset:\n%s", err)
+	}
+}

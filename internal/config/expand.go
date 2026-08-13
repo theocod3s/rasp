@@ -209,13 +209,22 @@ func parseBraced(s string) (seg segment, n int, err error) {
 func matchingBrace(s string) int {
 	depth := 0
 	for i := 1; i < len(s); i++ {
-		if s[i] == '$' && i+1 < len(s) && s[i+1] == '(' {
-			_, n, err := parseCommand(s[i:])
-			if err != nil {
-				return -1
+		if s[i] == '$' && i+1 < len(s) {
+			switch s[i+1] {
+			case '$':
+				// An escaped dollar starts nothing. Reading `$$(` as a command
+				// here while parseValue reads it as a literal would leave the
+				// two disagreeing about where the reference ends.
+				i++
+				continue
+			case '(':
+				_, n, err := parseCommand(s[i:])
+				if err != nil {
+					return -1
+				}
+				i += n - 1
+				continue
 			}
-			i += n - 1
-			continue
 		}
 		switch s[i] {
 		case '{':
