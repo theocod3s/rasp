@@ -277,6 +277,17 @@ func (e *Expander) expandCommand(ctx context.Context, key, command string) (stri
 				"that may have arrived with a repository is not one to run on a guess",
 			strconv.Quote("$("+command+")"))
 
+	case !writtenInAFile(origin.Layer):
+		// Expand returns a shell-sourced value literally long before a command
+		// is reached, so this arm is unreachable through it — and stays for
+		// the same reason the one above does. The MCP server `env` resolution
+		// §10 has in scope is a second entry point waiting to happen, and it
+		// would run `$(…)` out of an environment variable with nothing red.
+		return "", fmt.Errorf(
+			"refusing to run %s: this value came from the %s, which a shell has already "+
+				"resolved — it is a value, not a recipe (design §10)",
+			strconv.Quote("$("+command+")"), origin.Layer)
+
 	case origin.Layer == LayerProject:
 		return "", fmt.Errorf(
 			"refusing to run %s from a project config.\n"+

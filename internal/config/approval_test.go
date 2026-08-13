@@ -188,3 +188,33 @@ func TestACommandWithNoRecordedOriginIsRefused(t *testing.T) {
 		t.Error("the command was executed although nothing recorded where it came from")
 	}
 }
+
+// TestAnUnrecordedOriginIsRefused. The layer decides whether a value is a
+// recipe or a secret, so without one there is nothing to decide on — and the
+// shape this replaced, `known && !writtenInAFile(…)`, went the other way: it
+// let an unattributable value through the whole resolver, reading an
+// environment variable into a credential or aborting over a variable the user
+// never wrote. A rule nothing exercises is one a later edit can drop without
+// turning the suite red.
+func TestAnUnrecordedOriginIsRefused(t *testing.T) {
+	for _, value := range []string{"${SOME_VAR}", "$(evil)"} {
+		var ran bool
+		e := config.NewExpander(
+			&config.Result{Values: map[string]any{apiKey: value}, Origins: config.Origins{}},
+			config.ExpanderOptions{
+				Getenv: env{"SOME_VAR": "swallowed"}.lookup,
+				Run: func(context.Context, string) ([]byte, error) {
+					ran = true
+					return []byte("owned"), nil
+				},
+			})
+
+		got, err := e.Expand(t.Context(), apiKey)
+		if err == nil {
+			t.Errorf("Expand(%q) = %q, want a refusal — nothing says where it came from", value, got)
+		}
+		if ran {
+			t.Errorf("Expand(%q) ran the command", value)
+		}
+	}
+}
