@@ -123,7 +123,18 @@ func (b Block) MarshalJSON() ([]byte, error) {
 // in place, handing the same pointer back as Event.Partial on every event. See
 // the StreamResponse contract.
 type Message struct {
-	Role       Role       `json:"role"`
+	Role Role `json:"role"`
+
+	// Content is required, and an empty one is not something this type can
+	// rescue: nil encodes as null and `[]` is refused by the same providers, so
+	// there is no value that makes an empty message replayable. Nor is a block
+	// with nothing in it — a text block whose text never arrived encodes as
+	// {"type":"text"} and is rejected the same way. Both are reachable when a
+	// turn breaks off before anything streams, and both belong to whoever
+	// commits: a message with no content, or content with nothing in it, must
+	// not be written. Block.MarshalJSON below defends what it can, which is a
+	// field whose value can be corrected rather than a message whose absence
+	// cannot.
 	Content    []Block    `json:"content"`
 	StopReason StopReason `json:"stop_reason,omitempty"`
 

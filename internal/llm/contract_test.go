@@ -611,6 +611,32 @@ func TestCheckStreamRejects(t *testing.T) {
 			// Named so the per-event rule is what answers, not the settled one.
 			want: "the next time it is replayed",
 		},
+		"a tool_use block with no id": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+					Type: llm.BlockToolUse, Name: "write", Input: []byte(`{"pa`),
+				}}}
+				if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+					return
+				}
+				msg.StopReason = llm.StopMaxTokens
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopMaxTokens, Partial: msg})
+			},
+			want: "has no id",
+		},
+		"a tool_use block with no name": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+					Type: llm.BlockToolUse, ID: "toolu_01", Input: []byte(`{"pa`),
+				}}}
+				if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+					return
+				}
+				msg.StopReason = llm.StopMaxTokens
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopMaxTokens, Partial: msg})
+			},
+			want: "has no name",
+		},
 		"two tool_use blocks sharing an id": {
 			seq: func(yield func(llm.Event) bool) {
 				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{

@@ -175,16 +175,33 @@ var (
 // written for.
 func (c *streamChecker) checkComplete() error {
 	var recorded []string
-	for _, block := range c.partial.Content {
-		if block.Type == BlockToolUse {
-			recorded = append(recorded, block.ID)
+	for index, block := range c.partial.Content {
+		if block.Type != BlockToolUse {
+			continue
 		}
+		// Before anything about announcements or order: the block itself has to be
+		// answerable. checkToolCall vets the event's copy of a call, and a call
+		// that was never announced never went through it — so a turn that broke
+		// off could otherwise commit a tool_use with no id, Sanitize would answer
+		// it with a tool_result pointing at "", and the session is refused from
+		// then on.
+		switch {
+		case block.ID == "":
+			return fmt.Errorf("the tool_use block at index %d has no id; the tool_result that answers "+
+				"it has nowhere to point, and design §4 invariant 1 rests on that pairing", index)
+		case block.Name == "":
+			return fmt.Errorf("the tool_use block %q has no name; nothing can be resolved from the "+
+				"registry to run it", block.ID)
+		}
+		recorded = append(recorded, block.ID)
 	}
 
 	// Uniqueness is checked however the stream ended. It is not a question about
 	// completeness: a truncated turn fails every pending call (design §4
 	// invariant 2), so it writes a tool_result per call and two blocks sharing an
 	// id break the pairing there exactly as they would on a finished turn.
+	// Reached only once every block has an id, so a repeat here is a real one
+	// rather than two blocks that are both missing theirs.
 	for i, id := range recorded {
 		if slices.Index(recorded, id) != i {
 			return fmt.Errorf("the message holds two tool_use blocks with id %q; one tool_result "+
