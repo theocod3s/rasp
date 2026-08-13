@@ -111,6 +111,48 @@ func TestEveryEventCarriesTheAccumulatedMessage(t *testing.T) {
 	}
 }
 
+// TestTwoToolCallsInOneTurn is the shape parallel tool execution depends on, and
+// the one that makes accumulation harder than it looks: the second call's
+// arguments start empty while the first call's are already complete, so a
+// checker comparing whole channels has to see that as growth rather than as a
+// rewrite.
+func TestTwoToolCallsInOneTurn(t *testing.T) {
+	provider := scripted{id: "test", actions: []action{
+		toolCall("toolu_01", "read", `{"path":`, `"auth.go"}`),
+		toolCall("toolu_02", "read", `{"path":`, `"auth_test.go"}`),
+		done(llm.StopToolUse),
+	}}
+
+	events := check(t, provider.Stream(context.Background(), llm.Request{}))
+
+	var calls []*llm.ToolCall
+	for _, ev := range events {
+		if ev.Type == llm.EventToolCall {
+			calls = append(calls, ev.ToolCall)
+		}
+	}
+	if len(calls) != 2 {
+		t.Fatalf("stream reported %d completed calls, want 2", len(calls))
+	}
+	for i, want := range []string{`{"path":"auth.go"}`, `{"path":"auth_test.go"}`} {
+		if got := string(calls[i].Input); got != want {
+			t.Errorf("call %d input = %s, want %s", i, got, want)
+		}
+	}
+
+	// Both calls are in the message too, in the order they arrived — which is
+	// the order their results have to come back in.
+	final := events[0].Partial
+	if got, want := len(final.Content), 2; got != want {
+		t.Fatalf("message holds %d blocks, want %d", got, want)
+	}
+	for i, want := range []string{"toolu_01", "toolu_02"} {
+		if got := final.Content[i].ID; got != want {
+			t.Errorf("block %d id = %q, want %q", i, got, want)
+		}
+	}
+}
+
 // TestScriptedFailureArrivesAsATerminalEventError is the ticket's third
 // criterion. What it asserts beyond "an error turned up" is the shape of the
 // failure: which event type, which stop reason, that the original error is
@@ -227,10 +269,25 @@ func TestCheckStreamRejects(t *testing.T) {
 		return &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText, Text: "I'll"}}}
 	}
 
+	// A tool call as it looks once complete, for the cases about the ways the
+	// event and the message can disagree about it.
+	called := func(input string) *llm.Message {
+		return &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
+			Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read", Input: json.RawMessage(input),
+		}}}
+	}
+	call := func(id, name, input string) *llm.ToolCall {
+		return &llm.ToolCall{ID: id, Name: name, Input: json.RawMessage(input)}
+	}
+
 	cases := map[string]struct {
 		seq  llm.StreamResponse
 		want string
 	}{
+		"no stream at all": {
+			seq:  nil,
+			want: "nil StreamResponse",
+		},
 		"an event with no Partial": {
 			seq:  stream(llm.Event{Type: llm.EventMessageStart}),
 			want: "nil Partial",
@@ -311,6 +368,75 @@ func TestCheckStreamRejects(t *testing.T) {
 		"a tool call event with no tool call": {
 			seq:  stream(llm.Event{Type: llm.EventToolCall, Partial: &llm.Message{}}),
 			want: "ToolCall is set on EventToolCall",
+		},
+		"arguments carrying only the last fragment": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := called("")
+				for _, frag := range []string{`{"pa`, `th": "auth.go"}`} {
+					msg.Content[0].Input = json.RawMessage(frag) // = , not +=
+					if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: frag, Partial: msg}) {
+						return
+					}
+				}
+			},
+			want: "Partial tool arguments",
+		},
+		"a completed call whose arguments do not parse": {
+			seq: stream(llm.Event{
+				Type:     llm.EventToolCall,
+				Partial:  called(`{"pa`),
+				ToolCall: call("toolu_01A9", "read", `{"pa`),
+			}),
+			want: "not valid JSON",
+		},
+		"a completed call the message never mentions": {
+			seq: stream(llm.Event{
+				Type:     llm.EventToolCall,
+				Partial:  &llm.Message{Role: llm.RoleAssistant},
+				ToolCall: call("toolu_01A9", "read", `{"path":"auth.go"}`),
+			}),
+			want: "no tool_use block",
+		},
+		"a completed call the message names differently": {
+			seq: stream(llm.Event{
+				Type:     llm.EventToolCall,
+				Partial:  called(`{"path":"auth.go"}`),
+				ToolCall: call("toolu_01A9", "write", `{"path":"auth.go"}`),
+			}),
+			want: "the tool_use block with that id names",
+		},
+		"a completed call with no id": {
+			seq: stream(llm.Event{
+				Type:     llm.EventToolCall,
+				Partial:  called(`{"path":"auth.go"}`),
+				ToolCall: call("", "read", `{"path":"auth.go"}`),
+			}),
+			want: "no ID",
+		},
+		"a completed call with no name": {
+			seq: stream(llm.Event{
+				Type:     llm.EventToolCall,
+				Partial:  called(`{"path":"auth.go"}`),
+				ToolCall: call("toolu_01A9", "", `{"path":"auth.go"}`),
+			}),
+			want: "no Name",
+		},
+		"a message left holding the fragments": {
+			seq: stream(llm.Event{
+				Type:     llm.EventToolCall,
+				Partial:  called(`{"pa`),
+				ToolCall: call("toolu_01A9", "read", `{"path":"auth.go"}`),
+			}),
+			want: "holds invalid JSON",
+		},
+		"a stop reason on an ordinary event": {
+			seq: stream(llm.Event{
+				Type:       llm.EventTextDelta,
+				Delta:      "I'll",
+				Partial:    streamed(),
+				StopReason: llm.StopMaxTokens,
+			}),
+			want: "only the terminal event",
 		},
 		"a tool call hung off another event": {
 			seq: stream(llm.Event{

@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -26,7 +27,19 @@ import (
 // returned slice shows the FINAL message — not the message as it stood when
 // that event was yielded. Anything that needs the intermediate state has to
 // observe it during iteration, which is what the accumulation rules below do.
+//
+// One rule is deliberately not here: a provider must stop producing when yield
+// returns false, and must not leave a goroutine behind when it does. CheckStream
+// reads a stream to the end, so it never abandons one — and the useful half of
+// that assertion is how much work the provider did after being abandoned, which
+// only its own package can see. Each adapter tests that locally, with goleak in
+// TestMain for the other half.
 func CheckStream(seq StreamResponse) ([]Event, error) {
+	if seq == nil {
+		return nil, errors.New("nil StreamResponse; Stream always returns a sequence, and a " +
+			"failure arrives as a terminal EventError inside it")
+	}
+
 	var (
 		events  []Event
 		checker streamChecker
@@ -49,13 +62,34 @@ func CheckStream(seq StreamResponse) ([]Event, error) {
 }
 
 // streamChecker carries what checking one event needs to know about the events
-// before it: which message they pointed at, how much had accumulated, and
-// whether the stream was already over.
+// before it: which message they pointed at, how much had accumulated in each
+// channel, and whether the stream was already over.
 type streamChecker struct {
 	partial  *Message  // the pointer the first event carried
-	text     string    // text found in Partial on the previous event
-	thinking string    // and thinking, tracked separately
+	seen     []string  // per channel, what Partial held on the previous event
 	terminal EventType // the terminal event's type, once one has arrived
+}
+
+// channel is one of the three streams of content a message accumulates: the
+// visible text, the thinking, and the JSON arguments of its tool calls. Each
+// arrives in fragments, each has its own delta event, and each has to grow the
+// same way — so they are one list rather than three copies of a rule.
+//
+// The third is the one that matters most, and it is the example internals §4.2
+// opens with: `{"pa`, `th": "au`, `th.go"}`. Fragments of a JSON object split at
+// arbitrary bytes, where losing accumulation does not garble a sentence, it
+// hands the agent loop arguments that parse and mean something else.
+type channel struct {
+	name  string // how the error message says it
+	kind  BlockType
+	delta EventType
+	text  func(Block) string
+}
+
+var channels = []channel{
+	{"text", BlockText, EventTextDelta, func(b Block) string { return b.Text }},
+	{"thinking", BlockThinking, EventThinkingDelta, func(b Block) string { return b.Text }},
+	{"tool arguments", BlockToolUse, EventToolInputDelta, func(b Block) string { return string(b.Input) }},
 }
 
 func (c *streamChecker) check(index int, ev Event) error {
@@ -82,58 +116,108 @@ func (c *streamChecker) check(index int, ev Event) error {
 		return fmt.Errorf("%s: Err is set on EventError and nothing else (here: %v)", at, ev.Err)
 	}
 
-	if err := checkAccumulation(at, ev, BlockText, &c.text); err != nil {
-		return err
+	if c.seen == nil {
+		c.seen = make([]string, len(channels))
 	}
-	if err := checkAccumulation(at, ev, BlockThinking, &c.thinking); err != nil {
-		return err
-	}
-
-	if ev.Type == EventDone || ev.Type == EventError {
-		c.terminal = ev.Type
-		switch {
-		case ev.StopReason == "":
-			return fmt.Errorf("%s has no StopReason; the terminal event says why the model stopped", at)
-		case ev.Partial.StopReason != ev.StopReason:
-			return fmt.Errorf("%s has StopReason %q but Partial.StopReason is %q; "+
-				"the message is what gets persisted and what the retry classifier reads, "+
-				"so it carries the reason too", at, ev.StopReason, ev.Partial.StopReason)
+	for i, ch := range channels {
+		if err := checkAccumulation(at, ev, ch, &c.seen[i]); err != nil {
+			return err
 		}
 	}
+
+	if ev.Type == EventToolCall {
+		if err := checkToolCall(at, ev); err != nil {
+			return err
+		}
+	}
+
+	isTerminal := ev.Type == EventDone || ev.Type == EventError
+	if isTerminal {
+		c.terminal = ev.Type
+	}
+	switch {
+	case isTerminal && ev.StopReason == "":
+		return fmt.Errorf("%s has no StopReason; the terminal event says why the model stopped", at)
+	case !isTerminal && ev.StopReason != "":
+		return fmt.Errorf("%s has StopReason %q; only the terminal event carries one, and a "+
+			"consumer reading it per event would act on max_tokens mid-stream", at, ev.StopReason)
+	case isTerminal && ev.Partial.StopReason != ev.StopReason:
+		return fmt.Errorf("%s has StopReason %q but Partial.StopReason is %q; "+
+			"the message is what gets persisted and what the retry classifier reads, "+
+			"so it carries the reason too", at, ev.StopReason, ev.Partial.StopReason)
+	}
 	return nil
+}
+
+// checkToolCall holds what EventToolCall promises: arguments that are complete
+// and parsed, for a call that also exists in the message. The second half is
+// design §4 invariant 1 one step upstream — the loop runs the tool from the
+// event and writes a tool_result, so a call missing from the message leaves a
+// result answering nothing, and every provider rejects the next request.
+func checkToolCall(at string, ev Event) error {
+	call := ev.ToolCall
+
+	switch {
+	case call.ID == "":
+		return fmt.Errorf("%s: ToolCall has no ID; the tool_result that answers it has nowhere to point", at)
+	case call.Name == "":
+		return fmt.Errorf("%s: ToolCall has no Name; nothing can be resolved from the registry", at)
+	case !json.Valid(call.Input):
+		return fmt.Errorf("%s: ToolCall input is not valid JSON (%q); EventToolCall means the "+
+			"arguments have arrived complete, and a call taking none still sends {}", at, call.Input)
+	}
+
+	for _, block := range ev.Partial.Content {
+		if block.Type != BlockToolUse || block.ID != call.ID {
+			continue
+		}
+		if block.Name != call.Name {
+			return fmt.Errorf("%s: ToolCall %s names %q but the tool_use block with that id names %q",
+				at, call.ID, call.Name, block.Name)
+		}
+		if !json.Valid(block.Input) {
+			return fmt.Errorf("%s: the tool_use block for %s holds invalid JSON (%q); the message is "+
+				"what gets persisted, so the fragments have to be finished there too", at, call.ID, block.Input)
+		}
+		return nil
+	}
+	return fmt.Errorf("%s: no tool_use block in Partial has id %q; the call has to exist in the "+
+		"message as well as in the event", at, call.ID)
 }
 
 // checkAccumulation holds the half of the contract that is easiest to satisfy
 // on paper and get wrong in code: a delta event must leave Partial holding
 // everything so far plus the delta, and no event may lose ground. seen is what
-// the previous event held, and is advanced.
-func checkAccumulation(at string, ev Event, kind BlockType, seen *string) error {
-	got := blockText(ev.Partial, kind)
+// the previous event held in this channel, and is advanced.
+//
+// The delta rule requires Delta to carry the fragment, which is the only thing
+// a delta event has to say. The looser rule for every other event is what
+// catches a channel being rewritten by an event that should not have touched it.
+func checkAccumulation(at string, ev Event, ch channel, seen *string) error {
+	got := ch.accumulated(ev.Partial)
 
-	isDelta := (kind == BlockText && ev.Type == EventTextDelta) ||
-		(kind == BlockThinking && ev.Type == EventThinkingDelta)
-
-	if isDelta {
+	if ev.Type == ch.delta {
 		if want := *seen + ev.Delta; got != want {
 			return fmt.Errorf("%s: Partial %s is %q, want %q — Partial is the full accumulated message, not the delta",
-				at, kind, got, want)
+				at, ch.name, got, want)
 		}
 	} else if !strings.HasPrefix(got, *seen) {
 		return fmt.Errorf("%s: Partial %s is %q, which does not start with the %q already streamed; "+
-			"accumulated content is never rewritten or dropped", at, kind, got, *seen)
+			"accumulated content is never rewritten or dropped", at, ch.name, got, *seen)
 	}
 
 	*seen = got
 	return nil
 }
 
-// blockText joins the text of every block of one kind, which is how much of
-// that kind the message holds regardless of how the provider split it.
-func blockText(m *Message, kind BlockType) string {
+// accumulated joins this channel's content across every block of its kind,
+// which is how much of it the message holds regardless of how the provider
+// split it into blocks.
+func (ch channel) accumulated(m *Message) string {
 	var b strings.Builder
 	for _, block := range m.Content {
-		if block.Type == kind {
-			b.WriteString(block.Text)
+		if block.Type == ch.kind {
+			b.WriteString(ch.text(block))
 		}
 	}
 	return b.String()
