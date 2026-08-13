@@ -114,6 +114,36 @@ func TestAValueFromTheEnvironmentIsLiteral(t *testing.T) {
 	}
 }
 
+// TestAValueFromAFlagIsLiteral. The rule is stated for flags as well as the
+// environment — `rasp --model "$FOO"` has already been through the user's
+// shell — and a rule nothing exercises is one a later edit can drop without
+// turning the suite red. No flag reaches a secret-bearing key today, so this
+// drives `model`, which the resolver is equally willing to expand.
+func TestAValueFromAFlagIsLiteral(t *testing.T) {
+	const value = "$(id)"
+
+	var ran bool
+	res := load(t, config.Sources{Flags: map[string]string{"model": value}})
+	e := config.NewExpander(res, config.ExpanderOptions{
+		Getenv: env{}.lookup,
+		Run: func(context.Context, string) ([]byte, error) {
+			ran = true
+			return []byte("owned"), nil
+		},
+	})
+
+	got, err := e.Expand(t.Context(), "model")
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if got != value {
+		t.Errorf("Expand = %q, want it exactly as typed: %q", got, value)
+	}
+	if ran {
+		t.Error("a command from a flag was executed")
+	}
+}
+
 // TestAProjectConfigMayStillReferenceTheEnvironment. Only the form that
 // executes something is refused. A repository saying "use whatever key the
 // developer already has" is exactly the pattern we want checked in, and it
