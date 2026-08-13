@@ -203,6 +203,12 @@ func writtenInAFile(l Layer) bool {
 	case LayerDefault, LayerEnv, LayerFlag:
 		return false
 	}
+	// Unreachable while every layer is named above, and the compiler enforces
+	// none of that — TestEveryLayerIsClassified is what does. The fallback is
+	// false because it has to be something, and it is worth knowing that the
+	// two callers disagree about which way that errs: expandCommand refuses,
+	// while Expand hands the value back untouched, so an unclassified *file*
+	// layer would return `$(op read …)` to the provider as an API key.
 	return false
 }
 
