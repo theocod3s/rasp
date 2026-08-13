@@ -1,6 +1,6 @@
 ---
 name: work-on-ticket
-description: Work a rasp ticket end to end — read the Linear issue, check deps, branch, implement, verify every acceptance criterion, open a PR, and close the issue out. Use this whenever a milestone ID appears (M0-02, M1-09, M5-04, P2-SUBAGENT), or the user says "next ticket", "pick up the CI one", "start M3-04", "implement the workspace confinement", or otherwise asks for work that maps to a milestone item — even when they never say the word "ticket". Also use when finishing, reviewing, or closing one out.
+description: Work a rasp ticket end to end — read the Linear issue, check deps, move it to In Progress, branch, implement, verify every acceptance criterion, open a PR, and close the issue out. Use this whenever a milestone ID appears (M0-02, M1-09, M5-04, P2-SUBAGENT), or the user says "next ticket", "pick up the CI one", "start M3-04", "implement the workspace confinement", or otherwise asks for work that maps to a milestone item — even when they never say the word "ticket". Also use when finishing, reviewing, or closing one out.
 ---
 
 # Working a rasp ticket
@@ -28,9 +28,15 @@ unmerged, say so and stop rather than working around it.
 `docs/scope.md`'s "deliberately excluded" before adding it. If it's a real gap, raise it; don't
 silently fill it.
 
-## 2. Branch
+## 2. Claim it, then branch
 
-`rasp/<id-lowercased>-<slug>` — `rasp/m0-02-ci`. Branch from an up-to-date `main`.
+**Move the issue to In Progress before writing anything** — always, even for a ticket that will
+take ten minutes. Linear is the only record of where the work stands, so a ticket sitting in
+Todo while a branch exists is the same failure as one left In Progress after merge (§6): the
+next session reads the board and gets the wrong answer. Do it as soon as deps are clear and
+before the first commit, so the record is right for the whole window someone might look.
+
+Branch `rasp/<id-lowercased>-<slug>` — `rasp/m0-02-ci` — from an up-to-date `main`.
 
 ## 3. Implement
 
@@ -65,6 +71,12 @@ print caught/not-caught per case. M0-04 ran twenty-four that way in under a minu
 difference between doing this for the two obvious guards and doing it for all of them. **Restore
 by writing back the bytes you replaced** — never `git checkout -- .`, which resets the whole tree
 to HEAD and takes every other uncommitted change in the working directory with it. It did.
+
+**A not-caught result has two causes, and they need opposite fixes.** Either the check is weak,
+or the test never reaches the line you mutated. M0-06 broke the guard that stops a provider
+working after its consumer walked away and the test still passed — because it had abandoned the
+stream one guard earlier. The check was fine; the test was missing a case. Confirm the mutated
+line runs before strengthening anything.
 
 Then `just ci` — fmt-check, vet, build, test, race. Run it before pushing, not after.
 
@@ -102,8 +114,8 @@ findings already fixed, not when you are tired of the loop.
 ## 6. Merge and close out
 
 Squash-merge, with a message you wrote rather than the one GitHub concatenates — see the rule
-in `AGENTS.md`. Then move the issue to Done in the same pass. Linear is the only record of where
-the work stands, so an issue left In Progress is what will mislead the next session.
+in `AGENTS.md`. Then move the issue to Done in the same pass — the other half of §2's rule, and
+an issue left In Progress after merge misleads exactly as much as one never started.
 
 If the ticket's shape changed while you worked it — a criterion that turned out wrong, a
 decision taken mid-flight — edit the issue description to match what was actually built. A
