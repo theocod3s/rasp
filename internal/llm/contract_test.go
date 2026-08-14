@@ -809,6 +809,26 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "the result the loop writes will name the first one",
 		},
+		"a refusal with nothing in it": {
+			seq: stream(llm.Event{
+				Type:       llm.EventDone,
+				StopReason: llm.StopRefusal,
+				Partial:    &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopRefusal},
+			}),
+			want: "no blocks in it",
+		},
+		"a refusal holding an empty text block": {
+			seq: stream(llm.Event{
+				Type:       llm.EventDone,
+				StopReason: llm.StopRefusal,
+				Partial: &llm.Message{
+					Role:       llm.RoleAssistant,
+					StopReason: llm.StopRefusal,
+					Content:    []llm.Block{{Type: llm.BlockText}},
+				},
+			}),
+			want: "an empty text block at index 0",
+		},
 		"a finished turn holding an empty text block": {
 			seq: stream(llm.Event{
 				Type:       llm.EventDone,

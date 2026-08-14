@@ -42,14 +42,21 @@ import (
 // that event was yielded. Anything that needs the intermediate state has to
 // observe it during iteration, which is what the accumulation rules below do.
 //
-// One thing this cannot check, and it is worth knowing before trusting it: which
-// block a fragment landed in. The same blindness is why a tool call whose
+// Two things this cannot check, both from the same root, and worth knowing before
+// trusting it. The first: which block a fragment landed in. The same blindness is why a tool call whose
 // arguments are genuinely the empty object may be replaced wholesale later
 // without complaint — a block sitting at `{}` is indistinguishable from one
 // still holding the placeholder a provider opened it with. Tracking that
 // difference was tried and reverted: it rejected two real wire shapes to close a
 // hole whose worst outcome is an argument object the message and the event still
-// agree on. A delta event says what arrived and not where it
+// agree on.
+//
+// The second: an event allowed to complete a tool call may add to several blocks
+// at once. One chunk from an OpenAI-compatible endpoint can legitimately carry
+// two entries, so "at most one block" is a rule that would reject a faithful
+// adapter to catch a payload landing in a sibling's arguments — which a finished
+// turn catches anyway, when the event and the block are compared byte for byte,
+// and which a broken-off turn fails wholesale under invariant 2. A delta event says what arrived and not where it
 // belongs — Event carries no block index, because no consumer needs one, they
 // render Partial — so an adapter that routes call 2's fragment into call 1's
 // arguments passes every rule here as long as both halves still parse. That is
@@ -138,9 +145,10 @@ var (
 	doneReasons  = []StopReason{StopEndTurn, StopToolUse, StopMaxTokens, StopRefusal, StopAborted}
 	errorReasons = []StopReason{StopError, StopAborted}
 
-	// finished are the reasons that claim a whole message arrived. Truncation and
-	// cancellation are not among them: both stop mid-flight, and what they leave
-	// behind is what design §4 invariant 2's guard exists to fail.
+	// finished are the reasons that claim every tool call in the message was
+	// announced. Truncation and cancellation are not among them: both stop
+	// mid-flight, and what they leave behind is what design §4 invariant 2's
+	// guard exists to fail.
 	//
 	// Refusal is not among them either, which reads oddly against design §4's
 	// termination table until you notice the table's row is "StopEndTurn /
@@ -149,6 +157,14 @@ var (
 	// turn to a full set of announcements would reject an adapter that mapped it
 	// faithfully. This branch has already paid twice for guessing the other way.
 	finished = []StopReason{StopEndTurn, StopToolUse}
+
+	// committed are the reasons the loop treats as a completed turn and writes
+	// down as-is: design §4's termination table calls a refusal with no tool
+	// calls a normal completion. A separate list because it answers a different
+	// question — not "were all the calls announced" but "will this be persisted
+	// and sent again" — and one list answering both is how a rule ends up applied
+	// where nobody meant it to be.
+	committed = []StopReason{StopEndTurn, StopToolUse, StopRefusal}
 )
 
 // checkComplete runs once the stream has ended, on the rule that needs the whole
@@ -246,19 +262,21 @@ func (c *streamChecker) checkComplete() error {
 	// So the shape is allowed to reach the transcript, and failing those calls is
 	// the loop's job, which is exactly what design §4 invariant 2 already says it
 	// does with every pending call on a truncated turn.
-	if c.terminal != EventDone || !slices.Contains(finished, c.stop) {
-		return nil
+	if c.terminal == EventDone && slices.Contains(finished, c.stop) {
+		for index, block := range c.partial.Content {
+			if block.Type != BlockToolUse {
+				continue
+			}
+			if !slices.Contains(c.announced, block.ID) {
+				return fmt.Errorf("the message holds a tool_use block %q that no EventToolCall "+
+					"announced; the loop dispatches from the event, so a call only in the message is "+
+					"one nothing runs and nothing answers (block %d)", block.ID, index)
+			}
+		}
 	}
 
-	for index, block := range c.partial.Content {
-		if block.Type != BlockToolUse {
-			continue
-		}
-		if !slices.Contains(c.announced, block.ID) {
-			return fmt.Errorf("the message holds a tool_use block %q that no EventToolCall announced; "+
-				"the loop dispatches from the event, so a call only in the message is one nothing runs "+
-				"and nothing answers (block %d)", block.ID, index)
-		}
+	if c.terminal != EventDone {
+		return nil
 	}
 	// A turn that says it stopped to use tools has to have some: design §4's
 	// termination table has no row for tool_use with nothing to run, and the loop
@@ -275,7 +293,11 @@ func (c *streamChecker) checkComplete() error {
 			"model stopped to use one", c.stop)
 	}
 
-	// A finished turn has something in it. An empty message cannot be replayed —
+	if !slices.Contains(committed, c.stop) {
+		return nil
+	}
+
+	// A committed turn has something in it. An empty message cannot be replayed —
 	// nil content encodes as null and an empty list is refused too — and design
 	// §4 step 6 commits whatever the turn produced without asking, so this is the
 	// only place it can be caught while the blame is still with the adapter. A
