@@ -132,25 +132,21 @@ watch for — a clause carrying a boundary, wearing the clothes of ceremony.
 
 ## Where the bar sits
 
-Roughly: under 15% comment lines for a file that mostly does something, rising
-for a file that mostly *declares* something. Type definitions and contracts are
-the exception, and not a narrow one — after the audit cut 42% of the comments in
-these two packages, five files still sit above 25%:
+Roughly: under 15% comment lines for a file that mostly *does* something, rising
+for one that mostly *declares* something. The exception is not narrow — after the
+audit cut 42% of the comments in these two packages, five files still sit above
+25%, and all five are right where they are:
 
-    51%  internal/config/shell_windows.go   one function, all of it Windows
-                                            quoting rules nothing else records
-    50%  internal/llm/provider.go           88 lines, 20 of them the stream
-                                            contract every adapter satisfies
-    40%  internal/llm/message.go            a union whose every field carries a
-                                            wire fact
-    39%  internal/llm/event.go              the same
-    29%  internal/config/config.go          the settings schema
+    51%  shell_windows.go   one function, all of it Windows quoting rules
+    50%  provider.go        88 lines, 20 of them the stream contract
+    40%  message.go         a union whose every field carries a wire fact
+    39%  event.go           the same
+    29%  config.go          the settings schema
 
-All five are right where they are. The per-field facts do not shrink when the
-file does, so a small declaration-heavy file runs high by construction, and
-driving these to 15% would mean deleting wire shapes. **A ratio is a smell, not a
-rule.** Judge the comments, then check the number — and if a file is above the
-bar for a reason you can name in a sentence, it is fine.
+Per-field facts do not shrink when the file does, so a small declaration-heavy
+file runs high by construction and driving it to 15% means deleting wire shapes.
+**A ratio is a smell, not a rule.** Judge the comments, then check the number; a
+file above the bar for a reason you can name in a sentence is fine.
 
 To measure:
 
@@ -183,16 +179,12 @@ printf '%s\n' "$files" | while IFS= read -r f; do
 done | sort -rn
 ```
 
-All that guarding for six lines of work looks like a lot. It is what the script
-cost. Review found a fail-open bug in it on three consecutive passes — a missing
-file, a missing trailing newline, a missing `main` — each printing a plausible
-answer and exiting 0; then the rewrite that fixed the third introduced a fourth,
-where zsh's lack of word splitting made the loop treat every path as one file.
-That one was caught by running the thing, which the three before it were not.
-
-AGENTS.md's rule is *decide what it does when the checker is missing, errors, or
-matches nothing, and make that path loud*. A check reporting "nothing is over the
-bar" when it could not run is the version of that failure you act on.
+Four guards for six lines of work is what this cost: review found a fail-open bug
+in it on three consecutive passes — a missing file, a missing trailing newline, a
+missing `main` — and the rewrite that fixed the third introduced a fourth. Each
+printed a plausible answer and exited 0. A check reporting "nothing is over the
+bar" when it could not run is the version of AGENTS.md's process-hygiene rule you
+act on, so leave the guards where they are.
 
 ## Two rasp-specific rules
 
