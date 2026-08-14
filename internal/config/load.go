@@ -320,6 +320,7 @@ func flagLayer(flags map[string]string) ([]contribution, Source, error) {
 	}, nil
 }
 
+// GlobalPath returns the global config file's location.
 func GlobalPath() (string, error) { return globalConfigPath(os.LookupEnv) }
 
 // globalConfigPath follows the XDG base directory spec on every platform, because

@@ -21,6 +21,7 @@ const (
 // slice is the precedence rule rather than a description of one.
 var layers = []Layer{LayerDefault, LayerGlobal, LayerProject, LayerEnv, LayerFlag}
 
+// String names the layer as `rasp config check` prints it.
 func (l Layer) String() string {
 	switch l {
 	case LayerDefault:
@@ -85,6 +86,7 @@ func (o Origins) At(key string) (Origin, bool) {
 	return Origin{}, false
 }
 
+// Paths returns every recorded key path in sorted order.
 func (o Origins) Paths() []string {
 	paths := make([]string, 0, len(o))
 	for p := range o {
@@ -141,6 +143,7 @@ type Warning struct {
 	Message string
 }
 
+// String renders a warning as one line.
 func (w Warning) String() string {
 	if w.Key == "" {
 		return w.Message + " (" + w.Origin.String() + ")"
@@ -157,7 +160,7 @@ type Source struct {
 	Loaded bool
 
 	// Note explains a source that contributed nothing — "not found", "no
-	// variables set".
+	// variables set". Empty when Loaded.
 	Note string
 }
 
