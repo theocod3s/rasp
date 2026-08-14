@@ -86,6 +86,8 @@ func blockTypeConstants(file *ast.File) []string {
 				continue
 			}
 
+			converted := convertsToBlockType(value.Values)
+
 			switch typed := value.Type.(type) {
 			case *ast.Ident:
 				carried = typed.Name == "BlockType"
@@ -93,26 +95,25 @@ func blockTypeConstants(file *ast.File) []string {
 				// Go carries the previous spec's type only when a spec gives
 				// neither type nor value, so anything else in the group ends the
 				// inheritance — including an ordinary untyped constant, which was
-				// being read as a block type and failing this test with an
-				// impossible instruction.
-				if len(value.Values) > 0 {
+				// once read as a block type and failed this test with an
+				// impossible instruction. A conversion keeps the run alive, since
+				// it is a BlockType by any reading; a string keeps it because that
+				// is what a block type looks like with the type left off.
+				if len(value.Values) > 0 && !converted {
 					carried = carried && onlyStrings(value.Values)
 				}
 			default:
 				carried = false
 			}
 
-			isBlockType := carried
-			for _, expr := range value.Values {
-				call, ok := expr.(*ast.CallExpr)
-				if !ok {
-					continue
-				}
-				if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "BlockType" {
-					isBlockType = true
-				}
-			}
-			if !isBlockType {
+			// The name is the last signal, and the only one left for a constant
+			// declared on its own with no type: `const BlockRedacted = "..."` says
+			// nothing to the type system and everything to a reader. This package
+			// names every block type Block*, so a string constant that does is
+			// treated as one — misname something and the cost is a case to add.
+			named := strings.HasPrefix(constName(value), "Block") && onlyStrings(value.Values)
+
+			if !carried && !converted && !named {
 				continue
 			}
 			for _, name := range value.Names {
@@ -137,6 +138,29 @@ func receiverIs(fn *ast.FuncDecl, name string) bool {
 	}
 	ident, ok := expr.(*ast.Ident)
 	return ok && ident.Name == name
+}
+
+// convertsToBlockType reports whether any value is a BlockType(...) conversion.
+func convertsToBlockType(values []ast.Expr) bool {
+	for _, expr := range values {
+		call, ok := expr.(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "BlockType" {
+			return true
+		}
+	}
+	return false
+}
+
+// constName is the first name a spec declares, which for a constant is the only
+// one worth asking about.
+func constName(value *ast.ValueSpec) string {
+	if len(value.Names) == 0 {
+		return ""
+	}
+	return value.Names[0].Name
 }
 
 // onlyStrings reports whether every value is a string literal, which is how a
@@ -205,10 +229,13 @@ const (
 	BlockText     BlockType = "text"
 	BlockThinking           = "thinking"
 	BlockToolUse            = BlockType("tool_use")
+	redactedThinking        = "redacted_thinking"
 	blockLimit              = 4
 )
 
 const BlockToolResult BlockType = "tool_result"
+
+const BlockAlone = "on its own, with no type at all"
 `
 
 	fset := token.NewFileSet()
@@ -222,7 +249,17 @@ const BlockToolResult BlockType = "tool_result"
 	// is not one, and ends the run. A real BlockType group holds only block types,
 	// so the interesting half of this is that BlockThinking and BlockToolUse are
 	// found at all.
-	want := []string{"BlockText", "BlockThinking", "BlockToolUse", "BlockToolResult"}
+	want := []string{
+		"BlockText",     // the type spelled out
+		"BlockThinking", // the type carried down the group
+		"BlockToolUse",  // a conversion
+		// Carried past a conversion, which is still a BlockType — and named so
+		// that only the carry can find it, since a differently-named variant is
+		// exactly what the name signal cannot see.
+		"redactedThinking",
+		"BlockToolResult", // its own declaration, typed
+		"BlockAlone",      // its own declaration, untyped: only the name says so
+	}
 	got := blockTypeConstants(file)
 	if !slices.Equal(got, want) {
 		t.Errorf("blockTypeConstants:\n got %v\nwant %v", got, want)

@@ -749,6 +749,13 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "is gone after the stream ended",
 		},
+		"an event type this contract does not know": {
+			seq: stream(llm.Event{
+				Type:    llm.EventType("tool_input_stop"),
+				Partial: &llm.Message{Role: llm.RoleAssistant},
+			}),
+			want: "not an event type this contract knows",
+		},
 		"a tool_result block in a streamed message": {
 			seq: stream(llm.Event{
 				Type: llm.EventMessageStart,

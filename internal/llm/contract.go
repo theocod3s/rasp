@@ -393,6 +393,23 @@ var channels = []channel{
 // around.
 const emptyArguments = "{}"
 
+// knownEvents is every event type this contract recognises. A stream carrying
+// anything else is rejected for the same reason checkShape rejects an unknown
+// block: a consumer's type switch ignores it silently, so an event nobody handles
+// is content nobody draws — and a mistyped one that carries no data would
+// otherwise slip past every rule here, since the rest of them key off what an
+// event holds.
+var knownEvents = []EventType{
+	EventMessageStart,
+	EventTextDelta,
+	EventThinkingDelta,
+	EventToolInputStart,
+	EventToolInputDelta,
+	EventToolCall,
+	EventDone,
+	EventError,
+}
+
 // carriesDelta reports whether this event type is some channel's delta, which is
 // the only kind of event with anything to put in Delta.
 func carriesDelta(t EventType) bool {
@@ -410,6 +427,11 @@ func (c *streamChecker) check(index int, ev Event) error {
 	if c.terminal != "" {
 		return fmt.Errorf("%s arrived after the terminal %s event", at, c.terminal)
 	}
+	if !slices.Contains(knownEvents, ev.Type) {
+		return fmt.Errorf("%s is not an event type this contract knows; a consumer switches on the "+
+			"type and ignores what it does not recognise, so this arrives as nothing at all", at)
+	}
+
 	// A stream is one message, and message_start opens it. A consumer that resets
 	// per-message state on this event would wipe a half-drawn reply.
 	if ev.Type == EventMessageStart && index > 0 {
@@ -473,7 +495,7 @@ func (c *streamChecker) check(index int, ev Event) error {
 	}
 
 	if ev.Type == EventToolCall {
-		at, err := checkToolCall(at, ev)
+		index, err := checkToolCall(at, ev)
 		if err != nil {
 			return err
 		}
@@ -485,7 +507,7 @@ func (c *streamChecker) check(index int, ev Event) error {
 		// event, so a later fragment landing there — call 2's tail mis-routed
 		// onto call 1 — changes what the transcript says was run after it ran,
 		// and the byte comparison that would have caught it has already happened.
-		c.frozen[at] = announced{
+		c.frozen[index] = announced{
 			call: ev.ToolCall,
 			id:   ev.ToolCall.ID,
 			name: ev.ToolCall.Name,
