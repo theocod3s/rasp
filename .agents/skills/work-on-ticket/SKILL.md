@@ -1,6 +1,6 @@
 ---
 name: work-on-ticket
-description: Work a rasp ticket end to end — read the Linear issue, check deps, branch, implement, verify every acceptance criterion, open a PR, and close the issue out. Use this whenever a milestone ID appears (M0-02, M1-09, M5-04, P2-SUBAGENT), or the user says "next ticket", "pick up the CI one", "start M3-04", "implement the workspace confinement", or otherwise asks for work that maps to a milestone item — even when they never say the word "ticket". Also use when finishing, reviewing, or closing one out.
+description: Work a rasp ticket end to end — read the Linear issue, check deps, move it to In Progress, branch, implement, verify every acceptance criterion, open a PR, and close the issue out. Use this whenever a milestone ID appears (M0-02, M1-09, M5-04, P2-SUBAGENT), or the user says "next ticket", "pick up the CI one", "start M3-04", "implement the workspace confinement", or otherwise asks for work that maps to a milestone item — even when they never say the word "ticket". Also use when finishing, reviewing, or closing one out.
 ---
 
 # Working a rasp ticket
@@ -28,9 +28,15 @@ unmerged, say so and stop rather than working around it.
 `docs/scope.md`'s "deliberately excluded" before adding it. If it's a real gap, raise it; don't
 silently fill it.
 
-## 2. Branch
+## 2. Claim it, then branch
 
-`rasp/<id-lowercased>-<slug>` — `rasp/m0-02-ci`. Branch from an up-to-date `main`.
+**Move the issue to In Progress before writing anything** — always, even for a ticket that will
+take ten minutes. Linear is the only record of where the work stands, so a ticket sitting in
+Todo while a branch exists is the same failure as one left In Progress after merge (§6): the
+next session reads the board and gets the wrong answer. Do it as soon as deps are clear and
+before the first commit, so the record is right for the whole window someone might look.
+
+Branch `rasp/<id-lowercased>-<slug>` — `rasp/m0-02-ci` — from an up-to-date `main`.
 
 ## 3. Implement
 
@@ -50,10 +56,9 @@ of them was visible from a green run.
 
 The trap inside that habit: **a break that stops the package compiling proves nothing.** M0-04
 replaced the string-aware JSONC comment stripper with a naive one and the suite went red — but
-red from the build, so no test ran and none was shown to catch anything. A mode-name check
-broken with `if false {` did the same by leaving an import unused. Both had to be redone as
-mutations that compile before the named test could be seen to fail. If your break produces a
-build error, it is the compiler that caught you, not the check.
+red from the build, so no test ran and none was shown to catch anything. `if false {` does it
+too, whenever it leaves a variable or an import unused. If your break produces a build error, it
+is the compiler that caught you, not the check.
 
 And **assert the right failure, not just a failure.** M0-05's timeout test checked that *some*
 error came back. A later fix broke working credential helpers by returning a different error a
@@ -66,23 +71,31 @@ difference between doing this for the two obvious guards and doing it for all of
 by writing back the bytes you replaced** — never `git checkout -- .`, which resets the whole tree
 to HEAD and takes every other uncommitted change in the working directory with it. It did.
 
+**A not-caught result has three causes and only one is the check's fault.** The check may be
+weak; the test may never reach the line you mutated; or the `-run` pattern may match no test at
+all, which exits 0 and reads exactly like a pass. M0-06 hit the second (a guard reached only
+after the stream had already been abandoned) and the third (a subtest name with an apostrophe in
+it). Make the harness shout when nothing ran, and confirm the line runs, before touching the
+check.
+
 Then `just ci` — fmt-check, vet, build, test, race. Run it before pushing, not after.
 
 ## 5. Open the PR
 
-Body shape that has worked:
+**Write the description for an engineering director.** Someone two levels out from the code
+should be able to read it and know what shipped and why it matters — so lead with what the PR
+*does*, in plain language, and describe the capability or the fix rather than the mechanism.
+Then anything the reviewer genuinely needs: a judgement call and its alternative, a risk, a
+piece deliberately left out.
 
-- What changed and why, in the ticket's terms.
-- The acceptance criteria as a checklist, each with **how it was verified** — not just ticked.
-- Judgement calls you made, flagged as such, with the alternative. These are what the reviewer
-  is actually for.
-- Anything deliberately left out, and why.
+**Don't list the acceptance criteria.** They live in the ticket and the reviewer can open it;
+copying them across turns the description into a form nobody reads. Verification already
+happened in §4 and does not get re-staged here.
 
 **Keep it short enough that the reader reaches the diff.** M0-04's body ran well past a thousand
 words, re-arguing reasoning that was already in the commit messages and the code comments — and
 a description nobody finishes is one that fails at the only job it has, which is to get someone
-into the diff with the right questions. A line or two per criterion. Name a judgement call and
-its alternative; don't litigate it. If a decision needs a paragraph to defend, that paragraph
+into the diff with the right questions. If a decision needs a paragraph to defend, that paragraph
 belongs in the code, where the next reader is actually standing.
 
 Reference the work by milestone ID (`M0-02`), never the Linear key (`THE-6`) — the issue title
@@ -102,19 +115,34 @@ findings already fixed, not when you are tired of the loop.
 ## 6. Merge and close out
 
 Squash-merge, with a message you wrote rather than the one GitHub concatenates — see the rule
-in `AGENTS.md`. Then move the issue to Done in the same pass. Linear is the only record of where
-the work stands, so an issue left In Progress is what will mislead the next session.
+in `AGENTS.md`. Then move the issue to Done in the same pass — the other half of §2's rule, and
+an issue left In Progress after merge misleads exactly as much as one never started.
 
 If the ticket's shape changed while you worked it — a criterion that turned out wrong, a
 decision taken mid-flight — edit the issue description to match what was actually built. A
 ticket that no longer describes its own outcome is worse than no ticket, because it reads
 as authoritative.
 
-## 7. Report back briefly
+## 7. Report back
 
-What changed, and anything that genuinely needs a decision. Not the reasoning or the
-verification narrative — the reader asks when they want more. Detail belongs *before* the work,
-or when something failed or went differently than asked.
+Once the PR is merged and the issue is Done, **write the closing summary for a CTO**: someone who
+knows the project but has not seen this work, will not open the diff, and cannot be assumed to
+know what any identifier or section number refers to. So expand a term the first time it appears,
+and describe every change by what it now *does* before naming what it touched.
+
+- One or two sentences on what the work delivers, in plain language.
+- Then **file by file, what changed in each** — a sentence or two per file, its new behaviour and
+  the reason for it, not a restatement of the diff.
+- Anything that genuinely needs a decision.
+
+Short, not thin: no reasoning trail, no verification narrative, no caveats gathered along the
+way. The reader asks when they want more. Detail earns its place *before* the work, or when
+something failed, is uncertain, or went differently than asked — success is the case that should
+be short. And short is not the same as understandable: a wall of identifiers and section numbers
+standing in for sentences is a report that has to be decoded, which is a report not delivered.
+
+This is the only place the closing summary is specified. `AGENTS.md` carried a second version
+until the two asked for opposite reports; don't start a third.
 
 ---
 
