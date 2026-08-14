@@ -94,7 +94,9 @@ func blockTypeConstants(file *ast.File) []string {
 			}
 
 			// The only signal left for `const BlockRedacted = "..."`, which says
-			// nothing to the type system and everything to a reader.
+			// nothing to the type system and everything to a reader. This package
+			// names every block type Block*, so a string constant that does is
+			// treated as one; misnaming something costs a case to add.
 			named := strings.HasPrefix(constName(value), "Block") && onlyStrings(value.Values)
 
 			if !carried && !converted && !named {
