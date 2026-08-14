@@ -136,7 +136,13 @@ and describe every change by what it now *does* before naming what it touched.
 - Anything that genuinely needs a decision.
 
 Short, not thin: no reasoning trail, no verification narrative, no caveats gathered along the
-way. The reader asks when they want more.
+way. The reader asks when they want more. Detail earns its place *before* the work, or when
+something failed, is uncertain, or went differently than asked — success is the case that should
+be short. And short is not the same as understandable: a wall of identifiers and section numbers
+standing in for sentences is a report that has to be decoded, which is a report not delivered.
+
+This is the only place the closing summary is specified. `AGENTS.md` carried a second version
+until the two asked for opposite reports; don't start a third.
 
 ---
 
