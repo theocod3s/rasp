@@ -139,6 +139,7 @@ type Usage struct {
 	CacheWrite int `json:"cache_write,omitempty"`
 }
 
+// StopReason is why the model stopped generating.
 type StopReason string
 
 const (

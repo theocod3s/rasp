@@ -21,6 +21,7 @@ const (
 	projectDir = ".rasp" // under the project root
 )
 
+// EnvBinding maps an environment variable onto a config key.
 type EnvBinding struct {
 	Var string
 	Key string
@@ -38,6 +39,7 @@ func EnvBindings() []EnvBinding {
 	}
 }
 
+// FlagBinding maps a command-line flag onto a config key.
 type FlagBinding struct {
 	Flag  string
 	Key   string

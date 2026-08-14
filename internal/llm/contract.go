@@ -13,8 +13,11 @@ import (
 
 // CheckStream drains seq, checks the StreamResponse contract on every event, and
 // returns the events in order so a caller can go on to assert what the stream
-// said. Partial is a stable pointer, so those events all show the FINAL message
-// rather than the message as it stood when each was yielded.
+// said. For tests: it consumes the stream, so nothing can read it afterwards,
+// and against a real provider it blocks until the model has finished.
+//
+// Partial is a stable pointer, so those events all show the FINAL message rather
+// than the message as it stood when each was yielded.
 //
 // Four things go deliberately unchecked:
 //

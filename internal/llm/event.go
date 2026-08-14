@@ -2,6 +2,7 @@ package llm
 
 import "encoding/json"
 
+// EventType is which kind of stream event arrived.
 type EventType string
 
 const (

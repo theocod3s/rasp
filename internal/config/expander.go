@@ -233,12 +233,12 @@ func unsetError(name string, present bool) error {
 
 // expandCommand runs one `$(command)`, or refuses to.
 func (e *Expander) expandCommand(ctx context.Context, key, command string) (string, error) {
-	// Both unreachable through Expand, which refuses an unrecorded origin and
-	// returns a shell-sourced value literally long before a command is reached.
-	// They stay because what they stop is arbitrary command execution, and a guard
-	// that depends on its only caller checking first is a comment wearing the
-	// clothes of a check — and because the MCP server `env` resolution §10 has in
-	// scope is a second entry point waiting to happen.
+	// The first two arms are unreachable through Expand, which refuses an
+	// unrecorded origin and returns a shell-sourced value literally long before a
+	// command is reached. They stay because what they stop is arbitrary command
+	// execution, a guard that depends on its only caller checking first is a
+	// comment wearing the clothes of a check, and the MCP server `env` resolution
+	// §10 has in scope is a second entry point waiting to happen.
 	origin, known := e.origins.At(key)
 	switch {
 	case !known:
