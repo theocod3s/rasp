@@ -155,7 +155,22 @@ bar for a reason you can name in a sentence, it is fine.
 To measure:
 
 ```bash
-for f in $(git diff --name-only main -- '*.go'); do
+# Resolve the base first and fail if there is none. `git diff main` in a repo
+# with no `main` — a fork, a --single-branch clone with only origin/main, a
+# trunk-named default — writes `fatal:` to stderr, substitutes nothing, and the
+# loop prints an empty report and exits 0. That reads as "no file is over the
+# bar".
+base=$(git merge-base main HEAD) || { echo "no 'main' to compare against" >&2; exit 1; }
+
+# merge-base, not `git diff main`: two-dot compares main's tip to the working
+# tree, so anything landed on main since you branched shows up as yours.
+files=$(git diff --name-only "$base" -- '*.go')
+[ -n "$files" ] || { echo "no .go files changed since $base" >&2; exit 0; }
+
+# `read -r` per line, not `for f in $files`: zsh does not word-split an unquoted
+# parameter expansion, so the for-loop hands the whole list over as one filename.
+# This form also survives a path with a space in it.
+printf '%s\n' "$files" | while IFS= read -r f; do
   # A deleted or empty file has no ratio. Say so rather than skipping in silence:
   # unguarded, `wc -l < gone.go` leaves the arithmetic an empty operand, and the
   # loop prints a syntax error, carries on, and still exits 0.
@@ -167,6 +182,17 @@ for f in $(git diff --name-only main -- '*.go'); do
   printf "%3d%%  %s\n" "$(( $(grep -cE '^[[:space:]]*//' "$f") * 100 / $(grep -c '' "$f") ))" "$f"
 done | sort -rn
 ```
+
+All that guarding for six lines of work looks like a lot. It is what the script
+cost. Review found a fail-open bug in it on three consecutive passes — a missing
+file, a missing trailing newline, a missing `main` — each printing a plausible
+answer and exiting 0; then the rewrite that fixed the third introduced a fourth,
+where zsh's lack of word splitting made the loop treat every path as one file.
+That one was caught by running the thing, which the three before it were not.
+
+AGENTS.md's rule is *decide what it does when the checker is missing, errors, or
+matches nothing, and make that path loud*. A check reporting "nothing is over the
+bar" when it could not run is the version of that failure you act on.
 
 ## Two rasp-specific rules
 
