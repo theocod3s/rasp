@@ -10,10 +10,9 @@ import (
 	"github.com/theocod3s/rasp/internal/config"
 )
 
-// TestPrecedencePerHop walks design §10's chain one rung at a time: built-in
-// defaults, global file, project file, environment, flags. Each case adds
-// exactly one layer to the one below it and asserts that the new layer wins,
-// so a broken rung names itself instead of being masked by the rung above.
+// TestPrecedencePerHop walks design §10's chain one rung at a time. Each case
+// adds exactly one layer to the one below and asserts the new layer wins, so a
+// broken rung names itself instead of being masked by the rung above.
 func TestPrecedencePerHop(t *testing.T) {
 	globalPath := global(t, `{"model": "from/global"}`)
 	projectDir := project(t, `{"model": "from/project"}`)
@@ -92,10 +91,8 @@ func TestPrecedencePerHop(t *testing.T) {
 	}
 }
 
-// TestMergeIsPerKey is the reason the chain merges rather than replaces: a
-// project config overriding one provider's key must not delete the rest of the
-// providers table, or every repo would have to restate the global config to
-// change one line (design §10).
+// TestMergeIsPerKey: overriding one provider's key must not delete the rest of
+// the table, or every repo would restate the global config to change one line.
 func TestMergeIsPerKey(t *testing.T) {
 	globalPath := global(t, `{
 	  "model": "from/global",
@@ -122,8 +119,7 @@ func TestMergeIsPerKey(t *testing.T) {
 		t.Errorf("providers.openrouter.base_url = %q, want the sibling key untouched", got)
 	}
 
-	// An array is a value, not something to concatenate. Narrowing `models` to
-	// one entry has to mean one entry.
+	// Narrowing `models` to one entry has to mean one entry.
 	if got := res.Config.Providers["openrouter"].Models; !slices.Equal(got, []string{"c"}) {
 		t.Errorf("providers.openrouter.models = %v, want the project's list to replace the global one", got)
 	}
@@ -143,7 +139,7 @@ func TestMergeIsPerKey(t *testing.T) {
 }
 
 // TestEmptyEnvVarIsUnset keeps an accidentally-exported empty variable from
-// outranking a file somebody actually wrote.
+// outranking a file somebody wrote.
 func TestEmptyEnvVarIsUnset(t *testing.T) {
 	res := load(t, config.Sources{
 		ProjectDir: project(t, `{"model": "from/project"}`),
@@ -158,10 +154,7 @@ func TestEmptyEnvVarIsUnset(t *testing.T) {
 	}
 }
 
-// TestEmptyFlagValueIsUnset applies the same rule the environment gets, for
-// the same reason. `rasp --model "$MODEL"` in a script with MODEL unset is the
-// same accident as an exported empty variable, and reading it two different
-// ways would be a rule nobody could hold.
+// TestEmptyFlagValueIsUnset applies the environment's rule to flags.
 func TestEmptyFlagValueIsUnset(t *testing.T) {
 	res := load(t, config.Sources{
 		ProjectDir: project(t, `{"model": "from/project"}`),
@@ -184,8 +177,7 @@ func TestEmptyFlagValueIsUnset(t *testing.T) {
 	}
 }
 
-// TestUnknownFlagIsRejected closes the gap between the flag table and the
-// command line. A flag nobody can place is a flag that silently does nothing.
+// TestUnknownFlagIsRejected: a flag nobody can place silently does nothing.
 func TestUnknownFlagIsRejected(t *testing.T) {
 	_, err := config.Load(config.Sources{
 		GlobalPath: filepath.Join(t.TempDir(), config.File),
@@ -198,9 +190,8 @@ func TestUnknownFlagIsRejected(t *testing.T) {
 	}
 }
 
-// TestMissingFilesAreOrdinary: most people have no project config and many
-// have no global one. Neither is an error, and both are reported so `config
-// check` can say which file it did not find.
+// TestMissingFilesAreOrdinary, and both are still reported so `config check` can
+// say which file it did not find.
 func TestMissingFilesAreOrdinary(t *testing.T) {
 	res := load(t, config.Sources{})
 
@@ -217,10 +208,9 @@ func TestMissingFilesAreOrdinary(t *testing.T) {
 	}
 }
 
-// TestEveryResolvedValueHasAnOrigin is the acceptance criterion behind `rasp
-// config check`, checked against the resolved Config rather than against the
-// report: every value that survives into the struct can name where it came
-// from, and nothing is left over pointing at a value that did not.
+// TestEveryResolvedValueHasAnOrigin, checked against the resolved Config rather
+// than the report, in both directions: no value without an origin, and no origin
+// left over pointing at a value that did not survive.
 func TestEveryResolvedValueHasAnOrigin(t *testing.T) {
 	res := load(t, config.Sources{
 		GlobalPath: global(t, `{
@@ -254,9 +244,8 @@ func TestEveryResolvedValueHasAnOrigin(t *testing.T) {
 	}
 }
 
-// configPaths returns the key path of every value in cfg, by asking the
-// encoder — so the test tracks what the struct actually holds rather than a
-// list somebody has to remember to update.
+// configPaths asks the encoder for the key path of every value in cfg, so the
+// test tracks what the struct holds rather than a list somebody has to update.
 func configPaths(t *testing.T, cfg config.Config) []string {
 	t.Helper()
 
@@ -295,6 +284,5 @@ func configPaths(t *testing.T, cfg config.Config) []string {
 	return paths
 }
 
-// escapeKey mirrors the escaping the package applies when it joins a key path,
-// so the two agree on where one key ends and the next begins.
+// escapeKey mirrors the escaping the package applies when joining a key path.
 var escapeKey = strings.NewReplacer(`\`, `\\`, `.`, `\.`)

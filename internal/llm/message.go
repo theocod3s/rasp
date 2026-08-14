@@ -25,11 +25,10 @@ const (
 )
 
 // Block is one piece of a message's content: a flat union, so the field comments
-// rather than the type system say which type owns which field.
-//
-// The json tags are the session file's format (design §9), not only the
-// provider's: session storage persists llm.Message verbatim, so renaming a tag
-// here breaks every transcript already on disk.
+// rather than the type system say which type owns which field. The json tags are
+// the session file's format (design §9) as well as the provider's — session
+// storage persists llm.Message verbatim, so renaming one breaks every transcript
+// already on disk.
 type Block struct {
 	Type BlockType `json:"type"`
 
@@ -37,8 +36,8 @@ type Block struct {
 	//
 	// Anthropic requires a thinking block to be replayed verbatim, signature and
 	// all, when the turn that thought went on to call a tool. There is no field
-	// for that signature yet; adding one is additive, so the first adapter to
-	// meet the wire format settles its shape.
+	// for that signature yet; adding one is additive, so the first adapter to meet
+	// the wire format settles its shape.
 	Text string `json:"text,omitempty"`
 
 	ID    string          `json:"id,omitempty"`    // BlockToolUse — the provider's call id
@@ -57,18 +56,16 @@ type Block struct {
 // Arguments is a tool call's arguments as anything sending them should read
 // them: the bytes that arrived, or `{}` when those bytes are not an object.
 //
-// The state it exists for is a turn truncated at the output limit, committed
-// with its tool_use block and a fragment cut mid-object (design §4 invariant 2
-// fails the call; the block stays). Three shapes are rejected on replay — a
-// fragment, which json.Marshal refuses so the whole message encodes to nothing;
-// no input at all; and `null`, which is how an OpenAI-compatible endpoint
-// normalises an empty arguments string. Substituting `{}` loses only the
-// arguments the guard exists to refuse, and keeps the block for the tool_result
-// that fails it to point at.
+// The state it exists for is a turn truncated at the output limit, committed with
+// its tool_use block and a fragment cut mid-object (design §4 invariant 2 fails
+// the call; the block stays). Three shapes are rejected on replay — a fragment,
+// which json.Marshal refuses so the whole message encodes to nothing; no input at
+// all; and `null`, which is how an OpenAI-compatible endpoint normalises an empty
+// arguments string. Substituting `{}` keeps the block for the failing tool_result
+// to point at, and loses only arguments the guard exists to refuse.
 //
 // Exported because the loop keeps running after a truncated turn, so the next
-// request is built from that same in-memory message. An adapter reading Input
-// directly would put `{"pa` on the wire.
+// request is built from that same in-memory message.
 func (b Block) Arguments() json.RawMessage {
 	if b.Type != BlockToolUse || isJSONObject(b.Input) {
 		return b.Input
@@ -142,7 +139,6 @@ type Usage struct {
 	CacheWrite int `json:"cache_write,omitempty"`
 }
 
-// StopReason is why the model stopped generating.
 type StopReason string
 
 const (

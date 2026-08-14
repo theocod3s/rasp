@@ -12,9 +12,9 @@ import (
 	"github.com/theocod3s/rasp/internal/config"
 )
 
-// expanderOver builds an Expander over a global config holding one api_key,
-// which is the shape design §10 sends through the resolver. The global layer
-// is deliberate: a project config is refused, and that has its own test.
+// expanderOver builds an Expander over a global config holding one api_key, the
+// shape design §10 sends through the resolver. Global on purpose: a project
+// config is refused, and that has its own test.
 func expanderOver(t *testing.T, value string, environ env, opts config.ExpanderOptions) *config.Expander {
 	t.Helper()
 
@@ -29,7 +29,6 @@ func expanderOver(t *testing.T, value string, environ env, opts config.ExpanderO
 
 const apiKey = "providers.anthropic.api_key"
 
-// expand resolves the key and fails the test if it could not.
 func expand(t *testing.T, e *config.Expander) string {
 	t.Helper()
 	got, err := e.Expand(t.Context(), apiKey)
@@ -39,8 +38,8 @@ func expand(t *testing.T, e *config.Expander) string {
 	return got
 }
 
-// TestEveryFormResolves is the first acceptance criterion: all five forms
-// design §10 defines, and the literal that is none of them.
+// TestEveryFormResolves covers all five forms design §10 defines, and the
+// literal that is none of them.
 func TestEveryFormResolves(t *testing.T) {
 	environ := env{"KEY": "from-env", "EMPTY": ""}
 	run := func(_ context.Context, command string) ([]byte, error) {
@@ -62,13 +61,13 @@ func TestEveryFormResolves(t *testing.T) {
 		{"a message, not needed", "${KEY:?run 'op signin'}", "from-env"},
 		{"a command", "$(op read op://vault/key)", "ran: op read op://vault/key"},
 
-		// Substitution is inline, not whole-value only: a base URL wants
-		// `https://${HOST}/v1` far more than a credential does.
+		// Inline, not whole-value only: a base URL wants `https://${HOST}/v1`
+		// far more than a credential does.
 		{"a reference inside text", "Bearer ${KEY}!", "Bearer from-env!"},
 		{"two references", "$KEY-$KEY", "from-env-from-env"},
 
-		// A literal dollar has to survive. Secrets contain them, and without
-		// an escape `sk-a$bc` would resolve an unset variable.
+		// Secrets contain dollars, and without an escape `sk-a$bc` would
+		// resolve an unset variable.
 		{"an escaped dollar", "sk-a$$bc", "sk-a$bc"},
 		{"an escaped dollar beside a reference", "$$$KEY", "$from-env"},
 	}
@@ -83,8 +82,8 @@ func TestEveryFormResolves(t *testing.T) {
 	}
 }
 
-// TestMessageFormRefusesToStart is the other half of `${VAR:?msg}`: when the
-// variable is missing, the config author's own sentence is what the user sees.
+// TestMessageFormRefusesToStart: the config author's own sentence is what the
+// user sees.
 func TestMessageFormRefusesToStart(t *testing.T) {
 	e := expanderOver(t, "${MISSING:?run 'op signin' first}", env{}, config.ExpanderOptions{})
 
@@ -99,9 +98,8 @@ func TestMessageFormRefusesToStart(t *testing.T) {
 	}
 }
 
-// TestBareReferenceToAnUnsetVariableFails. The shell would give the empty
-// string; every value reaching this resolver is a credential, and an empty one
-// comes back later as a 401 that points at nothing.
+// TestBareReferenceToAnUnsetVariableFails, where the shell would give the empty
+// string.
 func TestBareReferenceToAnUnsetVariableFails(t *testing.T) {
 	for _, value := range []string{"$MISSING", "${MISSING}"} {
 		e := expanderOver(t, value, env{}, config.ExpanderOptions{})
@@ -116,9 +114,7 @@ func TestBareReferenceToAnUnsetVariableFails(t *testing.T) {
 	}
 }
 
-// TestUnsupportedFormsAreRejected is the second acceptance criterion. Passing
-// `${VAR:=x}` through as literal text would surface much later as an API key
-// made of punctuation.
+// TestUnsupportedFormsAreRejected.
 func TestUnsupportedFormsAreRejected(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -154,9 +150,8 @@ func TestUnsupportedFormsAreRejected(t *testing.T) {
 	}
 }
 
-// TestAFailingCommandIsActionable is the third acceptance criterion. `exit
-// status 1` from `op` says nothing; its stderr says "you are not currently
-// signed in", and the key says which line to go and edit.
+// TestAFailingCommandIsActionable: which setting, which command, what the
+// command said.
 func TestAFailingCommandIsActionable(t *testing.T) {
 	e := expanderOver(t, "$(op read op://vault/key)", env{}, config.ExpanderOptions{
 		Run: func(context.Context, string) ([]byte, error) {
@@ -179,9 +174,8 @@ func TestAFailingCommandIsActionable(t *testing.T) {
 	}
 }
 
-// TestASecretReachesTheCaller is the fourth acceptance criterion, run against
-// a real subprocess rather than a stub — the point is that the whole path
-// works, not that the parser does.
+// TestASecretReachesTheCaller runs against a real subprocess rather than a stub:
+// the point is the whole path, not the parser.
 func TestASecretReachesTheCaller(t *testing.T) {
 	e := expanderOver(t, "$(echo hunter2)", env{}, config.ExpanderOptions{})
 
@@ -190,8 +184,7 @@ func TestASecretReachesTheCaller(t *testing.T) {
 	}
 }
 
-// TestOutputIsTrimmed: every credential helper worth using prints a trailing
-// newline, and no API accepts one.
+// TestOutputIsTrimmed.
 func TestOutputIsTrimmed(t *testing.T) {
 	e := expanderOver(t, "$(printf 'hunter2\n')", env{}, config.ExpanderOptions{})
 
@@ -200,9 +193,7 @@ func TestOutputIsTrimmed(t *testing.T) {
 	}
 }
 
-// TestAQuotedParenDoesNotEndTheCommand. Parenthesis counting that ignores
-// quotes truncates the command and runs half of it — the same mistake a naive
-// JSONC comment stripper makes with a `//` inside a URL.
+// TestAQuotedParenDoesNotEndTheCommand, which would run half of it.
 func TestAQuotedParenDoesNotEndTheCommand(t *testing.T) {
 	var got string
 	e := expanderOver(t, `$(echo ")" done)`, env{}, config.ExpanderOptions{
@@ -218,8 +209,7 @@ func TestAQuotedParenDoesNotEndTheCommand(t *testing.T) {
 	}
 }
 
-// TestCommandsAreCached. prd §6.1 wants credentials re-resolved on every model
-// call; forking `op read` per request would make that unaffordable.
+// TestCommandsAreCached.
 func TestCommandsAreCached(t *testing.T) {
 	var (
 		mu    sync.Mutex
@@ -246,17 +236,14 @@ func TestCommandsAreCached(t *testing.T) {
 		t.Errorf("ran the command %d times, want 1", runs)
 	}
 
-	// Past the window, a rotated credential has to be picked up without a
-	// restart — which is the whole reason the cache expires rather than
-	// holding for the session.
+	// Past the window, a rotated credential is picked up without a restart.
 	clock = clock.Add(31 * time.Second)
 	if got := expand(t, e); got != "secret-2" {
 		t.Errorf("Expand after the window = %q, want it run again", got)
 	}
 }
 
-// TestAFailingCommandIsNotCached. A locked vault is fixed while rasp is
-// running, and caching the failure would make unlocking it look ineffective.
+// TestAFailingCommandIsNotCached: unlocking the vault has to take effect.
 func TestAFailingCommandIsNotCached(t *testing.T) {
 	var runs int
 	e := expanderOver(t, "$(op read op://vault/key)", env{}, config.ExpanderOptions{
@@ -276,9 +263,9 @@ func TestAFailingCommandIsNotCached(t *testing.T) {
 	}
 }
 
-// TestConcurrentExpansionIsSafe. Credentials are re-resolved per model call,
-// and rasp runs tool calls in parallel, so this is the ordinary case rather
-// than an exotic one. Meaningful under -race, which `just ci` runs.
+// TestConcurrentExpansionIsSafe. Credentials are re-resolved per model call and
+// tool calls run in parallel, so this is the ordinary case. Meaningful under
+// -race, which `just ci` runs.
 func TestConcurrentExpansionIsSafe(t *testing.T) {
 	e := expanderOver(t, "$(op read op://vault/key)", env{}, config.ExpanderOptions{
 		Run: func(context.Context, string) ([]byte, error) { return []byte("secret"), nil },
@@ -295,9 +282,8 @@ func TestConcurrentExpansionIsSafe(t *testing.T) {
 	wg.Wait()
 }
 
-// TestALiteralWithGrammarCharactersIsUnchanged. Braces, parentheses and a `:-`
-// are ordinary characters in a generated secret, and the grammar must not
-// reach for them when there is no dollar to start it.
+// TestALiteralWithGrammarCharactersIsUnchanged: they are ordinary characters in
+// a generated secret.
 func TestALiteralWithGrammarCharactersIsUnchanged(t *testing.T) {
 	const value = "sk-ant-a{b}c(d)e:-f"
 	e := expanderOver(t, value, env{}, config.ExpanderOptions{})
@@ -307,8 +293,7 @@ func TestALiteralWithGrammarCharactersIsUnchanged(t *testing.T) {
 	}
 }
 
-// TestExpandingAnAbsentKeyFails, rather than returning the empty string that a
-// caller would then send as a credential.
+// TestExpandingAnAbsentKeyFails, rather than returning an empty credential.
 func TestExpandingAnAbsentKeyFails(t *testing.T) {
 	e := expanderOver(t, "literal", env{}, config.ExpanderOptions{})
 
@@ -317,11 +302,8 @@ func TestExpandingAnAbsentKeyFails(t *testing.T) {
 	}
 }
 
-// TestADefaultIsAValueNotText. `${A:-${B}}` means "A, or B". Taking the first
-// closing brace instead ends the reference inside its own default and leaves
-// the rest as literal text — which for a credential means handing the caller
-// the nine characters `${B}` and calling it a key. The round-trip fuzz
-// property cannot catch this: the wrong parse is a stable one.
+// TestADefaultIsAValueNotText. The round-trip fuzz property cannot catch this
+// one, because the wrong parse is a stable one.
 func TestADefaultIsAValueNotText(t *testing.T) {
 	environ := env{"TEAM_KEY": "sk-team", "KEY": "sk-set"}
 	run := func(_ context.Context, command string) ([]byte, error) {
@@ -366,9 +348,7 @@ func TestAnUnresolvableNestedDefaultFails(t *testing.T) {
 	}
 }
 
-// TestACommandThatPrintsNothingFails. Succeeding while printing nothing is the
-// command form of the empty variable this resolver already refuses, and it is
-// the likelier of the two: `op read` on an empty field exits 0.
+// TestACommandThatPrintsNothingFails.
 func TestACommandThatPrintsNothingFails(t *testing.T) {
 	for _, value := range []string{"$(true)", "$(printf '')"} {
 		e := expanderOver(t, value, env{}, config.ExpanderOptions{})
@@ -384,8 +364,7 @@ func TestACommandThatPrintsNothingFails(t *testing.T) {
 	}
 }
 
-// TestAnEmptyCommandIsRejected: `$()` parses as a command and would otherwise
-// be handed to `sh -c ""`.
+// TestAnEmptyCommandIsRejected, rather than handed to `sh -c ""`.
 func TestAnEmptyCommandIsRejected(t *testing.T) {
 	e := expanderOver(t, "$()", env{}, config.ExpanderOptions{})
 
@@ -394,8 +373,7 @@ func TestAnEmptyCommandIsRejected(t *testing.T) {
 	}
 }
 
-// TestAnEmptyMessageStillSaysSomething. `${VAR:?}` is legal and carries no
-// message; an error rendering as a bare colon tells the reader nothing.
+// TestAnEmptyMessageStillSaysSomething, `${VAR:?}` being legal.
 func TestAnEmptyMessageStillSaysSomething(t *testing.T) {
 	e := expanderOver(t, "${MISSING:?}", env{}, config.ExpanderOptions{})
 
@@ -408,8 +386,8 @@ func TestAnEmptyMessageStillSaysSomething(t *testing.T) {
 	}
 }
 
-// TestAnEscapedQuoteInACommand. `$(echo \")` is valid shell, and the quote it
-// escapes must not open a run that never closes.
+// TestAnEscapedQuoteInACommand, which must not open a quoted run that never
+// closes.
 func TestAnEscapedQuoteInACommand(t *testing.T) {
 	var got string
 	e := expanderOver(t, `$(echo \" done)`, env{}, config.ExpanderOptions{
@@ -425,9 +403,7 @@ func TestAnEscapedQuoteInACommand(t *testing.T) {
 	}
 }
 
-// TestACancelledTurnIsNotReportedAsATimeout. Both contexts are cancelled when
-// a turn is interrupted, so checking the derived one first would tell a user
-// who pressed Esc that their credential helper is slow.
+// TestACancelledTurnIsNotReportedAsATimeout.
 func TestACancelledTurnIsNotReportedAsATimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	e := expanderOver(t, "$(op read op://vault/key)", env{}, config.ExpanderOptions{
@@ -442,10 +418,8 @@ func TestACancelledTurnIsNotReportedAsATimeout(t *testing.T) {
 		t.Fatalf("err = %v, want it to carry context.Canceled", err)
 	}
 
-	// A cancellation propagates as itself. Dressing it up as a failure of the
-	// command — "$(op read …) failed" — blames the credential helper for the
-	// user's own Esc, and it is the wording the timeout branch would reach for
-	// if the parent were not checked first.
+	// "$(op read …) failed" is the wording the timeout branch reaches for, and it
+	// blames the credential helper for the user's own Esc.
 	for _, unwanted := range []string{"did not finish", "failed", "op read"} {
 		if strings.Contains(err.Error(), unwanted) {
 			t.Errorf("a cancelled turn was reported as %q:\n%s", unwanted, err)
@@ -453,9 +427,7 @@ func TestACancelledTurnIsNotReportedAsATimeout(t *testing.T) {
 	}
 }
 
-// TestNestingIsBounded. Each level parses a strict substring of the one above,
-// so no config anyone wrote on purpose reaches this — it is here because the
-// input is a file, and an error is a better answer than a stack overflow.
+// TestNestingIsBounded.
 func TestNestingIsBounded(t *testing.T) {
 	const depth = 64
 
@@ -477,13 +449,8 @@ func TestNestingIsBounded(t *testing.T) {
 	}
 }
 
-// TestACommandThatLeavesSomethingRunningReturnsAtOnce. This is the ordinary
-// case, not an exotic one: `pass` starts a gpg-agent that outlives it by
-// design, and so do several `op` and ssh-agent wrappers. The agent inherits
-// stdout, so waiting for end-of-file means waiting for the agent — which hung
-// the turn, and, once exec was asked to force the pipes shut instead, threw
-// the secret away on a race. The command has exited and its output is here;
-// nothing else is ours to wait for.
+// TestACommandThatLeavesSomethingRunningReturnsAtOnce — the ordinary case, not
+// an exotic one: `pass` starts a gpg-agent that outlives it by design.
 func TestACommandThatLeavesSomethingRunningReturnsAtOnce(t *testing.T) {
 	e := expanderOver(t, "$(sleep 5 & printf hunter2)", env{}, config.ExpanderOptions{})
 
@@ -498,9 +465,7 @@ func TestACommandThatLeavesSomethingRunningReturnsAtOnce(t *testing.T) {
 	}
 }
 
-// TestACommandThatNeverFinishesTimesOut is the other half. A vault that is
-// unreachable, or a helper waiting on a prompt nobody can see, must fail
-// rather than hang the turn behind it.
+// TestACommandThatNeverFinishesTimesOut is the other half.
 func TestACommandThatNeverFinishesTimesOut(t *testing.T) {
 	e := expanderOver(t, "$(sleep 30)", env{}, config.ExpanderOptions{})
 
@@ -516,13 +481,10 @@ func TestACommandThatNeverFinishesTimesOut(t *testing.T) {
 	}
 }
 
-// TestLargeOutputDoesNotDeadlock. A pipe holds about 64KB; a command that
-// filled it while nothing was reading would block forever, which is why the
-// drain runs alongside the command rather than after it.
+// TestLargeOutputDoesNotDeadlock.
 func TestLargeOutputDoesNotDeadlock(t *testing.T) {
 	const size = 300 << 10
-	// No newlines: the result is trimmed, and a trailing one would make the
-	// length assertion say something other than what it means.
+	// No newlines: the result is trimmed, which would skew the length assertion.
 	e := expanderOver(t, fmt.Sprintf("$(head -c %d /dev/zero | tr '\\0' x)", size),
 		env{}, config.ExpanderOptions{})
 
@@ -531,11 +493,9 @@ func TestLargeOutputDoesNotDeadlock(t *testing.T) {
 	}
 }
 
-// TestAnEscapedDollarDoesNotStartACommand. `$$` is a literal dollar, so `$$(`
-// is a dollar followed by a parenthesis and not a substitution. The brace
-// matcher has to read it the same way parseValue does, or the two disagree
-// about where a reference ends and a well-formed value is rejected — with a
-// message naming the wrong problem.
+// TestAnEscapedDollarDoesNotStartACommand. The brace matcher has to read `$$(`
+// the way parseValue does, or the two disagree about where a reference ends and
+// a well-formed value is rejected with a message naming the wrong problem.
 func TestAnEscapedDollarDoesNotStartACommand(t *testing.T) {
 	tests := []struct {
 		value string
@@ -556,10 +516,8 @@ func TestAnEscapedDollarDoesNotStartACommand(t *testing.T) {
 	}
 }
 
-// TestSetButEmptySaysSo. The operators treat "set to empty" and "unset" alike,
-// which is the shell's rule and the right one. The message must not: someone
-// with `export ANTHROPIC_API_KEY=""` in their profile who is told the variable
-// is not set will go and look, find it, and have nowhere left to go.
+// TestSetButEmptySaysSo. The operators treat the two alike, which is the shell's
+// rule; the message must not.
 func TestSetButEmptySaysSo(t *testing.T) {
 	e := expanderOver(t, "$ANTHROPIC_API_KEY", env{"ANTHROPIC_API_KEY": ""}, config.ExpanderOptions{})
 
@@ -573,9 +531,6 @@ func TestSetButEmptySaysSo(t *testing.T) {
 }
 
 // TestABareBraceInADefaultIsAnOrdinaryCharacter. Only `${` opens a level.
-// Counting every brace instead rejects `${KEY:-a{b}`, which is legal and ends
-// in a perfectly good closing brace — and rejects it by claiming there is no
-// closing brace at all, which leaves the reader nowhere to go.
 func TestABareBraceInADefaultIsAnOrdinaryCharacter(t *testing.T) {
 	tests := []struct{ value, want string }{
 		{"${MISSING:-a{b}", "a{b"},
@@ -593,8 +548,7 @@ func TestABareBraceInADefaultIsAnOrdinaryCharacter(t *testing.T) {
 	}
 }
 
-// TestAFloodOfStderrIsCapped. The stream is untrusted in size, and all of it
-// would otherwise land in an error that reaches the UI and the log file.
+// TestAFloodOfStderrIsCapped.
 func TestAFloodOfStderrIsCapped(t *testing.T) {
 	e := expanderOver(t, `$(head -c 100000 /dev/zero | tr '\0' x >&2; exit 1)`,
 		env{}, config.ExpanderOptions{})
@@ -611,9 +565,7 @@ func TestAFloodOfStderrIsCapped(t *testing.T) {
 	}
 }
 
-// TestABadCommandInsideABraceNamesTheRealProblem. Collapsing the inner error
-// into "no closing brace" points the reader at the one delimiter that is
-// actually present, which is worse than saying nothing.
+// TestABadCommandInsideABraceNamesTheRealProblem.
 func TestABadCommandInsideABraceNamesTheRealProblem(t *testing.T) {
 	tests := []struct{ value, want string }{
 		{"${KEY:-$()}", "no command in it"},
@@ -639,9 +591,8 @@ func TestABadCommandInsideABraceNamesTheRealProblem(t *testing.T) {
 }
 
 // TestTheUnsetMessageOffersTheEscape. A secret containing a literal dollar is
-// ordinary, and someone who has exported one is told about a variable they
-// never wrote. The workaround has to be in the message, not in a design
-// document they are not reading.
+// ordinary, and its owner is told about a variable they never wrote — so the
+// workaround belongs in the message, not in a document they are not reading.
 func TestTheUnsetMessageOffersTheEscape(t *testing.T) {
 	e := expanderOver(t, "sk-ant-x$yz", env{}, config.ExpanderOptions{})
 

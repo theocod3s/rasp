@@ -148,7 +148,6 @@ func TestAFlagOnASubcommandReachesTheChain(t *testing.T) {
 	}
 }
 
-// TestConfigPathNamesBothFiles.
 func TestConfigPathNamesBothFiles(t *testing.T) {
 	projectConfig(t, `{}`)
 

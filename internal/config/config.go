@@ -1,12 +1,9 @@
 package config
 
-// Config is the resolved settings file, design §10's schema in Go.
-//
-// Every field is optional in the file — the built-in defaults layer supplies
-// what a user leaves out, so a zero Config is never what a caller receives from
-// Load. Values are held exactly as they were written: a secret-bearing string
-// may still read `$(op read …)` here, because expanding it is the resolver's
-// job and not this type's.
+// Config is the resolved settings file, design §10's schema in Go. Every field
+// is optional; the defaults layer supplies what a user leaves out. Values are
+// held exactly as written, so a secret-bearing string may still read
+// `$(op read …)` here — expanding it is the resolver's job.
 type Config struct {
 	// Schema is the `$schema` key. rasp never reads it; editors do.
 	Schema string `json:"$schema,omitempty"`
@@ -18,10 +15,9 @@ type Config struct {
 	Providers map[string]Provider `json:"providers,omitempty"`
 
 	// Modes overrides a built-in permission preset, deep-merged onto it, so a
-	// user adds one bash pattern without restating the map. `modes.yolo` is
-	// never present here: it is dropped during validation, because yolo
-	// short-circuits ahead of pattern evaluation and an override could only
-	// create the false impression of a constraint (design §10).
+	// user adds one bash pattern without restating the map. `modes.yolo` is never
+	// present: yolo short-circuits ahead of pattern evaluation, so an override
+	// could only create the false impression of a constraint (design §10).
 	Modes map[string]ModePermissions `json:"modes,omitempty"`
 
 	MCP     MCP     `json:"mcp,omitzero"`
@@ -30,17 +26,16 @@ type Config struct {
 }
 
 // Provider is one entry under `providers`. An empty BaseURL means the adapter's
-// own default endpoint.
+// default endpoint.
 type Provider struct {
 	APIKey  string   `json:"api_key,omitempty"`
 	BaseURL string   `json:"base_url,omitempty"`
 	Models  []string `json:"models,omitempty"`
 }
 
-// ModePermissions mirrors the shape of a permission set without naming its
-// types. internal/permission owns those (design §7.1) and config is a leaf
-// package that may not import it (design §1), so the rules stay strings here
-// and are interpreted where they are enforced.
+// ModePermissions mirrors a permission set without naming its types.
+// internal/permission owns those (design §7.1) and config is a leaf package that
+// may not import it (design §1), so the rules stay strings here.
 type ModePermissions struct {
 	Read  string            `json:"read,omitempty"`
 	Write string            `json:"write,omitempty"`
@@ -50,16 +45,15 @@ type ModePermissions struct {
 	MCP   map[string]string `json:"mcp,omitempty"`
 }
 
-// MCP holds the server table and the tool-count budget that keeps a chatty
-// server from eating the context window.
+// MCP holds the server table and the tool-count budget.
 type MCP struct {
 	MaxTotalTools int                  `json:"max_total_tools,omitempty"`
 	Servers       map[string]MCPServer `json:"servers,omitempty"`
 }
 
 // MCPServer describes one stdio server to spawn. Timeout stays the string the
-// user wrote (`"10s"`); internal/mcp parses it, since that is the package that
-// has to live with what it means.
+// user wrote (`"10s"`); internal/mcp parses it, being the package that has to
+// live with what it means.
 type MCPServer struct {
 	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`
@@ -68,26 +62,22 @@ type MCPServer struct {
 	Timeout string            `json:"timeout,omitempty"`
 }
 
-// Context configures what goes into the system prompt and how much room is
-// held back for the reply.
+// Context configures the system prompt and the room held back for the reply.
 type Context struct {
 	Files         []string `json:"files,omitempty"`
 	ReserveTokens int      `json:"reserve_tokens,omitempty"`
 }
 
-// UI holds presentation settings. It is the one section with no effect on what
-// the model is sent.
+// UI is the one section with no effect on what the model is sent.
 type UI struct {
 	Theme string `json:"theme,omitempty"`
 	Diff  string `json:"diff,omitempty"`
 }
 
-// Mode names. internal/permission owns the Mode type and its presets
-// (design §7.1); config knows only the names, because it has to reject one of
-// them from a project file and because a typo silently resolving to something
-// else is worth catching before startup. Importing permission would make config
-// a non-leaf package, so this list is duplicated deliberately — if a mode is
-// ever added there, it has to be added here too.
+// Mode names. internal/permission owns the Mode type and its presets (design
+// §7.1); config knows only the names, to reject one of them from a project file
+// and catch a typo before startup. Importing permission would make config a
+// non-leaf package, so a mode added there has to be added here too.
 const (
 	ModePlan   = "plan"
 	ModeManual = "manual"
@@ -95,20 +85,16 @@ const (
 	ModeYolo   = "yolo"
 )
 
-// modeNames is every mode a config file may name, in cycle order with yolo
-// last. Membership is checked; whether a given layer may select it is
-// validate.go's business.
+// modeNames is every mode a config file may name, in cycle order with yolo last.
+// Whether a given layer may select one is validate.go's business.
 var modeNames = []string{ModePlan, ModeManual, ModeAuto, ModeYolo}
 
-// Defaults are the built-in values, the lowest layer of the precedence chain.
+// Defaults are the built-in values, the lowest layer of the precedence chain. A
+// tree, because the merge has to see all five layers the same way.
 //
-// It returns a tree rather than a Config because that is the form every other
-// layer takes, and the merge has to see all five layers the same way.
-//
-// small_model is set here rather than left to §11's fall back to model. That
-// fallback exists for anyone who clears the key, but shipping it unset would
-// mean summarizing 100k tokens on a flagship model, repeatedly, on exactly the
-// long sessions where compaction fires — a cost nobody would ever see.
+// small_model is set here rather than left to §11's fall back to model: shipping
+// it unset would summarize 100k tokens on a flagship model, repeatedly, on
+// exactly the long sessions where compaction fires.
 func Defaults() map[string]any {
 	return map[string]any{
 		"model":       "anthropic/claude-opus-5",
@@ -119,7 +105,7 @@ func Defaults() map[string]any {
 		},
 		"context": map[string]any{
 			// AGENTS.md is the name rasp discovers; CLAUDE.md is accepted
-			// (prd §6.5). Order is the order they are tried.
+			// (prd §6.5), and this is the order they are tried.
 			"files":          []any{"AGENTS.md", "CLAUDE.md"},
 			"reserve_tokens": jsonNumber(16384),
 		},

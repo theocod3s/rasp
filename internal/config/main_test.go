@@ -19,7 +19,7 @@ func TestMain(m *testing.M) {
 }
 
 // env is a stand-in for the process environment, so no test has to mutate the
-// real one to describe what it is testing.
+// real one.
 type env map[string]string
 
 func (e env) lookup(key string) (string, bool) {
@@ -27,8 +27,8 @@ func (e env) lookup(key string) (string, bool) {
 	return val, ok
 }
 
-// project writes a project config under a fresh directory and returns the
-// directory, ready for Sources.ProjectDir.
+// project writes a project config under a fresh directory, ready for
+// Sources.ProjectDir.
 func project(t *testing.T, contents string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -36,7 +36,6 @@ func project(t *testing.T, contents string) string {
 	return dir
 }
 
-// global writes a global config and returns its path.
 func global(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "rasp", config.File)
@@ -54,7 +53,6 @@ func writeFile(t *testing.T, path, contents string) {
 	}
 }
 
-// load resolves src and fails the test if it could not.
 func load(t *testing.T, src config.Sources) *config.Result {
 	t.Helper()
 	// An unset GlobalPath would send the test at the developer's own config.

@@ -14,43 +14,31 @@ import (
 
 const (
 	// commandTTL is how long a `$(command)` result is reused. prd §6.1 wants
-	// credentials re-resolved on every model call, so that an expiring token
-	// recovers on its own rather than killing a turn — but `$(op read …)`
-	// forks a process and can take a third of a second, and paying that per
-	// request would be absurd. Half a minute is short enough that a rotated
-	// credential comes right without a restart.
+	// credentials re-resolved on every model call, but `$(op read …)` forks a
+	// process and can take a third of a second; half a minute still picks up a
+	// rotated credential without a restart.
 	commandTTL = 30 * time.Second
 
-	// commandTimeout bounds one command. A vault that is unreachable, or a
-	// helper waiting on a prompt nobody can see, must fail rather than hang
-	// the turn behind it.
+	// commandTimeout bounds one command: an unreachable vault, or a helper waiting
+	// on a prompt nobody can see, must fail rather than hang the turn.
 	commandTimeout = 10 * time.Second
 
-	// commandWaitDelay bounds a child that ignores the kill when its context
-	// ends. It is a backstop; the pipes are handled separately below.
+	// commandWaitDelay bounds a child that ignores the kill when its context ends.
 	commandWaitDelay = time.Second
 
-	// drainDelay is how long the output pipes are read after the command has
-	// exited. Whatever it wrote is already in the pipe buffer by then, so this
-	// only has to be long enough to copy it out.
+	// drainDelay is how long the pipes are read after the command has exited;
+	// whatever it wrote is already buffered.
 	drainDelay = 200 * time.Millisecond
 
-	// maxStderr caps what a failing command contributes to an error message.
-	// The stream is untrusted in size, the message reaches the UI and the log,
-	// and the actionable part of a credential helper's complaint is its first
-	// line.
+	// maxStderr caps what a failing command contributes to an error message. The
+	// stream is untrusted in size and the message reaches the UI and the log.
 	maxStderr = 4 << 10
 )
 
-// Expander resolves the shell forms in a config value: the environment
-// references and the `$(command)` substitutions design §10 defines.
-//
-// It is separate from Load because the two answer different questions at
-// different times. Load reads files once and resolves precedence; Expander
-// runs on every model call, because a credential can expire mid-session and
-// the value in the file is a recipe rather than a secret.
-//
-// It is safe for concurrent use.
+// Expander resolves the shell forms design §10 defines in a config value.
+// Separate from Load because Load reads files once while this runs on every model
+// call: a credential can expire mid-session, and the value in the file is a
+// recipe rather than a secret. Safe for concurrent use.
 type Expander struct {
 	values  map[string]any
 	origins Origins
@@ -68,13 +56,12 @@ type cacheEntry struct {
 	expires time.Time
 }
 
-// ExpanderOptions replaces the pieces of the world an Expander touches. The
-// zero value uses the real environment, a real subprocess and the real clock.
+// ExpanderOptions replaces the pieces of the world an Expander touches. The zero
+// value uses the real environment, subprocess and clock.
 type ExpanderOptions struct {
 	Getenv func(string) (string, bool)
 
-	// Run executes one command and returns its stdout. It is given a context
-	// already bounded by commandTimeout.
+	// Run is given a context already bounded by commandTimeout.
 	Run func(ctx context.Context, command string) ([]byte, error)
 
 	Now func() time.Time
@@ -102,11 +89,8 @@ func NewExpander(res *Result, opts ExpanderOptions) *Expander {
 	return e
 }
 
-// Expand resolves the value at a key path.
-//
-// design §10 sends the two secret-bearing shapes through this —
-// `providers.*.api_key` and `mcp.servers.*.env.*`, the pair IsSecret names —
-// but nothing here is specific to them; the caller decides what to resolve.
+// Expand resolves the value at a key path. Nothing here is specific to the
+// secret-bearing shapes IsSecret names; the caller decides what to resolve.
 func (e *Expander) Expand(ctx context.Context, key string) (string, error) {
 	raw, ok := e.values[key]
 	if !ok {
@@ -126,18 +110,14 @@ func (e *Expander) Expand(ctx context.Context, key string) (string, error) {
 	}
 	origin, known := e.origins.At(key)
 	if !known {
-		// The layer decides whether this value is a recipe or a secret, so
-		// without it there is nothing to decide on. Refusing is loud where
-		// returning the text would be silent, and a check that cannot run must
-		// fail rather than pass (AGENTS.md).
+		// A check that cannot run must fail rather than pass (AGENTS.md).
 		return fail(errors.New(
 			"nothing records which config set this value, so there is no telling whether it " +
 				"is a literal or something to resolve"))
 	}
-	// Only a config file holds a recipe. A value from the environment or a
-	// flag has already been through a shell, so running the grammar over it
-	// again cannot expand anything — it can only misread a secret that happens
-	// to contain a dollar (design §10).
+	// Only a config file holds a recipe. A value from the environment or a flag
+	// has already been through a shell, so running the grammar over it again can
+	// only misread a secret that happens to contain a dollar (design §10).
 	if !writtenInAFile(origin.Layer) {
 		return value, nil
 	}
@@ -154,9 +134,8 @@ func (e *Expander) Expand(ctx context.Context, key string) (string, error) {
 }
 
 // maxDepth bounds the recursion through nested defaults. Each level parses a
-// strict substring of the one above, so this cannot be reached by a config
-// anyone wrote on purpose — it is here because the input is a file and a
-// crash is a worse answer than an error.
+// strict substring of the one above, so no config written on purpose reaches it;
+// the input is a file, and a crash is a worse answer than an error.
 const maxDepth = 32
 
 func (e *Expander) expandSegments(ctx context.Context, key string, segs []segment, depth int) (string, error) {
@@ -188,14 +167,11 @@ func (e *Expander) expandSegments(ctx context.Context, key string, segs []segmen
 	return out.String(), nil
 }
 
-// writtenInAFile reports whether a layer is one someone edits by hand, which
-// is the only kind that can hold something worth expanding.
-//
-// Every layer is named rather than defaulted, because both wrong answers are
-// silent: a file layer left out returns `$(op read …)` to the provider as an
-// API key, and a shell-sourced layer let in misreads a key containing a
-// dollar. TestEveryLayerIsClassified fails when a new one is added without a
-// decision here.
+// writtenInAFile reports whether a layer is one someone edits by hand, the only
+// kind that can hold something worth expanding. Every layer is named rather than
+// defaulted, because both wrong answers are silent: a file layer left out returns
+// `$(op read …)` to the provider as an API key, and a shell-sourced layer let in
+// misreads a key containing a dollar.
 func writtenInAFile(l Layer) bool {
 	switch l {
 	case LayerGlobal, LayerProject:
@@ -203,20 +179,15 @@ func writtenInAFile(l Layer) bool {
 	case LayerDefault, LayerEnv, LayerFlag:
 		return false
 	}
-	// Unreachable while every layer is named above, and the compiler enforces
-	// none of that — TestEveryLayerIsClassified is what does. The fallback is
-	// false because it has to be something, and it is worth knowing that the
-	// two callers disagree about which way that errs: expandCommand refuses,
-	// while Expand hands the value back untouched, so an unclassified *file*
-	// layer would return `$(op read …)` to the provider as an API key.
+	// Unreachable while every layer is named above, which the compiler does not
+	// enforce and TestEveryLayerIsClassified does. The two callers err in opposite
+	// directions from here: expandCommand refuses, and Expand hands the value back
+	// untouched.
 	return false
 }
 
-// expandVar resolves one environment reference.
-//
-// A variable that is set but empty counts as unset, which is both the shell's
-// rule for the `:` operators and the rule the environment layer already
-// applies when it decides whether a variable contributed anything.
+// expandVar resolves one environment reference. Set-but-empty counts as unset,
+// which is the shell's rule for the `:` operators.
 func (e *Expander) expandVar(ctx context.Context, key string, seg segment, depth int) (string, error) {
 	value, present := e.getenv(seg.text)
 	if present && value != "" {
@@ -225,11 +196,9 @@ func (e *Expander) expandVar(ctx context.Context, key string, seg segment, depth
 
 	switch seg.op {
 	case '-':
-		// The default is a value in its own right, not text: `${A:-${B}}`
-		// means "A, or B", and `${A:-$(op read …)}` means "A, or ask the
-		// vault". Passing it through unexpanded would hand the caller the
-		// nine characters `${B}` as a credential — the exact failure this
-		// package refuses `${VAR:=x}` to avoid.
+		// The default is a value, not text: `${A:-${B}}` means "A, or B".
+		// Passing it through unexpanded would hand the caller the nine
+		// characters `${B}` as a credential.
 		segs, err := parseValue(seg.arg)
 		if err != nil {
 			return "", fmt.Errorf("in the default for $%s: %w", seg.text, err)
@@ -242,24 +211,18 @@ func (e *Expander) expandVar(ctx context.Context, key string, seg segment, depth
 		}
 		return "", errors.New(seg.arg)
 	default:
-		// A bare reference to an unset variable is an error rather than the
-		// empty string the shell would give. Every value that reaches this
-		// resolver is a credential or a server's environment, and an empty
-		// one is never what anyone meant — it comes back later as a 401
-		// pointing at nothing, which is the failure `${VAR:?msg}` exists to
-		// turn into a sentence. Write `${VAR:-}` to ask for empty on purpose.
+		// An error rather than the empty string the shell would give: an empty
+		// credential comes back later as a 401 pointing at nothing. `${VAR:-}`
+		// asks for empty on purpose.
 		return "", unsetError(seg.text, present)
 	}
 }
 
 // unsetError is what an unset variable says when the config gave no message of
-// its own — `${VAR:?}` is legal and carries none, and an error rendering as a
-// bare colon tells the reader nothing.
-//
-// Set-but-empty gets its own sentence. The two are the same to the operators,
-// which is the shell's rule, but they are not the same to the reader: someone
-// with `export ANTHROPIC_API_KEY=""` in their profile who is told the variable
-// is not set will go and look, find it, and have nowhere left to go.
+// its own; `${VAR:?}` is legal and carries none. Set-but-empty gets its own
+// sentence: someone with `export ANTHROPIC_API_KEY=""` in their profile who is
+// told the variable is not set will go and look, find it, and have nowhere left
+// to go.
 func unsetError(name string, present bool) error {
 	if present {
 		return fmt.Errorf("$%s is set but empty; write ${%s:-} to accept an empty value", name, name)
@@ -270,11 +233,12 @@ func unsetError(name string, present bool) error {
 
 // expandCommand runs one `$(command)`, or refuses to.
 func (e *Expander) expandCommand(ctx context.Context, key, command string) (string, error) {
-	// Expand refuses an unrecorded origin before any command is reached, so
-	// the !known arm below cannot be hit through it. It stays anyway: this
-	// function is reachable from anywhere in the package, what it stops is
-	// arbitrary command execution, and a guard that depends on its only caller
-	// checking first is a comment wearing the clothes of a check.
+	// Both unreachable through Expand, which refuses an unrecorded origin and
+	// returns a shell-sourced value literally long before a command is reached.
+	// They stay because what they stop is arbitrary command execution, and a guard
+	// that depends on its only caller checking first is a comment wearing the
+	// clothes of a check — and because the MCP server `env` resolution §10 has in
+	// scope is a second entry point waiting to happen.
 	origin, known := e.origins.At(key)
 	switch {
 	case !known:
@@ -284,11 +248,6 @@ func (e *Expander) expandCommand(ctx context.Context, key, command string) (stri
 			strconv.Quote("$("+command+")"))
 
 	case !writtenInAFile(origin.Layer):
-		// Expand returns a shell-sourced value literally long before a command
-		// is reached, so this arm is unreachable through it — and stays for
-		// the same reason the one above does. The MCP server `env` resolution
-		// §10 has in scope is a second entry point waiting to happen, and it
-		// would run `$(…)` out of an environment variable with nothing red.
 		return "", fmt.Errorf(
 			"refusing to run %s: this value came from the %s, which a shell has already "+
 				"resolved — it is a value, not a recipe (design §10)",
@@ -326,21 +285,17 @@ func (e *Expander) expandCommand(ctx context.Context, key, command string) (stri
 		return "", fmt.Errorf("$(%s) failed: %w", command, err)
 	}
 
-	// Trimmed, because every credential helper worth using prints a trailing
-	// newline and no API accepts one.
+	// Every credential helper prints a trailing newline; no API accepts one.
 	value := strings.TrimSpace(string(out))
 
-	// Succeeding while printing nothing is the command form of the empty
-	// variable this resolver already refuses, and it is the likelier of the
-	// two: `op read` on an empty field exits 0, and so does a helper that
-	// takes a path where it writes no output.
+	// The command form of the empty variable refused above, and the likelier of
+	// the two: `op read` on an empty field exits 0.
 	if value == "" {
 		return "", fmt.Errorf("$(%s) succeeded but printed nothing", command)
 	}
 
-	// Only successes are cached. A failure is usually a locked vault or a
-	// helper that is not signed in, and both are fixed while rasp is running —
-	// caching the failure would make the fix look like it did not work.
+	// Only successes. A locked vault is fixed while rasp is running, and caching
+	// the failure would make the fix look like it did not work.
 	e.mu.Lock()
 	e.cache[command] = cacheEntry{value: value, expires: e.now().Add(commandTTL)}
 	e.mu.Unlock()
@@ -348,7 +303,6 @@ func (e *Expander) expandCommand(ctx context.Context, key, command string) (stri
 	return value, nil
 }
 
-// cached returns a result that has not expired.
 func (e *Expander) cached(command string) (string, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -361,15 +315,13 @@ func (e *Expander) cached(command string) (string, bool) {
 }
 
 // runCommand is the default runner: the command as a shell would read it, so
-// that `$(cat secret | head -1)` means what it looks like.
+// `$(cat secret | head -1)` means what it looks like.
 //
-// The output pipes are built here rather than left to cmd.Output, because
-// waiting for end-of-file on stdout means waiting for every process that
-// inherited it — and a credential helper leaving something behind is the
-// ordinary case, not the exotic one: `pass` starts a gpg-agent that outlives
-// it by design. Waiting on that hung the turn; asking exec to force the pipes
-// shut instead threw the secret away on a race. So the command is waited for,
-// and only then is what it already wrote copied out.
+// The pipes are built here rather than left to cmd.Output because waiting for
+// end-of-file on stdout means waiting for every process that inherited it, and a
+// credential helper leaving something behind is ordinary — `pass` starts a
+// gpg-agent that outlives it by design. Waiting on that hung the turn; forcing
+// the pipes shut instead threw the secret away on a race.
 func runCommand(ctx context.Context, command string) ([]byte, error) {
 	cmd := shellCommand(ctx, command)
 	cmd.WaitDelay = commandWaitDelay
@@ -394,43 +346,38 @@ func runCommand(ctx context.Context, command string) ([]byte, error) {
 		errW.Close()
 		return nil, err
 	}
-	// Our own ends go now, so the command's are the only ones left open and a
-	// command that exits cleanly gives us end-of-file straight away.
+	// Ours go now, so a clean exit gives end-of-file straight away.
 	outW.Close()
 	errW.Close()
 
-	// Reading runs alongside the command rather than after it: a pipe holds
-	// about 64KB, and a command that filled it would otherwise block forever
-	// waiting for a reader that had not started.
+	// Alongside the command, not after: a pipe holds about 64KB, and a command
+	// that filled it would block forever waiting for a reader.
 	out := readPipe(outR)
 	msg := readPipe(errR)
 
 	waitErr := cmd.Wait()
 
-	// Past this point the command has gone. Anything still holding the write
-	// end is something it left running, and none of it is ours to wait for.
+	// Anything still holding the write end is something the command left running,
+	// and none of it is ours to wait for.
 	stdout := out.take()
 	stderr := msg.take()
 
 	if waitErr == nil {
 		return stdout, nil
 	}
-	// The exit status alone is not actionable — `exit status 1` from `op` says
-	// nothing, while its stderr says "you are not currently signed in".
+	// `exit status 1` from `op` says nothing; its stderr says why.
 	if text := strings.TrimSpace(string(stderr)); text != "" {
 		return nil, fmt.Errorf("%w: %s", waitErr, truncate(text, maxStderr))
 	}
 	return nil, waitErr
 }
 
-// pending is a pipe being drained in the background.
 type pending struct {
 	file *os.File
 	data []byte
 	done chan struct{}
 }
 
-// readPipe starts draining f and returns a handle to the result.
 func readPipe(f *os.File) *pending {
 	p := &pending{file: f, done: make(chan struct{})}
 	go func() {
@@ -440,16 +387,15 @@ func readPipe(f *os.File) *pending {
 	return p
 }
 
-// take stops the drain shortly and returns what it read. The deadline is what
-// releases the reader when a lingering process still holds the write end, so
-// the goroutine always finishes and never becomes the leak goleak looks for.
+// take stops the drain shortly and returns what it read. The deadline releases
+// the reader when a lingering process still holds the write end, so the goroutine
+// never becomes the leak goleak looks for.
 func (p *pending) take() []byte {
 	_ = p.file.SetReadDeadline(time.Now().Add(drainDelay))
 	<-p.done
 	return p.data
 }
 
-// truncate shortens text to n bytes, saying so.
 func truncate(text string, n int) string {
 	if len(text) <= n {
 		return text
@@ -457,9 +403,8 @@ func truncate(text string, n int) string {
 	return text[:n] + "… (truncated)"
 }
 
-// ExpandError is a config value that could not be resolved. It names the key
-// and where that key came from, because "which of my four config sources set
-// this" is the question a failure here raises.
+// ExpandError names the key and where it came from, which is the question a
+// failure here raises.
 type ExpandError struct {
 	Key    string
 	Origin Origin
@@ -475,15 +420,13 @@ func (e *ExpandError) Error() string {
 
 func (e *ExpandError) Unwrap() error { return e.Err }
 
-// displayKind names what arrived, for an error about a value that cannot be a
-// string.
 func displayKind(val any) string {
 	kind, _ := kindOf(val)
 	return kind.String()
 }
 
-// globalConfigHint names the global config file for an error message, falling
-// back to its documented location when the real path cannot be derived.
+// globalConfigHint falls back to the documented location when the real path
+// cannot be derived.
 func globalConfigHint() string {
 	if path, err := GlobalPath(); err == nil {
 		return path

@@ -9,17 +9,14 @@ import (
 )
 
 // A project config arrives with `git clone` and nobody reads it, so a
-// `$(command)` in one is a request to run something on a stranger's machine —
-// before the TUI has drawn a frame, and again every turn, since credentials
-// are re-resolved on every model call (design §10).
+// `$(command)` in one runs something on a stranger's machine before the TUI has
+// drawn a frame, and again every turn (design §10).
 //
-// design §10 puts that behind a prompt shown before anything executes. The
-// prompt is a TUI concern and this is a leaf package that resolves values and
-// never acts on them, so until it exists the answer here is no. Refusing is
-// stricter than the design and stricter in the safe direction: nothing from a
-// cloned repository runs. When the prompt lands, this deny becomes an ask.
+// design §10 puts that behind a prompt. The prompt is a TUI concern and this is
+// a leaf package that never acts on values, so until it exists the answer here
+// is no — stricter than the design, in the safe direction. When the prompt
+// lands, this deny becomes an ask.
 
-// TestACommandFromAProjectConfigIsRefused.
 func TestACommandFromAProjectConfigIsRefused(t *testing.T) {
 	var ran bool
 	res := load(t, config.Sources{
@@ -41,8 +38,8 @@ func TestACommandFromAProjectConfigIsRefused(t *testing.T) {
 		t.Error("the command was executed before the refusal — the refusal has to come first")
 	}
 
-	// "Refused" is only half of it. The reader needs to know why, and what to
-	// do instead, without opening the design document.
+	// The reader needs to know why, and what to do instead, without opening the
+	// design document.
 	for _, want := range []string{apiKey, "git clone", "global config"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error does not mention %q:\n%s", want, err)
@@ -51,9 +48,7 @@ func TestACommandFromAProjectConfigIsRefused(t *testing.T) {
 }
 
 // TestTheGlobalConfigMayRunCommands. The refusal is about a file that arrived
-// with a repository, not about commands: the global config is the user's own
-// file on their own machine, and design §10 names it as one of the places this
-// is expected.
+// with a repository, not about commands.
 func TestTheGlobalConfigMayRunCommands(t *testing.T) {
 	res := load(t, config.Sources{
 		GlobalPath: global(t, `{"providers": {"anthropic": {"api_key": "$(op read op://vault/key)"}}}`),
@@ -70,11 +65,7 @@ func TestTheGlobalConfigMayRunCommands(t *testing.T) {
 	}
 }
 
-// TestAValueFromTheEnvironmentIsLiteral. The resolver exists because a config
-// *file* holds a recipe rather than a secret. Something already handed to us
-// through a shell has nothing left to expand, and running the grammar over it
-// again is not a second chance to resolve anything — it is a chance to misread
-// a key that happens to contain a dollar.
+// TestAValueFromTheEnvironmentIsLiteral.
 func TestAValueFromTheEnvironmentIsLiteral(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -114,11 +105,9 @@ func TestAValueFromTheEnvironmentIsLiteral(t *testing.T) {
 	}
 }
 
-// TestAValueFromAFlagIsLiteral. The rule is stated for flags as well as the
-// environment — `rasp --model "$FOO"` has already been through the user's
-// shell — and a rule nothing exercises is one a later edit can drop without
-// turning the suite red. No flag reaches a secret-bearing key today, so this
-// drives `model`, which the resolver is equally willing to expand.
+// TestAValueFromAFlagIsLiteral. A rule nothing exercises is one a later edit can
+// drop without turning the suite red. No flag reaches a secret-bearing key
+// today, so this drives `model`.
 func TestAValueFromAFlagIsLiteral(t *testing.T) {
 	const value = "$(id)"
 
@@ -144,10 +133,9 @@ func TestAValueFromAFlagIsLiteral(t *testing.T) {
 	}
 }
 
-// TestAProjectConfigMayStillReferenceTheEnvironment. Only the form that
-// executes something is refused. A repository saying "use whatever key the
-// developer already has" is exactly the pattern we want checked in, and it
-// spawns nothing.
+// TestAProjectConfigMayStillReferenceTheEnvironment. Only the form that executes
+// something is refused: "use whatever key the developer already has" is the
+// pattern we want checked in.
 func TestAProjectConfigMayStillReferenceTheEnvironment(t *testing.T) {
 	res := load(t, config.Sources{
 		ProjectDir: project(t, `{"providers": {"anthropic": {"api_key": "${TEAM_KEY:?ask ops for a key}"}}}`),
@@ -161,12 +149,10 @@ func TestAProjectConfigMayStillReferenceTheEnvironment(t *testing.T) {
 	}
 }
 
-// TestACommandWithNoRecordedOriginIsRefused. The guard's own signal can be
-// missing: Origins has no entry for a key that Values does, and the zero
-// Origin reads as the defaults layer rather than the project one. Looking the
-// layer up directly would therefore run the command in precisely the case
-// where nothing could say where it came from — a check that cannot run must
-// fail, not pass (AGENTS.md).
+// TestACommandWithNoRecordedOriginIsRefused. The zero Origin reads as the
+// defaults layer rather than the project one, so looking the layer up directly
+// would run the command in precisely the case where nothing could say where it
+// came from. A check that cannot run must fail, not pass (AGENTS.md).
 func TestACommandWithNoRecordedOriginIsRefused(t *testing.T) {
 	var ran bool
 	res := &config.Result{
@@ -189,13 +175,9 @@ func TestACommandWithNoRecordedOriginIsRefused(t *testing.T) {
 	}
 }
 
-// TestAnUnrecordedOriginIsRefused. The layer decides whether a value is a
-// recipe or a secret, so without one there is nothing to decide on — and the
-// shape this replaced, `known && !writtenInAFile(…)`, went the other way: it
-// let an unattributable value through the whole resolver, reading an
-// environment variable into a credential or aborting over a variable the user
-// never wrote. A rule nothing exercises is one a later edit can drop without
-// turning the suite red.
+// TestAnUnrecordedOriginIsRefused. The shape this replaced,
+// `known && !writtenInAFile(…)`, let an unattributable value through the whole
+// resolver.
 func TestAnUnrecordedOriginIsRefused(t *testing.T) {
 	for _, value := range []string{"${SOME_VAR}", "$(evil)"} {
 		var ran bool

@@ -8,13 +8,9 @@ import (
 	"github.com/theocod3s/rasp/internal/config"
 )
 
-// TestCommentsParse covers the JSONC half of design §10: `//` and `/* */` are
-// comments, and everything inside a string is not.
-//
-// The string cases are the ones that matter. A comment stripper written the
-// obvious way — scan for "//", cut to end of line — silently truncates
-// "https://openrouter.ai/api/v1" to "https:", and the resulting config is
-// valid JSON that is quietly wrong.
+// TestCommentsParse covers the JSONC half of design §10. The string cases are
+// the ones that matter: a stripper written the obvious way truncates
+// "https://openrouter.ai/api/v1" to "https:", leaving valid JSON that is wrong.
 func TestCommentsParse(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -73,9 +69,7 @@ func TestCommentsParse(t *testing.T) {
 	}
 }
 
-// TestConfigFileIsDotJSON pins the extension. JSONC tolerance comes from the
-// editor, which applies it by filename in this ecosystem, so renaming the file
-// to .jsonc would cost the tolerance rather than declare it (design §10).
+// TestConfigFileIsDotJSON pins the extension.
 func TestConfigFileIsDotJSON(t *testing.T) {
 	if got := filepath.Ext(config.File); got != ".json" {
 		t.Errorf("config.File = %q, want a .json extension", config.File)
@@ -91,10 +85,9 @@ func TestConfigFileIsDotJSON(t *testing.T) {
 	}
 }
 
-// TestSyntaxErrorNamesTheLine is the reason comments are replaced with spaces
-// rather than deleted. The error below sits on line 6 of the file the user
-// wrote; a stripper that shortens the text would report it against line 3 and
-// send them to a line that is fine.
+// TestSyntaxErrorNamesTheLine is why comments are replaced with spaces rather
+// than deleted: the error below sits on line 6, and a stripper that shortens the
+// text reports it against line 3.
 func TestSyntaxErrorNamesTheLine(t *testing.T) {
 	file := strings.Join([]string{
 		`{`,
@@ -122,9 +115,8 @@ func TestSyntaxErrorNamesTheLine(t *testing.T) {
 	}
 }
 
-// TestMalformedFilesAreRejected guards the direction that matters. Each of
-// these could be read as "nothing to add" by a tolerant parser, and each is
-// someone's config not being applied.
+// TestMalformedFilesAreRejected. A tolerant parser reads each of these as
+// "nothing to add", which is someone's config not being applied.
 func TestMalformedFilesAreRejected(t *testing.T) {
 	tests := []struct {
 		name string
@@ -135,11 +127,8 @@ func TestMalformedFilesAreRejected(t *testing.T) {
 		{"a top-level null", `null`},
 		{"a second document", "{\"model\": \"a/b\"}\n{\"mode\": \"plan\"}"},
 
-		// The trailing content below is malformed, which is what a hand-edit
-		// actually produces. Testing only the well-formed second document
-		// above would pass while these were silently truncated, because a
-		// failure to read the rest of the file is not evidence that there is
-		// no rest of the file.
+		// What a hand-edit actually produces. Testing only the well-formed
+		// second document above would pass while these were truncated.
 		{"one stray closing brace", `{"model": "a/b"}}`},
 		{"two objects spliced with a comma", "{\"model\": \"a/b\"}\n,\"mode\": \"plan\""},
 		{"a stray word after the object", `{"model": "a/b"} plan`},
@@ -164,8 +153,7 @@ func TestMalformedFilesAreRejected(t *testing.T) {
 }
 
 // TestAnEmptyFileOverridesNothing. A file holding only whitespace or comments
-// says exactly what an absent file says, and `touch .rasp/config.json` is not
-// a reason to refuse to start.
+// says what an absent file says.
 func TestAnEmptyFileOverridesNothing(t *testing.T) {
 	for _, file := range []string{"", "\n\n", "// nothing here yet\n"} {
 		res := load(t, config.Sources{ProjectDir: project(t, file)})

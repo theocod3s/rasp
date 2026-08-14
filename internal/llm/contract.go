@@ -13,38 +13,33 @@ import (
 
 // CheckStream drains seq, checks the StreamResponse contract on every event, and
 // returns the events in order so a caller can go on to assert what the stream
-// said. For tests: it consumes the stream, and against a real provider it blocks
-// until the model has finished.
-//
-// Partial is a stable pointer, so every event in the returned slice shows the
-// FINAL message rather than the message as it stood when that event was yielded.
+// said. Partial is a stable pointer, so those events all show the FINAL message
+// rather than the message as it stood when each was yielded.
 //
 // Four things go deliberately unchecked:
 //
 // Which block a fragment landed in — Event carries no block index, so an adapter
 // routing call 2's fragment into call 1's arguments passes as long as both halves
-// parse. Adding one for a check's benefit rather than a consumer's is the first
-// real-traffic adapter's call. The same blindness is why arguments that genuinely
-// are `{}` may be replaced wholesale: telling that apart from a provider's
-// opening placeholder was tried and reverted for rejecting two real wire shapes.
+// parse. The same blindness is why arguments that genuinely are `{}` may be
+// replaced wholesale: telling that apart from a provider's opening placeholder
+// was tried and reverted for rejecting two real wire shapes.
 //
-// How many blocks an event completing a call may add to — one chunk from an
-// OpenAI-compatible endpoint can carry two entries, and a finished turn catches
-// the mis-routing anyway, byte for byte.
+// How many blocks an event completing a call may add to — one OpenAI-compatible
+// chunk can carry two entries, and a finished turn catches the mis-routing
+// anyway, byte for byte.
 //
 // Token usage, because requiring it would reject an endpoint that reports none,
 // and design §10.2 degrades to estimates rather than refusing.
 //
-// That a provider stops producing when yield returns false — the useful half is
-// how much work it did after being abandoned, which only its own package sees.
-// That is also why this reads every stream to the end even after a violation:
-// abandoning it makes a provider that ignores yield die of the runtime's
-// range-function panic instead of being told which rule it broke.
+// That a provider stops producing when yield returns false — only its own package
+// can see how much work it did after being abandoned. That is also why this reads
+// every stream to the end even after a violation: abandoning it makes a provider
+// that ignores yield die of the runtime's range-function panic instead of being
+// told which rule it broke.
 //
-// A retry wrapper cannot satisfy this by replaying attempt 2 after attempt 1 —
+// A retry wrapper cannot satisfy this by replaying attempt 2 after attempt 1:
 // that is an event after the terminal one, a second *Message, and content
-// streamed then dropped, all at once. The way out belongs to the ticket that
-// builds it.
+// streamed then dropped, all at once.
 func CheckStream(seq StreamResponse) ([]Event, error) {
 	if seq == nil {
 		return nil, errors.New("nil StreamResponse; Stream always returns a sequence, and a " +
@@ -80,8 +75,6 @@ func CheckStream(seq StreamResponse) ([]Event, error) {
 	return events, checker.checkComplete()
 }
 
-// streamChecker carries what checking one event needs to know about the events
-// before it.
 type streamChecker struct {
 	partial   *Message          // the pointer the first event carried
 	seen      []map[int]string  // per channel, what each block held on the previous event
@@ -93,26 +86,22 @@ type streamChecker struct {
 }
 
 // Three sets, because "which terminal event may carry this reason" and "does
-// this reason claim the message is finished" are different questions.
-//
-// StopAborted is in both terminal sets on purpose: a cancelled turn is an error
-// to the code that was streaming and a completion to design §4's termination
-// table, so an adapter may end that stream either way.
+// this reason claim the message is finished" are different questions. StopAborted
+// is in both terminal sets on purpose: a cancelled turn is an error to the code
+// that was streaming and a completion to design §4's termination table.
 var (
 	doneReasons  = []StopReason{StopEndTurn, StopToolUse, StopMaxTokens, StopRefusal, StopAborted}
 	errorReasons = []StopReason{StopError, StopAborted}
 
-	// finished are the reasons claiming every tool call was announced, and they
-	// gate the emptiness rules below. Truncation and cancellation stop mid-flight,
+	// finished are the reasons claiming every tool call was announced; they gate
+	// the emptiness rules below too. Truncation and cancellation stop mid-flight,
 	// leaving what design §4 invariant 2's guard exists to fail.
 	//
-	// Refusal's absence reads oddly and is load-bearing both ways. A model can
+	// Refusal's absence reads oddly and is load-bearing both ways: a model can
 	// decline part way through a call, which design §4's termination table does
-	// not cover, and can decline before producing anything, which arrives as a
-	// 200 with no blocks. Requiring announcements or content from a refusal
-	// leaves a faithful adapter nowhere to put those, since errorReasons does not
-	// take StopRefusal either. Refusing to *commit* an empty message is the
-	// commit point's rule.
+	// not cover, and can decline before producing anything, which arrives as a 200
+	// with no blocks. errorReasons does not take StopRefusal either, so requiring
+	// announcements or content here leaves a faithful adapter nowhere to put them.
 	finished = []StopReason{StopEndTurn, StopToolUse}
 )
 
@@ -141,8 +130,8 @@ func (c *streamChecker) checkComplete() error {
 		recorded = append(recorded, block.ID)
 	}
 
-	// Uniqueness holds however the stream ended: a truncated turn writes a
-	// tool_result per pending call too (design §4 invariant 2).
+	// However the stream ended: truncation writes a tool_result per pending call
+	// too (design §4 invariant 2).
 	for i, id := range recorded {
 		if slices.Index(recorded, id) != i {
 			return fmt.Errorf("the message holds two tool_use blocks with id %q; one tool_result "+
@@ -151,8 +140,8 @@ func (c *streamChecker) checkComplete() error {
 		}
 	}
 
-	// Order too, however the stream ended. What a half-finished turn cannot be
-	// held to is announcing *everything*.
+	// Likewise order. What a half-finished turn cannot be held to is announcing
+	// *everything*.
 	for i, id := range c.announced {
 		if slices.Index(c.announced, id) != i {
 			return fmt.Errorf("the stream announced tool call %q twice; the loop dispatches once per "+
@@ -167,12 +156,11 @@ func (c *streamChecker) checkComplete() error {
 
 	// With the rules above this completes "the announcements are exactly the
 	// blocks": a subsequence containing every element, of a list with no repeats,
-	// is the list.
-	//
-	// A turn that broke off is exempt, and the rule was tried the other way round.
-	// The connection can drop after the last argument fragment and before the
-	// event confirming the call, so requiring an announcement leaves an adapter no
-	// way through but to announce it anyway — and then the loop dispatches a call
+	// is the list. A turn that broke off is exempt, and the rule was tried the
+	// other way round.
+	// The connection can drop after the last argument fragment and before the event
+	// confirming the call, so requiring an announcement leaves an adapter no way
+	// through but to announce it anyway — and then the loop dispatches a call
 	// nobody confirmed, which for `write` means a file changed on the strength of
 	// a dropped connection.
 	if c.terminal == EventDone && slices.Contains(finished, c.stop) {
@@ -229,8 +217,7 @@ func inOrder(announced, recorded []string) bool {
 }
 
 // channel is one of the three streams of content a message accumulates: text,
-// thinking, and tool arguments. Each grows the same way, so they are one list
-// rather than three copies of a rule.
+// thinking, and tool arguments. One list rather than three copies of a rule.
 //
 // The third matters most — internals §4.2's example is `{"pa`, `th": "au`,
 // `th.go"}`, where losing accumulation does not garble a sentence, it hands the
@@ -239,13 +226,13 @@ type channel struct {
 	name string // how the error message says it
 	kind BlockType
 
-	// delta is the only event whose Delta has to match what arrived exactly.
+	// delta is the only event whose Delta has to match what arrived exactly;
 	// grows lists the others allowed to add to the channel at all.
 	delta EventType
 	grows []EventType
 
-	// placeholder counts as a fresh start rather than as content: the next
-	// fragment replaces it instead of extending it. Empty means there is none.
+	// placeholder counts as a fresh start rather than content: the next fragment
+	// replaces it instead of extending it.
 	placeholder string
 
 	text func(Block) string
@@ -271,9 +258,8 @@ var channels = []channel{
 }
 
 // emptyArguments is what a provider puts in a tool block's input before any
-// fragment arrives, and equally what a call taking no arguments ends up with.
-// That the two are the same string is the ambiguity several rules here work
-// around.
+// fragment arrives, and what a call taking no arguments ends up with. That the
+// two are the same string is the ambiguity several rules here work around.
 const emptyArguments = "{}"
 
 // knownEvents is every event type this contract recognises. Anything else is
@@ -291,8 +277,6 @@ var knownEvents = []EventType{
 	EventError,
 }
 
-// carriesDelta reports whether this event type is some channel's delta, the only
-// kind with anything to put in Delta.
 func carriesDelta(t EventType) bool {
 	for _, ch := range channels {
 		if ch.delta == t {
@@ -313,8 +297,6 @@ func (c *streamChecker) check(index int, ev Event) error {
 			"type and ignores what it does not recognise, so this arrives as nothing at all", at)
 	}
 
-	// A stream is one message, and message_start opens it. A consumer that resets
-	// per-message state on this event would wipe a half-drawn reply.
 	if ev.Type == EventMessageStart && index > 0 {
 		return fmt.Errorf("%s: message_start arrived after %d other events; it is the event that opens "+
 			"a stream, and a stream carries one message", at, index)
@@ -434,14 +416,14 @@ func checkStopReason(at string, ev Event) error {
 }
 
 // checkSettled re-reads the message once the stream has ended. The agent loop
-// commits Partial after iteration finishes, so a provider touching the message
-// while unwinding has a real window that nothing inside the loop sees.
+// commits Partial after iteration finishes, so a provider touching it while
+// unwinding has a real window that nothing inside the loop sees.
 func (c *streamChecker) checkSettled() error {
 	for i, ch := range channels {
 		settled := ch.snapshot(c.partial)
 
 		// Both directions. An append is the more tempting bug: it looks like
-		// finishing the message off, and no event announced it.
+		// finishing the message off.
 		for _, index := range slices.Sorted(maps.Keys(settled)) {
 			if _, ok := c.seen[i][index]; !ok {
 				return fmt.Errorf("a %s block appeared at index %d after the stream ended; the message "+
@@ -464,9 +446,9 @@ func (c *streamChecker) checkSettled() error {
 		}
 	}
 
-	// The two fields read after the fact: session storage needs the role, the
-	// retry classifier needs the stop reason. Clearing either while unwinding
-	// leaves a transcript rejected on replay, or a failure nothing retries.
+	// Session storage needs the role and the retry classifier needs the stop
+	// reason, so clearing either while unwinding leaves a transcript rejected on
+	// replay, or a failure nothing retries.
 	if c.partial.Role != RoleAssistant {
 		return fmt.Errorf("Partial.Role is %q after the stream ended, want %q", c.partial.Role, RoleAssistant)
 	}
@@ -501,8 +483,7 @@ func checkShape(at string, msg *Message) error {
 
 // announced is one confirmed call: the event's pointer, and a copy of what it
 // said at the time. Both halves, because the block can drift from the call, and
-// the call from itself when an adapter reuses one *ToolCall the way it is told
-// to reuse one *Message.
+// the call from itself when an adapter reuses one *ToolCall.
 type announced struct {
 	call     *ToolCall
 	id, name string
@@ -511,11 +492,8 @@ type announced struct {
 
 // checkFrozen re-reads the blocks whose calls have been announced. The
 // accumulation rules watch their arguments; this watches what the call IS, since
-// renaming read to write after the loop ran read rewrites the transcript's
-// account of something that already happened.
+// renaming read to write after the loop ran read rewrites history.
 func (c *streamChecker) checkFrozen(at string, msg *Message) error {
-	// Walking the blocks rather than the frozen map: same order, and a block that
-	// left the message is already caught by the content rules.
 	for index, block := range msg.Content {
 		was, ok := c.frozen[index]
 		if !ok {
@@ -531,8 +509,7 @@ func (c *streamChecker) checkFrozen(at string, msg *Message) error {
 		}
 
 		// And the event's own copy: nothing re-reads it until the stream has
-		// drained, so a pointer reused across announcements turns every buffered
-		// call into the last one.
+		// drained, so a reused pointer turns every buffered call into the last.
 		if call := was.call; call.ID != was.id || call.Name != was.name || !bytes.Equal(call.Input, was.input) {
 			return fmt.Errorf("%s: the ToolCall announced as %q (%s) now reads as %q (%s); each "+
 				"announcement is its own value, because the loop buffers them all before it runs any",
@@ -575,8 +552,8 @@ func checkToolCall(at string, ev Event) (int, error) {
 				"what gets persisted, so the fragments have to be finished there too", at, call.ID, err)
 		}
 		// Byte-identical rather than equal by value, to agree with the accumulation
-		// rule. A rule about one stream, not about the bytes forever: json.Marshal
-		// compacts a RawMessage on the first save.
+		// rule. About one stream, not the bytes forever: json.Marshal compacts a
+		// RawMessage on the first save.
 		if !bytes.Equal(block.Input, call.Input) {
 			if reflect.DeepEqual(recorded, called) {
 				return 0, fmt.Errorf("%s: ToolCall %s and its tool_use block hold the same arguments "+
@@ -610,10 +587,9 @@ func arguments(raw json.RawMessage) (map[string]any, error) {
 	return obj, nil
 }
 
-// isJSONObject answers from the first byte rather than through arguments(),
-// because Block.MarshalJSON asks on every session append and a write or edit
-// call carries a whole file body: decoding that tree to learn it starts with a
-// brace is an allocation per line written.
+// isJSONObject answers from the first byte rather than through arguments():
+// Block.MarshalJSON asks on every session append, and a write carries a whole
+// file body, so decoding that tree costs an allocation per line written.
 func isJSONObject(raw json.RawMessage) bool {
 	trimmed := bytes.TrimLeft(raw, " \t\r\n")
 	return len(trimmed) > 0 && trimmed[0] == '{' && json.Valid(raw)
@@ -633,7 +609,7 @@ func isJSONObject(raw json.RawMessage) bool {
 func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, frozen map[int]announced) error {
 	now := ch.snapshot(ev.Partial)
 
-	// Sorted, so a message naming a block index names the same one on every run.
+	// Sorted, so an error naming a block index names the same one every run.
 	for _, i := range slices.Sorted(maps.Keys(seen)) {
 		if _, ok := now[i]; !ok {
 			return fmt.Errorf("%s: the %s block at index %d is gone; blocks are only ever added to, "+
@@ -653,7 +629,7 @@ func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, fro
 				at, ch.name, i, was, text)
 		case ch.placeholder != "" && was == ch.placeholder && text != "":
 			// A fragment replaces the placeholder rather than extending it.
-			// Clearing the block is content going missing, and falls through.
+			// Clearing it is content going missing, and falls through.
 			grew++
 			if grew == 1 {
 				added = text
@@ -677,9 +653,9 @@ func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, fro
 				at, ch.name, grew)
 		case grew == 0 && ev.Delta == ch.placeholder && ch.holdsPlaceholder(now):
 			// The fragment was the placeholder itself, landing in a block already
-			// holding one, so nothing observably changed. This is Anthropic's
-			// no-argument shape: the empty object opens the block and arrives
-			// again as the payload.
+			// holding one, so nothing observably changed — Anthropic's no-argument
+			// shape, where the empty object opens the block and arrives again as
+			// the payload.
 		case added != ev.Delta:
 			return fmt.Errorf("%s: Partial %s grew by %q, want %q — Partial is the full accumulated "+
 				"message, not the delta", at, ch.name, added, ev.Delta)
@@ -708,9 +684,8 @@ func (ch channel) holdsPlaceholder(blocks map[int]string) bool {
 	return false
 }
 
-// snapshot is this channel's content keyed by block index. The index is the
-// identity: it is what the wire formats route fragments by, and it is stable
-// because blocks are only ever appended.
+// snapshot is this channel's content keyed by block index — the identity the wire
+// formats route fragments by, stable because blocks are only ever appended.
 func (ch channel) snapshot(m *Message) map[int]string {
 	out := map[int]string{}
 	for i, block := range m.Content {

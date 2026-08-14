@@ -37,7 +37,6 @@ type Provider interface {
 	Stream(ctx context.Context, req Request) StreamResponse
 }
 
-// Request is one model call.
 type Request struct {
 	Model string
 

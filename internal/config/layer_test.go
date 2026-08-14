@@ -6,13 +6,11 @@ package config
 import "testing"
 
 // TestEveryLayerIsClassified fails when a layer is added without deciding
-// whether values from it hold a recipe or a secret.
+// whether values from it hold a recipe or a literal.
 //
-// Both wrong answers are silent. A file layer left out returns
-// `$(op read …)` to the provider as an API key, and the user sees a 401 that
-// points at nothing. A shell-sourced layer let in misreads a key containing a
-// dollar. Neither produces a compile error, so this is what makes the next
-// layer a decision rather than a default.
+// Both wrong answers are silent, and neither produces a compile error: a file
+// layer left out returns `$(op read …)` to the provider as an API key, and a
+// shell-sourced layer let in misreads a key containing a dollar.
 func TestEveryLayerIsClassified(t *testing.T) {
 	want := map[Layer]bool{
 		LayerDefault: false, // compiled in; we would write the value, not a recipe

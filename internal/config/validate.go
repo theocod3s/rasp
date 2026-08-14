@@ -8,7 +8,7 @@ import (
 
 // InvalidError is a setting rasp will not start with. It names where the value
 // came from, because "which of my four config sources said that" is the only
-// question the reader actually has.
+// question the reader has.
 type InvalidError struct {
 	Origin Origin
 	Key    string
@@ -19,20 +19,15 @@ func (e *InvalidError) Error() string {
 	return fmt.Sprintf("%s: %s: %s", e.Origin, e.Key, e.Reason)
 }
 
-// validate checks one layer's contribution before it is merged, returning the
-// problems worth warning about and an error for the ones that stop startup.
-//
-// It runs per layer rather than on the merged result because both of its rules
-// are about *where* a value was written, not what it resolved to. A project
-// file setting yolo has to be refused even if a flag would have overridden it:
-// the file is still asking, and the next run without that flag is the one that
-// gets it.
+// validate checks one layer's contribution before it is merged. Per layer rather
+// than on the merged result because both of its rules are about *where* a value
+// was written: a project file setting yolo is refused even if a flag would have
+// overridden it, since the next run without that flag is the one that gets it.
 func validate(t tree, origin Origin) ([]Warning, error) {
 	var warnings []Warning
 
 	// A mode that is not a string is left to the shape check after the merge,
-	// which names the same thing with the same origin. Two mechanisms for one
-	// kind of error would differ only in their wording.
+	// which names the same thing with the same origin.
 	if raw, ok := lookupPath(t, "mode"); ok {
 		if mode, ok := raw.(string); ok {
 			if err := checkMode(mode, origin); err != nil {
@@ -41,9 +36,8 @@ func validate(t tree, origin Origin) ([]Warning, error) {
 		}
 	}
 
-	// A yolo preset override is not an error, because ignoring it costs the
-	// user nothing. It is not silence either: an override that looks like a
-	// constraint and is never evaluated is worse than no override at all.
+	// Not an error, because ignoring it costs the user nothing — and not silence
+	// either, because an override nothing evaluates still looks like a constraint.
 	if _, ok := lookupPath(t, "modes", ModeYolo); ok {
 		warnings = append(warnings, Warning{
 			Origin: origin,
@@ -57,7 +51,7 @@ func validate(t tree, origin Origin) ([]Warning, error) {
 }
 
 // checkMode applies both of design §10's rules about `mode`: the name has to
-// exist, and yolo may be selected only where selecting it is a deliberate act.
+// exist, and yolo may be selected only where doing so is a deliberate act.
 func checkMode(mode string, origin Origin) error {
 	if !slices.Contains(modeNames, mode) {
 		return &InvalidError{
@@ -79,16 +73,14 @@ func checkMode(mode string, origin Origin) error {
 			"line of the code. Set it in the global config instead, or arm it for a " +
 			"single run with --yolo."
 	default:
-		// The environment and the flags are the user's own act, but yolo still
-		// arrives through --yolo rather than through the precedence chain: it
-		// arms a bypass ahead of the permission ladder rather than selecting a
-		// preset within it (design §10), and one name for one mechanism is
-		// what keeps that distinction legible.
+		// The environment and flags are the user's own act, but yolo arms a
+		// bypass ahead of the permission ladder rather than selecting a preset
+		// within it (design §10) — so it arrives through --yolo, not through
+		// the precedence chain.
 		reason += "Arm it explicitly with --yolo at launch, or /yolo in session."
 	}
 
 	return &InvalidError{Origin: origin, Key: "mode", Reason: reason}
 }
 
-// modeList renders the accepted mode names for an error message.
 func modeList() string { return strings.Join(modeNames, ", ") }

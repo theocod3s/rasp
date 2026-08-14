@@ -12,15 +12,13 @@ import (
 
 // TestEveryBlockTypeIsScrubbed makes good on Block.MarshalJSON's claim that an
 // untaught block type coming out empty is a loud way to be told to add a case.
-// Nothing about it was loud — no error, no failing test — so the claim was
-// decoration until this existed.
+// Nothing about it was loud until this existed.
 //
-// The list of block types is read out of the source rather than copied here, for
-// the reason arch_test.go parses design §2: a copy is a second list to keep in
-// step, and the drift it allows is the bug being guarded against.
+// The block types are read out of the source rather than copied here, for the
+// reason arch_test.go parses design §2: a copy is a second list to keep in step,
+// and the drift it allows is the bug being guarded against.
 func TestEveryBlockTypeIsScrubbed(t *testing.T) {
-	// The whole package, not just the file the type lives in today: a new variant
-	// is as likely to arrive in a new file.
+	// The whole package: a new variant is as likely to arrive in a new file.
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, ".", func(info fs.FileInfo) bool {
 		return !strings.HasSuffix(info.Name(), "_test.go")
@@ -59,10 +57,9 @@ func TestEveryBlockTypeIsScrubbed(t *testing.T) {
 }
 
 // blockTypeConstants collects every constant that is a BlockType, in all three
-// ways Go lets one be written: type spelled out, type carried down the group, or
-// a conversion. All three, because a version understanding only the spelled-out
-// form was green against `BlockRedacted = BlockType("redacted_thinking")` —
-// the check failing at the one job it has.
+// ways Go lets one be written. All three, because a version understanding only
+// the spelled-out form was green against `BlockRedacted =
+// BlockType("redacted_thinking")` — the check failing at its one job.
 func blockTypeConstants(file *ast.File) []string {
 	var names []string
 	for _, decl := range file.Decls {
@@ -86,10 +83,9 @@ func blockTypeConstants(file *ast.File) []string {
 			case nil:
 				// Go carries the previous type only when a spec gives neither type
 				// nor value, so anything else ends the inheritance — including an
-				// ordinary untyped constant, once read as a block type here and
-				// failing with an instruction nobody could follow. A conversion
-				// keeps the run alive because it is a BlockType by any reading; a
-				// string does because that is a block type with the type left off.
+				// ordinary untyped constant, once read as a block type here. A
+				// conversion keeps the run alive because it is a BlockType by any
+				// reading; a string does because that is one with the type left off.
 				if len(value.Values) > 0 && !converted {
 					carried = carried && onlyStrings(value.Values)
 				}
@@ -97,9 +93,8 @@ func blockTypeConstants(file *ast.File) []string {
 				carried = false
 			}
 
-			// The name is the only signal left for `const BlockRedacted = "..."`,
-			// which says nothing to the type system and everything to a reader.
-			// Misnaming something costs a case to add.
+			// The only signal left for `const BlockRedacted = "..."`, which says
+			// nothing to the type system and everything to a reader.
 			named := strings.HasPrefix(constName(value), "Block") && onlyStrings(value.Values)
 
 			if !carried && !converted && !named {
@@ -114,8 +109,8 @@ func blockTypeConstants(file *ast.File) []string {
 }
 
 // receiverIs reports whether fn is a method on the named type. Without it, a
-// second MarshalJSON switching on some other .Type field would contribute its
-// cases and mask a block type missing from the real switch.
+// second MarshalJSON switching on some other .Type field would mask a block type
+// missing from the real switch.
 func receiverIs(fn *ast.FuncDecl, name string) bool {
 	if fn.Recv == nil || len(fn.Recv.List) != 1 {
 		return false
@@ -128,7 +123,6 @@ func receiverIs(fn *ast.FuncDecl, name string) bool {
 	return ok && ident.Name == name
 }
 
-// convertsToBlockType reports whether any value is a BlockType(...) conversion.
 func convertsToBlockType(values []ast.Expr) bool {
 	for _, expr := range values {
 		call, ok := expr.(*ast.CallExpr)
@@ -142,7 +136,6 @@ func convertsToBlockType(values []ast.Expr) bool {
 	return false
 }
 
-// constName is the first name a spec declares.
 func constName(value *ast.ValueSpec) string {
 	if len(value.Names) == 0 {
 		return ""
@@ -151,8 +144,8 @@ func constName(value *ast.ValueSpec) string {
 }
 
 // onlyStrings reports whether every value is a string literal, which is how a
-// block type is written even with the type left off. A constant sharing the
-// group and holding a count or a flag is not one.
+// block type is written with the type left off. A count that shares the group is
+// not one.
 func onlyStrings(values []ast.Expr) bool {
 	for _, expr := range values {
 		lit, ok := expr.(*ast.BasicLit)
@@ -163,8 +156,6 @@ func onlyStrings(values []ast.Expr) bool {
 	return true
 }
 
-// scrubbedBlockTypes collects the case names of the switch on b.Type inside
-// Block.MarshalJSON.
 func scrubbedBlockTypes(file *ast.File) []string {
 	var handled []string
 	for _, decl := range file.Decls {
@@ -199,11 +190,9 @@ func scrubbedBlockTypes(file *ast.File) []string {
 	return handled
 }
 
-// TestBlockTypeConstantsReadsEveryForm pins the reader in both directions: every
-// way a block type can be written is found, and a constant that merely shares the
-// group is left alone. The second half is not hypothetical — an earlier version
-// read `blockLimit` as a block type and failed with an instruction nobody could
-// follow.
+// TestBlockTypeConstantsReadsEveryForm pins the reader in both directions. The
+// second half is not hypothetical: an earlier version read `blockLimit` as a
+// block type and failed with an instruction nobody could follow.
 func TestBlockTypeConstantsReadsEveryForm(t *testing.T) {
 	const src = `package llm
 

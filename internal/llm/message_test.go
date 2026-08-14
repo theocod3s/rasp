@@ -9,8 +9,7 @@ import (
 )
 
 // example pairs a message with the line design §9 shows it as on disk. Copied
-// from that example rather than described: the session file is append-only, so
-// those lines *are* the format.
+// verbatim: the session file is append-only, so those lines *are* the format.
 type example struct {
 	name string
 	json string
@@ -61,14 +60,12 @@ func designExamples() []example {
 	}}
 }
 
-// TestMessageEncodesToTheSessionFormat pins the wire names by exact bytes.
-// Session storage persists llm.Message verbatim, so a renamed tag is a
-// migration, and this is what says so at the moment of the rename.
+// TestMessageEncodesToTheSessionFormat pins the wire names by exact bytes, so a
+// renamed tag is called a migration at the moment of the rename.
 //
 // One deliberate difference from design §9's example: its tool_result spells out
 // "is_error":false, while omitempty leaves it out here. It decodes identically,
-// and the alternative is a marshaller per block type emitting a field whose
-// absence already means what its presence would.
+// and the alternative is a marshaller per block type.
 func TestMessageEncodesToTheSessionFormat(t *testing.T) {
 	for _, ex := range designExamples() {
 		t.Run(ex.name, func(t *testing.T) {
@@ -83,7 +80,6 @@ func TestMessageEncodesToTheSessionFormat(t *testing.T) {
 	}
 }
 
-// TestMessageDecodesTheSessionFormat is the direction every resumed session runs.
 func TestMessageDecodesTheSessionFormat(t *testing.T) {
 	for _, ex := range designExamples() {
 		t.Run(ex.name, func(t *testing.T) {
@@ -112,7 +108,7 @@ func TestMessageDecodesTheSessionFormat(t *testing.T) {
 }
 
 // TestFailedToolResultRoundTrips is the case omitting is_error could have
-// broken: is_error is what tells the model its command did not work.
+// broken.
 func TestFailedToolResultRoundTrips(t *testing.T) {
 	want := llm.Message{
 		Role: llm.RoleUser,
@@ -138,9 +134,8 @@ func TestFailedToolResultRoundTrips(t *testing.T) {
 }
 
 // TestTruncatedToolCallStillEncodes is the state design §4 invariant 2 commits.
-// json.Marshal validates a json.RawMessage, so without Block.MarshalJSON's
-// substitution the whole message encodes to nothing and the turn cannot be
-// written — invariant 1, broken by an encoder.
+// Without Block.MarshalJSON's substitution the whole message encodes to nothing
+// and the turn cannot be written — invariant 1, broken by an encoder.
 func TestTruncatedToolCallStillEncodes(t *testing.T) {
 	msg := llm.Message{
 		Role:       llm.RoleAssistant,
@@ -160,8 +155,7 @@ func TestTruncatedToolCallStillEncodes(t *testing.T) {
 		t.Errorf("encoding:\n got %s\nwant %s", encoded, want)
 	}
 
-	// The block has to survive, for the tool_result that fails the call to point
-	// at.
+	// The block has to survive, for the failing tool_result to point at.
 	var loaded llm.Message
 	if err := json.Unmarshal(encoded, &loaded); err != nil {
 		t.Fatalf("unmarshalling: %v", err)
@@ -171,9 +165,8 @@ func TestTruncatedToolCallStillEncodes(t *testing.T) {
 	}
 }
 
-// TestToolCallWithNoArgumentsStillEncodesAnObject is the other half: a turn cut
-// off before any arguments chunk arrives leaves the field unset rather than
-// half-written, and every provider rejects a tool_use with no input.
+// TestToolCallWithNoArgumentsStillEncodesAnObject is the other half: a turn can
+// break off before any arguments chunk arrives at all.
 func TestToolCallWithNoArgumentsStillEncodesAnObject(t *testing.T) {
 	msg := llm.Message{
 		Role:       llm.RoleAssistant,
@@ -192,9 +185,8 @@ func TestToolCallWithNoArgumentsStillEncodesAnObject(t *testing.T) {
 	}
 }
 
-// TestNullArgumentsEncodeAsAnObject covers the shape that is valid JSON and
-// still rejected on replay. `null` is how an OpenAI-compatible endpoint
-// normalises an empty arguments string, so a transcript can hold one.
+// TestNullArgumentsEncodeAsAnObject covers the shapes that are valid JSON and
+// still rejected on replay.
 func TestNullArgumentsEncodeAsAnObject(t *testing.T) {
 	cases := map[string]string{
 		"null":     `null`,
@@ -222,8 +214,7 @@ func TestNullArgumentsEncodeAsAnObject(t *testing.T) {
 }
 
 // TestStrayArgumentsDoNotSinkTheMessage is the same protection for a field set
-// on a block that should not carry one. A well-formed stray is the dangerous
-// half: an extra input key on a tool_result is a 400.
+// on a block that should not carry one.
 func TestStrayArgumentsDoNotSinkTheMessage(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleUser,
@@ -242,8 +233,8 @@ func TestStrayArgumentsDoNotSinkTheMessage(t *testing.T) {
 	}
 }
 
-// TestStrayFieldsFromAnotherBlockTypeAreDropped is the mistake a flat union
-// invites: copy a block, switch the type, leave the old type's fields behind.
+// TestStrayFieldsFromAnotherBlockTypeAreDropped: copy a block, switch the type,
+// leave the old type's fields behind.
 func TestStrayFieldsFromAnotherBlockTypeAreDropped(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleAssistant,
@@ -269,9 +260,7 @@ func TestStrayFieldsFromAnotherBlockTypeAreDropped(t *testing.T) {
 	}
 }
 
-// TestAnUnknownBlockTypeKeepsNothing is for the next person to add a BlockType:
-// an untaught type emits its type and no fields, and content vanishing is how
-// they are told to add a case.
+// TestAnUnknownBlockTypeKeepsNothing is for the next person to add a BlockType.
 func TestAnUnknownBlockTypeKeepsNothing(t *testing.T) {
 	msg := llm.Message{
 		Role: llm.RoleAssistant,
@@ -298,9 +287,7 @@ func TestAnUnknownBlockTypeKeepsNothing(t *testing.T) {
 }
 
 // TestArgumentsCorrectsWhatTheWireWouldReject is the encoder's substitution,
-// reachable by everything else that has to apply it. The loop keeps running
-// after a truncated turn, so the next request is built from the message still
-// holding the fragment.
+// reachable by everything else that has to apply it.
 func TestArgumentsCorrectsWhatTheWireWouldReject(t *testing.T) {
 	cases := map[string]struct {
 		block llm.Block

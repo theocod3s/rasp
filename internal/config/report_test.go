@@ -9,10 +9,7 @@ import (
 	"github.com/theocod3s/rasp/internal/config"
 )
 
-// TestUnknownKeysWarnAndAreDropped: the decoder ignores a key it does not
-// recognise without a word, which turns one typo into a setting that reads as
-// applied and is not. Warning is the right severity — a config written for a
-// newer rasp still has to start — but silence is not.
+// TestUnknownKeysWarnAndAreDropped.
 func TestUnknownKeysWarnAndAreDropped(t *testing.T) {
 	res := load(t, config.Sources{
 		GlobalPath: global(t, `{
@@ -35,10 +32,9 @@ func TestUnknownKeysWarnAndAreDropped(t *testing.T) {
 	}
 }
 
-// TestAnUnknownObjectNamesItsFile. Origins are recorded on leaves, so a key
-// holding an object has no entry of its own — and a warning that falls back to
-// the zero Origin reads as "built-in default", sending the reader at rasp's
-// compiled-in defaults instead of the file they wrote.
+// TestAnUnknownObjectNamesItsFile. A key holding an object has no origin entry
+// of its own, and falling back to the zero Origin reads as "built-in default" —
+// sending the reader at rasp's compiled-in defaults instead of their own file.
 func TestAnUnknownObjectNamesItsFile(t *testing.T) {
 	dir := project(t, `{"tools": {"foo": 1}}`)
 	res := load(t, config.Sources{ProjectDir: dir})
@@ -58,10 +54,8 @@ func TestAnUnknownObjectNamesItsFile(t *testing.T) {
 	}
 }
 
-// TestAnEmptyObjectLaterFilledLeavesNoPhantom. An object carries an origin of
-// its own only while it is empty, since there is no leaf to hang one on. Once
-// a later layer fills it, that entry describes a value nothing prints — and
-// `rasp config check` draws it as a row reading `providers  null`.
+// TestAnEmptyObjectLaterFilledLeavesNoPhantom, which `rasp config check` would
+// draw as a row reading `providers  null`.
 func TestAnEmptyObjectLaterFilledLeavesNoPhantom(t *testing.T) {
 	res := load(t, config.Sources{
 		GlobalPath: global(t, `{"providers": {}}`),
@@ -81,8 +75,7 @@ func TestAnEmptyObjectLaterFilledLeavesNoPhantom(t *testing.T) {
 	}
 }
 
-// TestAnEmptyObjectThatStaysEmptyKeepsAnOrigin is the other half: `"providers":
-// {}` says something, and it is the one shape with no leaf to say it through.
+// TestAnEmptyObjectThatStaysEmptyKeepsAnOrigin is the other half.
 func TestAnEmptyObjectThatStaysEmptyKeepsAnOrigin(t *testing.T) {
 	path := global(t, `{"providers": {}}`)
 	res := load(t, config.Sources{GlobalPath: path})
@@ -95,8 +88,7 @@ func TestAnEmptyObjectThatStaysEmptyKeepsAnOrigin(t *testing.T) {
 		t.Errorf("origin = %v, want %s", origin, path)
 	}
 
-	// And the precedence rule holds for it like anything else: a later layer
-	// restating `{}` is the layer that set it.
+	// The precedence rule holds for it too: a later layer restating `{}` set it.
 	projectDir := project(t, `{"providers": {}}`)
 	res = load(t, config.Sources{GlobalPath: path, ProjectDir: projectDir})
 
@@ -106,10 +98,9 @@ func TestAnEmptyObjectThatStaysEmptyKeepsAnOrigin(t *testing.T) {
 	}
 }
 
-// TestAValueOfTheWrongSortNamesItsFile. encoding/json would report this
-// against a Go field name and lose the map key entirely — "Go struct field
-// MCP.mcp.max_total_tools" — and would never say which of the four sources
-// wrote it. Naming the file is the whole reason this package exists.
+// TestAValueOfTheWrongSortNamesItsFile. encoding/json reports this against a Go
+// field name — "Go struct field MCP.mcp.max_total_tools" — and never says which
+// of the four sources wrote it.
 func TestAValueOfTheWrongSortNamesItsFile(t *testing.T) {
 	tests := []struct {
 		name string
@@ -132,9 +123,8 @@ func TestAValueOfTheWrongSortNamesItsFile(t *testing.T) {
 			want: "model: want a string, got an object",
 		},
 		{
-			// A stray decimal point is well-formed JSON and a number, so only
-			// a check that knows the field is an integer catches it. Without
-			// one it reaches encoding/json, whose error names a Go field.
+			// Well-formed JSON and a number, so only a check that knows the
+			// field is an integer catches it.
 			name: "a fractional number where a whole one belongs",
 			file: `{"context": {"reserve_tokens": 16.5}}`,
 			want: "context.reserve_tokens: want a whole number, got 16.5",
@@ -167,11 +157,7 @@ func TestAValueOfTheWrongSortNamesItsFile(t *testing.T) {
 	}
 }
 
-// TestNullMeansNotSet. JSON allows null anywhere and the decoder reads it as a
-// zero value, so honouring it as a value would let `"mode": null` erase a
-// built-in default and hand on a mode that is none of the four — silently,
-// while the neighbouring typo `"manaul"` refuses to start outright. It reads
-// as "nothing" to anyone writing it, so it is treated as the key being absent.
+// TestNullMeansNotSet.
 func TestNullMeansNotSet(t *testing.T) {
 	res := load(t, config.Sources{
 		GlobalPath: global(t, `{
@@ -199,10 +185,8 @@ func TestNullMeansNotSet(t *testing.T) {
 	}
 }
 
-// TestATypoedModeNameIsReported. `modes` looks like a free-form map, but its
-// keys are the four mode names. A typo there is an override that reads as
-// applied and is never consulted — and it lands on the permission table, where
-// believing a deny is in force and being wrong is the expensive direction.
+// TestATypoedModeNameIsReported. A typo here lands on the permission table,
+// where believing a deny is in force and being wrong is the expensive direction.
 func TestATypoedModeNameIsReported(t *testing.T) {
 	res := load(t, config.Sources{
 		GlobalPath: global(t, `{"modes": {
@@ -229,8 +213,7 @@ func TestATypoedModeNameIsReported(t *testing.T) {
 }
 
 // TestUserDefinedKeysAreNotUnknown: half the schema is maps whose keys are the
-// user's to invent — provider ids, MCP server names, bash globs. A check that
-// flagged those would be worse than no check.
+// user's to invent.
 func TestUserDefinedKeysAreNotUnknown(t *testing.T) {
 	res := load(t, config.Sources{
 		GlobalPath: global(t, `{
@@ -248,9 +231,8 @@ func TestUserDefinedKeysAreNotUnknown(t *testing.T) {
 	}
 }
 
-// TestCredentialsAreHiddenWhenPrinted. `rasp config check` exists to say where
-// a value came from, and its output lands in terminals, screen shares and CI
-// logs. The origin is the part worth seeing; the key itself never is.
+// TestCredentialsAreHiddenWhenPrinted. The report lands in terminals, screen
+// shares and CI logs.
 func TestCredentialsAreHiddenWhenPrinted(t *testing.T) {
 	secrets := []string{
 		"providers.anthropic.api_key",
@@ -283,9 +265,8 @@ func TestCredentialsAreHiddenWhenPrinted(t *testing.T) {
 	}
 }
 
-// TestSourcesAreReportedInPrecedenceOrder. `config check` prints them in the
-// order they apply, and a reader working out why a value won reads that list
-// top to bottom.
+// TestSourcesAreReportedInPrecedenceOrder: a reader working out why a value won
+// reads the list top to bottom.
 func TestSourcesAreReportedInPrecedenceOrder(t *testing.T) {
 	res := load(t, config.Sources{})
 
@@ -305,9 +286,7 @@ func TestSourcesAreReportedInPrecedenceOrder(t *testing.T) {
 	}
 }
 
-// TestEmptySourcesSayWhatTheyLookedFor. "Why is my key not being picked up" is
-// the question, and a source reporting only that it found nothing answers none
-// of it.
+// TestEmptySourcesSayWhatTheyLookedFor.
 func TestEmptySourcesSayWhatTheyLookedFor(t *testing.T) {
 	res := load(t, config.Sources{})
 
@@ -325,8 +304,7 @@ func TestEmptySourcesSayWhatTheyLookedFor(t *testing.T) {
 	}
 }
 
-// TestGlobalPathFollowsXDG. design §10 names ~/.config/rasp/config.json
-// outright, which os.UserConfigDir would not produce on macOS.
+// TestGlobalPathFollowsXDG, which os.UserConfigDir would not produce on macOS.
 func TestGlobalPathFollowsXDG(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
