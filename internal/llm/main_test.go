@@ -12,19 +12,17 @@ import (
 )
 
 // TestMain runs the leak detector over the package. A stream is an iterator, so
-// nothing here needs a goroutine — but a consumer abandoning a stream halfway
-// is exactly the shape that leaks one, and the check has to be in place before
-// the first provider that pumps events from a background reader arrives.
+// nothing here needs a goroutine — but a consumer abandoning a stream halfway is
+// exactly the shape that leaks one, and the check has to be in place before the
+// first provider that pumps events from a background reader arrives.
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
 // scripted is a provider that plays a fixed list of actions. It is not
-// internal/llm/fake — that one is a milestone of its own, with a friendlier
-// surface and enough scripting to drive the agent loop. This one exists to give
-// the contract something to be checked against, and stays small enough to read
-// in one sitting so a test failure is never ambiguous about which side is
-// wrong.
+// internal/llm/fake, which gets a friendlier surface and enough scripting to
+// drive the agent loop; this one stays small enough to read in one sitting, so a
+// test failure is never ambiguous about which side is wrong.
 type scripted struct {
 	id      string
 	actions []action
@@ -33,9 +31,8 @@ type scripted struct {
 func (s scripted) ID() string { return s.id }
 
 // Stream plays the script. The message is allocated HERE, before the first
-// yield, and every event points at it — which is the shape the contract asks
-// adapters for, so the tests below are checking a producer built the sanctioned
-// way rather than one built to pass them.
+// yield, so the tests below check a producer built the way the contract asks
+// rather than one built to pass them.
 func (s scripted) Stream(ctx context.Context, _ llm.Request) llm.StreamResponse {
 	return func(yield func(llm.Event) bool) {
 		msg := &llm.Message{Role: llm.RoleAssistant, Model: "scripted-1", Provider: s.id}
@@ -44,8 +41,8 @@ func (s scripted) Stream(ctx context.Context, _ llm.Request) llm.StreamResponse 
 			return
 		}
 		for _, act := range s.actions {
-			// A cancelled turn is a runtime failure like any other, so it
-			// leaves through the same door: a terminal EventError.
+			// A cancelled turn leaves through the same door as any other runtime
+			// failure: a terminal EventError.
 			if err := ctx.Err(); err != nil {
 				fail(err, llm.StopAborted)(msg, yield)
 				return
@@ -53,10 +50,8 @@ func (s scripted) Stream(ctx context.Context, _ llm.Request) llm.StreamResponse 
 			if !act(msg, yield) {
 				return
 			}
-			// done and fail are the only actions that set a stop reason, and a
-			// stream is over once one has: nothing may follow a terminal
-			// event, so the rest of the script is discarded rather than
-			// yielded into a stream that has already ended.
+			// Only done and fail set a stop reason, and nothing may follow a
+			// terminal event, so the rest of the script is discarded.
 			if msg.StopReason != "" {
 				return
 			}
@@ -70,10 +65,10 @@ func (s scripted) Stream(ctx context.Context, _ llm.Request) llm.StreamResponse 
 type action func(msg *llm.Message, yield func(llm.Event) bool) bool
 
 // text and thinking stream one block each, one event per chunk, the way a
-// provider splits a sentence at arbitrary boundaries. They accumulate
-// separately, and a provider that pours one into the other is a bug the
-// contract check is meant to see — so the pairing of block type to event type
-// lives in one place here, as it does in checkAccumulation.
+// provider splits a sentence at arbitrary boundaries. The pairing of block type
+// to event type lives in one place here, as it does in checkAccumulation, since
+// a provider that pours one channel into the other is what the contract watches
+// for.
 func text(chunks ...string) action {
 	return deltas(llm.BlockText, llm.EventTextDelta, chunks)
 }
@@ -96,9 +91,8 @@ func deltas(kind llm.BlockType, event llm.EventType, chunks []string) action {
 	}
 }
 
-// toolCall streams a tool call the way one actually arrives: a start, the
-// argument JSON in fragments that do not individually parse, then one complete
-// call.
+// toolCall streams a call the way one actually arrives: a start, the argument
+// JSON in fragments that do not individually parse, then one complete call.
 func toolCall(id, name string, fragments ...string) action {
 	return func(msg *llm.Message, yield func(llm.Event) bool) bool {
 		msg.Content = append(msg.Content, llm.Block{Type: llm.BlockToolUse, ID: id, Name: name})
@@ -123,7 +117,6 @@ func toolCall(id, name string, fragments ...string) action {
 	}
 }
 
-// done ends the stream normally.
 func done(reason llm.StopReason) action {
 	return func(msg *llm.Message, yield func(llm.Event) bool) bool {
 		msg.StopReason = reason
@@ -131,8 +124,8 @@ func done(reason llm.StopReason) action {
 	}
 }
 
-// fail ends the stream with a failure. Note what it does NOT do: return an
-// error to the caller of Stream. There is nowhere to return one to.
+// fail ends the stream with a failure. Note what it does NOT do: return an error
+// to the caller of Stream. There is nowhere to return one to.
 func fail(err error, reason llm.StopReason) action {
 	return func(msg *llm.Message, yield func(llm.Event) bool) bool {
 		msg.StopReason = reason
@@ -151,7 +144,6 @@ func check(t *testing.T, seq llm.StreamResponse) []llm.Event {
 	return events
 }
 
-// types names the event sequence, for assertions that care about order.
 func types(events []llm.Event) []llm.EventType {
 	out := make([]llm.EventType, len(events))
 	for i, ev := range events {
@@ -160,8 +152,8 @@ func types(events []llm.Event) []llm.EventType {
 	return out
 }
 
-// toolCallIn is the one completed tool call in a stream, or a fatal test
-// failure if the stream did not report exactly one.
+// toolCallIn is the one completed tool call in a stream, and fails the test if
+// there is not exactly one.
 func toolCallIn(t *testing.T, events []llm.Event) *llm.ToolCall {
 	t.Helper()
 	var found []*llm.ToolCall
@@ -176,7 +168,6 @@ func toolCallIn(t *testing.T, events []llm.Event) *llm.ToolCall {
 	return found[0]
 }
 
-// last is the terminal event, or a fatal test failure if there is none.
 func last(t *testing.T, events []llm.Event) llm.Event {
 	t.Helper()
 	if len(events) == 0 {
@@ -185,9 +176,8 @@ func last(t *testing.T, events []llm.Event) llm.Event {
 	return events[len(events)-1]
 }
 
-// stream is a hand-written StreamResponse, for the malformed streams the
-// contract check exists to reject. Written as plain events rather than through
-// scripted, because every one of them is a rule broken on purpose.
+// stream is a hand-written StreamResponse. Plain events rather than scripted,
+// because the streams it builds are rules broken on purpose.
 func stream(events ...llm.Event) llm.StreamResponse {
 	return func(yield func(llm.Event) bool) {
 		for _, ev := range events {
