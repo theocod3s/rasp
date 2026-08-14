@@ -5,24 +5,22 @@ description: Work a rasp ticket end to end — read the Linear issue, check deps
 
 # Working a rasp ticket
 
-There are ~91 MVP items. Doing them consistently matters more than doing any one of them
-cleverly. This is the sequence, and the reasoning behind the parts that are easy to skip.
+~91 MVP items. Doing them consistently matters more than doing any one cleverly. This is the
+sequence, and the reasoning behind the parts that are easy to skip.
 
 ## 1. Read the ticket, and its spec
 
 Tickets live in Linear and nowhere else — [project Rasp](https://linear.app/theocod3s/project/rasp-be0653f32d76),
 one milestone per M0–M5 plus one per future phase. Find one by its ID: search the project for
-`M0-02` and take the exact title match (`M0-02 · CI`). Fuzzy matches rank below it. The issue
-carries size, deps, spec anchor and acceptance criteria.
+`M0-02` and take the exact title match (`M0-02 · CI`); fuzzy matches rank below it.
 
 Every ticket names a **spec anchor** (`design §13`, `prd §6.6`). Read that section before
 writing anything: the ticket is a decomposition, not the requirement, and where the two
 disagree the spec wins.
 
-Check **Depends on**. Those are hard ordering — a blocked ticket genuinely cannot start. They
-live in the description as prose, not as Linear blocking relations, so nothing enforces them
-and nothing will stop you starting a ticket whose dependency is unmerged. Read them. If one is
-unmerged, say so and stop rather than working around it.
+Check **Depends on**. They live in the description as prose, not as Linear blocking relations,
+so nothing enforces them and nothing will stop you starting a ticket whose dependency is
+unmerged. If one is, say so and stop rather than working around it.
 
 **Don't invent scope.** If something looks missing it is usually deliberate — check
 `docs/scope.md`'s "deliberately excluded" before adding it. If it's a real gap, raise it; don't
@@ -30,11 +28,10 @@ silently fill it.
 
 ## 2. Claim it, then branch
 
-**Move the issue to In Progress before writing anything** — always, even for a ticket that will
-take ten minutes. Linear is the only record of where the work stands, so a ticket sitting in
-Todo while a branch exists is the same failure as one left In Progress after merge (§6): the
-next session reads the board and gets the wrong answer. Do it as soon as deps are clear and
-before the first commit, so the record is right for the whole window someone might look.
+**Move the issue to In Progress before writing anything**, even for a ticket that will take ten
+minutes. Linear is the only record of where the work stands, so a ticket in Todo while a branch
+exists is the same failure as one left In Progress after merge (§6): the next session reads the
+board and gets the wrong answer.
 
 Branch `rasp/<id-lowercased>-<slug>` — `rasp/m0-02-ci` — from an up-to-date `main`.
 
@@ -42,6 +39,20 @@ Branch `rasp/<id-lowercased>-<slug>` — `rasp/m0-02-ci` — from an up-to-date 
 
 Read `AGENTS.md` first if you haven't this session. It carries the invariants that are cheapest
 to break by accident, and violating one is far more expensive than the ticket is worth.
+
+**Comments: follow `.agents/skills/comment-density/SKILL.md` while writing, not after.** The
+habit it stops is invisible from inside — a review round asks "why?", the answer is appended to
+the comment, nothing is ever taken back out, every round is an improvement and the file still
+ends up a third prose. M0-06 shipped `internal/llm` at 57% comment lines that way. A comment
+earns its place by recording what the code **cannot** say: why a rule exists, which provider wire
+shape forced it, why it is deliberately *not* stricter. Cut what restates the identifier, and cut
+what the error string three lines below already says in full sentences.
+
+The half that only shows up across files is **say it once**. The biggest single source of bloat in
+that cleanup was good comments written four times: "a project config arrives with `git clone` and
+nobody reads it" appeared in two tests and two error strings. Put the reasoning where the reader
+stands when the rule matters — for a rule enforced in code, the code — and let the rest be a
+clause. A test opening with a paragraph copied from the file it exercises is the commonest case.
 
 ## 4. Verify every acceptance criterion, one at a time
 
@@ -65,11 +76,11 @@ error came back. A later fix broke working credential helpers by returning a dif
 second sooner, and the test stayed green — passing precisely when the thing it guarded was being
 destroyed. `err != nil` is the assertion most likely to survive its own subject.
 
-Once there is more than a handful, script it: apply one mutation, run the tests, restore, and
-print caught/not-caught per case. M0-04 ran twenty-four that way in under a minute, which is the
+Once there is more than a handful, script it: apply one mutation, run the tests, restore, print
+caught/not-caught per case. M0-04 ran twenty-four that way in under a minute, which is the
 difference between doing this for the two obvious guards and doing it for all of them. **Restore
 by writing back the bytes you replaced** — never `git checkout -- .`, which resets the whole tree
-to HEAD and takes every other uncommitted change in the working directory with it. It did.
+to HEAD and takes every uncommitted change with it. It did.
 
 **A not-caught result has three causes and only one is the check's fault.** The check may be
 weak; the test may never reach the line you mutated; or the `-run` pattern may match no test at
@@ -83,20 +94,15 @@ Then `just ci` — fmt-check, vet, build, test, race. Run it before pushing, not
 ## 5. Open the PR
 
 **Write the description for an engineering director.** Someone two levels out from the code
-should be able to read it and know what shipped and why it matters — so lead with what the PR
-*does*, in plain language, and describe the capability or the fix rather than the mechanism.
-Then anything the reviewer genuinely needs: a judgement call and its alternative, a risk, a
-piece deliberately left out.
+should read it and know what shipped and why it matters — so lead with what the PR *does*, in
+plain language, then only what the reviewer genuinely needs: a judgement call and its
+alternative, a risk, a piece deliberately left out. **Don't list the acceptance criteria**; they
+live in the ticket, and copying them turns the description into a form nobody reads.
 
-**Don't list the acceptance criteria.** They live in the ticket and the reviewer can open it;
-copying them across turns the description into a form nobody reads. Verification already
-happened in §4 and does not get re-staged here.
-
-**Keep it short enough that the reader reaches the diff.** M0-04's body ran well past a thousand
-words, re-arguing reasoning that was already in the commit messages and the code comments — and
-a description nobody finishes is one that fails at the only job it has, which is to get someone
-into the diff with the right questions. If a decision needs a paragraph to defend, that paragraph
-belongs in the code, where the next reader is actually standing.
+**Keep it short enough that the reader reaches the diff.** M0-04's body ran past a thousand words
+re-arguing reasoning already in the commits and the code — and a description nobody finishes
+fails at its only job. If a decision needs a paragraph to defend, that paragraph belongs in the
+code, where the next reader is actually standing.
 
 Reference the work by milestone ID (`M0-02`), never the Linear key (`THE-6`) — the issue title
 carries the ID, and git history outlives the tracker.
@@ -105,12 +111,11 @@ Don't merge your own PR unmarked. Run `/code-review`, and treat its findings as 
 rather than facts — it has a real false-positive rate, and rejecting a wrong finding with
 reasoning is as valuable as fixing a right one.
 
-**Then remember the fixes are code nobody has reviewed** — and keep going until it converges.
-M0-04's first pass produced 345 lines of them, and a second over that delta found four more.
-M0-05 took five passes for 17 findings, and the clincher is that pass 3's fix *caused* pass 4's
-worst bug: `cmd.WaitDelay` starts its timer when the child exits, so the fix for a helper that
-hung turned into a failure for every helper that worked. Stop when a pass reports its own
-findings already fixed, not when you are tired of the loop.
+**Then remember the fixes are code nobody has reviewed**, and keep going until it converges.
+M0-05 took five passes for 17 findings, and pass 3's fix *caused* pass 4's worst bug:
+`cmd.WaitDelay` starts its timer when the child exits, so the fix for a helper that hung became a
+failure for every helper that worked. Stop when a pass reports its own findings already fixed,
+not when you are tired of the loop.
 
 ## 6. Merge and close out
 
@@ -118,10 +123,9 @@ Squash-merge, with a message you wrote rather than the one GitHub concatenates �
 in `AGENTS.md`. Then move the issue to Done in the same pass — the other half of §2's rule, and
 an issue left In Progress after merge misleads exactly as much as one never started.
 
-If the ticket's shape changed while you worked it — a criterion that turned out wrong, a
-decision taken mid-flight — edit the issue description to match what was actually built. A
-ticket that no longer describes its own outcome is worse than no ticket, because it reads
-as authoritative.
+If the ticket's shape changed while you worked it, edit the issue description to match what was
+actually built. A ticket that no longer describes its own outcome is worse than no ticket,
+because it still reads as authoritative.
 
 ## 7. Report back
 
@@ -136,10 +140,9 @@ and describe every change by what it now *does* before naming what it touched.
 - Anything that genuinely needs a decision.
 
 Short, not thin: no reasoning trail, no verification narrative, no caveats gathered along the
-way. The reader asks when they want more. Detail earns its place *before* the work, or when
-something failed, is uncertain, or went differently than asked — success is the case that should
-be short. And short is not the same as understandable: a wall of identifiers and section numbers
-standing in for sentences is a report that has to be decoded, which is a report not delivered.
+way — detail earns its place *before* the work, or when something failed or went differently than
+asked. But short is not the same as understandable: a wall of identifiers standing in for
+sentences is a report that has to be decoded, which is a report not delivered.
 
 This is the only place the closing summary is specified. `AGENTS.md` carried a second version
 until the two asked for opposite reports; don't start a third.
@@ -159,9 +162,9 @@ a note in that PR, not a line here. If you can't name a future ticket it would h
 leave it out.
 
 **Prune as you add.** Target ~150 lines. When you add something, look for what has stopped
-earning its place — a step now enforced by a test, advice that turned out to be situational, a
-caveat about a milestone long since shipped. A skill nobody reads to the end fails exactly the
-way a 2,100-line design document does, which is why this file exists at all.
+earning its place — a step now enforced by a test, advice that turned out situational, a caveat
+about a milestone long since shipped. A skill nobody reads to the end fails exactly the way a
+2,100-line design document does, which is why this file exists at all.
 
 Say *why*, not just what. "Verify checks by breaking them" is forgettable; the `fmt-check`
 example is not.
