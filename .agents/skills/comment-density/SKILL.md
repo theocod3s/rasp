@@ -148,51 +148,36 @@ file runs high by construction and driving it to 15% means deleting wire shapes.
 **A ratio is a smell, not a rule.** Judge the comments, then check the number; a
 file above the bar for a reason you can name in a sentence is fine.
 
-To measure. This is an eyeball aid, not a gate — it ranks files so you can look
-at the top of the list, and nothing depends on its output:
+To measure, roughly. Run from anywhere in the tree; `git ls-files` lists what is
+under the current directory, so from a package you get that package:
 
 ```sh
-comment_density() {
-  # Paths from git are repo-root-relative, so measuring from a subdirectory
-  # would find none of them and print a clean report.
-  cd "$(git rev-parse --show-toplevel)" || return 1
-
-  base=$(git merge-base main HEAD) || { echo "no 'main' to compare against" >&2; return 1; }
-
-  # merge-base, not `git diff main`: two-dot compares main's tip to the working
-  # tree, so anything landed on main since you branched shows up as yours.
-  # --others adds untracked files, without which a brand-new package — the case
-  # this skill exists for — measures as "nothing changed".
-  # quotePath=false stops a non-ASCII path arriving C-quoted and unopenable.
-  changed=$(git -c core.quotePath=false diff --name-only "$base" -- '*.go') || return 1
-  new=$(git -c core.quotePath=false ls-files --others --exclude-standard -- '*.go') || return 1
-
-  files=$(printf '%s\n%s\n' "$changed" "$new" | sort -u | sed '/^$/d')
-  [ -n "$files" ] || { echo "no .go files changed since $base" >&2; return 0; }
-
-  # `read -r` per line, not `for f in $files`: zsh does not word-split an
-  # unquoted parameter expansion, so the for-loop hands the whole list over as
-  # one filename. This form also survives a path with a space in it.
-  printf '%s\n' "$files" | while IFS= read -r f; do
-    [ -s "$f" ] || { echo "  --   $f (deleted or empty)" >&2; continue; }
+# doc.go is exempt (see below), and at 85-90% it would otherwise fill the top.
+git ls-files --cached --others --exclude-standard -- '*.go' | grep -v 'doc\.go$' |
+  while IFS= read -r f; do
+    [ -s "$f" ] || continue
     # `grep -c ''`, not `wc -l`: wc counts newlines, so a file with no trailing
-    # one is undercounted and the ratio comes out too high — with no error,
-    # which is the worse half.
-    printf "%3d%%  %s\n" "$(( $(grep -cE '^[[:space:]]*//' "$f") * 100 / $(grep -c '' "$f") ))" "$f"
+    # one is undercounted and the ratio comes out too high, with no error.
+    printf '%3d%%  %s\n' "$(( $(grep -cE '^[[:space:]]*//' "$f") * 100 / $(grep -c '' "$f") ))" "$f"
   done | sort -rn
-}
 ```
 
-A function rather than a paste-and-run block, because `exit 1` on a missing
-`main` would close the terminal of anyone who pasted it.
+This is the second version. The first took a diff against `main` and grew a guard
+per review pass — a missing file, a missing trailing newline, a missing `main`, a
+subdirectory, an untracked package — until it was six guards over six lines of
+work and *still* had defects: it silently `cd`-ed the caller's shell to the repo
+root, and its own explanatory comment described a mechanism that had stopped
+being true two commits earlier.
 
-Six guards for six lines of work is what this cost: four review passes found a
-fail-open bug each time — a missing file, a missing trailing newline, a missing
-`main`, a subdirectory, an untracked package — every one printing a plausible
-answer and exiting 0. That is AGENTS.md's process-hygiene rule collecting on a
-throwaway script, and the lesson generalises past this file: **a check nobody
-runs from the wrong directory, on the wrong branch, with the wrong files, is a
-check you have only seen pass.**
+That is this skill's subject, committed against the skill. Each round found
+something real, appended a justification, and removed nothing; the fix was never
+another guard, it was to want less. Comparing against a base ref bought a
+shorter list and cost `main`-exists, merge-base, untracked-files and
+working-directory failures, every one of which reported "nothing is over the bar"
+and exited 0. Listing every Go file needs none of them.
+
+**When a comment keeps needing another sentence, the sentence is rarely the
+problem.**
 
 ## Two rasp-specific rules
 
