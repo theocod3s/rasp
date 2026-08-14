@@ -228,9 +228,9 @@ func (c *streamChecker) checkComplete() error {
 			"order, so the two have to agree", c.announced, recorded)
 	}
 
-	// With the order rule above and uniqueness below it, this loop is the last
-	// thing needed for "the announcements are exactly the blocks": a subsequence
-	// that contains every element, of a list with no repeats, is the list.
+	// With the order and uniqueness rules above, this loop is the last thing
+	// needed for "the announcements are exactly the blocks": a subsequence that
+	// contains every element, of a list with no repeats, is the list.
 	//
 	// A stream that failed, was cancelled or ran out of output is not held to
 	// this at all, and the reason is worth spelling out because the rule has been
@@ -284,6 +284,13 @@ func (c *streamChecker) checkComplete() error {
 	if len(c.partial.Content) == 0 {
 		return fmt.Errorf("the stream ended with StopReason %q and no content; a finished message with "+
 			"no blocks in it is refused by every provider the next time it is sent", c.stop)
+	}
+	for index, block := range c.partial.Content {
+		if (block.Type == BlockText || block.Type == BlockThinking) && block.Text == "" {
+			return fmt.Errorf("the stream ended with StopReason %q and an empty %s block at index %d; "+
+				"a block with nothing in it is refused on replay exactly like a message with no blocks, "+
+				"and a turn that finished had time to fill it", c.stop, block.Type, index)
+		}
 	}
 	return nil
 }

@@ -60,8 +60,19 @@ type Block struct {
 	IsError   bool   `json:"is_error,omitempty"` // BlockToolResult
 }
 
-// MarshalJSON writes a block, substituting an empty object for tool-call
-// arguments that are not valid JSON.
+// Arguments is a tool call's arguments as anything sending them should read them:
+// the bytes that arrived, or an empty object when those bytes are not one. For
+// any other block type it is whatever Input held, which should be nothing.
+//
+// Exported because the substitution has to hold everywhere a message is used, not
+// only where one is written. A turn cut off at the output limit is committed with
+// its fragment — design §4 invariant 2 fails the call and the block stays — and
+// the loop keeps going, so the NEXT request is built from that same in-memory
+// message. An adapter reading Input directly would put `{"pa` on the wire and
+// take a 400 for a message already in history; reading this cannot.
+//
+// MarshalJSON writes a block: its arguments through Arguments, and none of the
+// fields belonging to another block type.
 //
 // The substitution exists because of one state the rest of the system requires:
 // a response truncated at the output limit is committed, tool_use block and all
@@ -85,7 +96,16 @@ type Block struct {
 // the ones the guard exists to refuse, and what has to survive is the block, so
 // the tool_result that fails it has something to point at. What is written stays
 // an object, so the turn replays.
+func (b Block) Arguments() json.RawMessage {
+	if b.Type != BlockToolUse || isJSONObject(b.Input) {
+		return b.Input
+	}
+	return json.RawMessage(emptyArguments)
+}
+
 func (b Block) MarshalJSON() ([]byte, error) {
+	b.Input = b.Arguments()
+
 	// Fields belonging to other block types go before anything else. Block is a
 	// flat union, so the natural mistake — copy a block, switch the type — leaves
 	// the old type's fields behind, and `content` on a tool_use is a 400 exactly
@@ -108,8 +128,6 @@ func (b Block) MarshalJSON() ([]byte, error) {
 	}
 
 	switch {
-	case b.Type == BlockToolUse && !isJSONObject(b.Input):
-		b.Input = json.RawMessage("{}")
 	case b.Type != BlockToolUse && len(b.Input) > 0:
 		// Arguments on a block that has no business holding them are a bug
 		// somewhere upstream, and dropping them keeps the message writable rather

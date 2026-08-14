@@ -313,3 +313,39 @@ func TestAnUnknownBlockTypeKeepsNothing(t *testing.T) {
 		t.Errorf("encoding:\n got %s\nwant %s", encoded, want)
 	}
 }
+
+// TestArgumentsCorrectsWhatTheWireWouldReject is the same substitution the encoder
+// applies, reachable by everything else that has to apply it. The loop keeps
+// running after a truncated turn, so the next request is built from the message
+// still holding the fragment — reading Input directly puts it on the wire.
+func TestArgumentsCorrectsWhatTheWireWouldReject(t *testing.T) {
+	cases := map[string]struct {
+		block llm.Block
+		want  string
+	}{
+		"a fragment": {
+			block: llm.Block{Type: llm.BlockToolUse, ID: "t1", Name: "write", Input: []byte(`{"pa`)},
+			want:  `{}`,
+		},
+		"no arguments at all": {
+			block: llm.Block{Type: llm.BlockToolUse, ID: "t1", Name: "write"},
+			want:  `{}`,
+		},
+		"null": {
+			block: llm.Block{Type: llm.BlockToolUse, ID: "t1", Name: "write", Input: []byte(`null`)},
+			want:  `{}`,
+		},
+		"arguments that arrived whole": {
+			block: llm.Block{Type: llm.BlockToolUse, ID: "t1", Name: "write", Input: []byte(`{"path":"a.go"}`)},
+			want:  `{"path":"a.go"}`,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := string(tc.block.Arguments()); got != tc.want {
+				t.Errorf("Arguments() = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
