@@ -12,8 +12,8 @@ prose is a file nobody finishes.
 
 The failure mode this exists for is not laziness. It is a review loop: each
 round asks "why?", the answer gets appended to the comment, and nothing is ever
-taken back out. `internal/llm` reached 57% comment lines in one session that
-way. Every paragraph was true. Most of them were arguing.
+taken back out. `internal/llm` shipped at 45% of its non-test lines that way,
+one file at 57%. Every paragraph was true. Most of them were arguing.
 
 ## The test
 
@@ -125,15 +125,19 @@ why the method is exported *twice*.
 ## Where the bar sits
 
 Roughly: under 15% comment lines for most files, under 25% for one whose whole
-job is a contract other packages implement. `internal/llm/provider.go` sits near
-50% and is right to — the file is ninety lines and twenty of them are the stream
-contract every adapter has to satisfy. **A ratio is a smell, not a rule.** Judge
-the comments, then check the number.
+job is a contract other packages implement. A small file that *is* a contract is
+the exception — `internal/llm/provider.go` is ninety lines, twenty of them the
+stream contract every adapter satisfies, and it stays near 50% after a hard cut.
+**A ratio is a smell, not a rule.** Judge the comments, then check the number.
 
 `bash <<'EOF'` to measure:
 
 ```bash
 for f in $(git diff --name-only main -- '*.go'); do
+  # Deleted and empty files have no ratio. Say so rather than skipping in
+  # silence: unguarded, `wc -l < missing.go` leaves the arithmetic with an empty
+  # operand, and the loop prints a syntax error, carries on, and still exits 0.
+  [ -s "$f" ] || { echo "  --   $f (deleted or empty)" >&2; continue; }
   printf "%3d%%  %s\n" "$(( $(grep -cE '^[[:space:]]*//' "$f") * 100 / $(wc -l < "$f") ))" "$f"
 done | sort -rn
 ```

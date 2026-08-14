@@ -54,7 +54,9 @@ type Block struct {
 }
 
 // Arguments is a tool call's arguments as anything sending them should read
-// them: the bytes that arrived, or `{}` when those bytes are not an object.
+// them: the bytes that arrived, or `{}` when those bytes are not an object. The
+// substitution is BlockToolUse-only; any other block type gets Input back as it
+// stands, which should be nothing.
 //
 // The state it exists for is a turn truncated at the output limit, committed with
 // its tool_use block and a fragment cut mid-object (design §4 invariant 2 fails

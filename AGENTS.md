@@ -146,7 +146,7 @@ what the work is and where it stands.
   same reason, and it needs it more: nobody stops to ask about comment policy before writing a
   file, and the habit it prevents is invisible from inside. Each review round appends a
   justification to a comment and never takes one back out, so every round is an improvement and
-  `internal/llm` still shipped at 57% comment lines. The rule in one line: a comment earns its
+  `internal/llm` still shipped at 45% of its non-test lines. The rule in one line: a comment earns its
   place by recording what the code cannot say, and it is written once, in the place the reader is
   standing when it matters.
 - Split `internal/agent/agent.go` by concern (`step.go`, `tools.go`, `invariants.go`) before it

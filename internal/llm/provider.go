@@ -23,7 +23,8 @@ import (
 // away the reason it is affordable.
 //
 // EventMessageStart is OPTIONAL — an OpenAI-compatible stream has no equivalent —
-// so nothing may key its initialisation on that event.
+// so nothing may key its initialisation on that event. When it does arrive it
+// comes first.
 type StreamResponse = iter.Seq[Event]
 
 // Provider is one model API. Adapters are the only packages that know a wire
