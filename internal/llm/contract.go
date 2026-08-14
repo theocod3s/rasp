@@ -42,28 +42,34 @@ import (
 // that event was yielded. Anything that needs the intermediate state has to
 // observe it during iteration, which is what the accumulation rules below do.
 //
-// Two things this cannot check, both from the same root, and worth knowing before
-// trusting it. The first: which block a fragment landed in. The same blindness is why a tool call whose
+// Two things this cannot check, both from the same root, and worth knowing
+// before trusting it.
+//
+// The first is which block a fragment landed in. A delta event says what
+// arrived, not where it belongs — Event carries no block index, because no
+// consumer needs one, they render Partial — so an adapter that routes call 2's
+// fragment into call 1's arguments passes every rule here as long as both
+// halves still parse. That is internals §4.2's own hazard, arguments that parse
+// and mean something else, and closing it means putting the wire's block index
+// on delta events: a change to the event union for the benefit of a check
+// rather than a consumer, which is a decision for whoever writes the first
+// adapter against real traffic. The same blindness is why a call whose
 // arguments are genuinely the empty object may be replaced wholesale later
 // without complaint — a block sitting at `{}` is indistinguishable from one
-// still holding the placeholder a provider opened it with. Tracking that
-// difference was tried and reverted: it rejected two real wire shapes to close a
-// hole whose worst outcome is an argument object the message and the event still
-// agree on.
+// still holding the placeholder a provider opened it with, and tracking the
+// difference was tried and reverted for rejecting two real wire shapes.
 //
-// The second: an event allowed to complete a tool call may add to several blocks
-// at once. One chunk from an OpenAI-compatible endpoint can legitimately carry
-// two entries, so "at most one block" is a rule that would reject a faithful
-// adapter to catch a payload landing in a sibling's arguments — which a finished
-// turn catches anyway, when the event and the block are compared byte for byte,
-// and which a broken-off turn fails wholesale under invariant 2. A delta event says what arrived and not where it
-// belongs — Event carries no block index, because no consumer needs one, they
-// render Partial — so an adapter that routes call 2's fragment into call 1's
-// arguments passes every rule here as long as both halves still parse. That is
-// internals §4.2's own hazard, arguments that parse and mean something else, and
-// closing it means putting the wire's block index on delta events: a change to
-// the event union, for the benefit of a check rather than a consumer, which is a
-// decision for whoever writes the first adapter against real traffic.
+// The second is that an event allowed to complete a call may add to several
+// blocks at once. One chunk from an OpenAI-compatible endpoint can legitimately
+// carry two entries, so "at most one block" would reject a faithful adapter to
+// catch a payload landing in a sibling's arguments — which a turn that finished
+// catches anyway, comparing the event against the block byte for byte.
+//
+// A turn that did not finish is held to none of the rules about which calls
+// were announced, because it had no way to announce them. Everything such a
+// turn leaves behind — a half-built call, a call nobody confirmed, no content
+// at all — is the loop's to refuse when it commits, which is where design §4
+// invariant 2 already puts the equivalent decision for truncation.
 //
 // Token usage is deliberately not checked either. It is authoritative for
 // context estimation (design §11), so an adapter that never maps it is a real
@@ -156,15 +162,15 @@ var (
 	// part way through one, and a model can decline mid-call — so holding that
 	// turn to a full set of announcements would reject an adapter that mapped it
 	// faithfully. This branch has already paid twice for guessing the other way.
+	// It gates the emptiness rules below as well, and refusal's absence there is
+	// load-bearing rather than incidental: a model can decline before producing
+	// anything, which arrives as a 200 with no blocks in it. Requiring content
+	// from a refusal leaves an adapter nowhere to put that — errorReasons does
+	// not take StopRefusal either, so EventError is closed too — and a checker no
+	// faithful adapter can satisfy is worse than one that misses something. What
+	// must not happen is committing an empty message, which is the commit point's
+	// rule, in Message's own doc comment and on the loop's ticket.
 	finished = []StopReason{StopEndTurn, StopToolUse}
-
-	// committed are the reasons the loop treats as a completed turn and writes
-	// down as-is: design §4's termination table calls a refusal with no tool
-	// calls a normal completion. A separate list because it answers a different
-	// question — not "were all the calls announced" but "will this be persisted
-	// and sent again" — and one list answering both is how a rule ends up applied
-	// where nobody meant it to be.
-	committed = []StopReason{StopEndTurn, StopToolUse, StopRefusal}
 )
 
 // checkComplete runs once the stream has ended, on the rule that needs the whole
@@ -275,9 +281,10 @@ func (c *streamChecker) checkComplete() error {
 		}
 	}
 
-	if c.terminal != EventDone {
+	if c.terminal != EventDone || !slices.Contains(finished, c.stop) {
 		return nil
 	}
+
 	// A turn that says it stopped to use tools has to have some: design §4's
 	// termination table has no row for tool_use with nothing to run, and the loop
 	// would spend a step dispatching an empty batch and go round again.
@@ -293,11 +300,7 @@ func (c *streamChecker) checkComplete() error {
 			"model stopped to use one", c.stop)
 	}
 
-	if !slices.Contains(committed, c.stop) {
-		return nil
-	}
-
-	// A committed turn has something in it. An empty message cannot be replayed —
+	// A finished turn has something in it. An empty message cannot be replayed —
 	// nil content encodes as null and an empty list is refused too — and design
 	// §4 step 6 commits whatever the turn produced without asking, so this is the
 	// only place it can be caught while the blame is still with the adapter. A

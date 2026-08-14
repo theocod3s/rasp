@@ -4,7 +4,9 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -21,19 +23,37 @@ import (
 // case to the switch fails here, before the payload is lost to an append-only
 // session file and turns up as a provider rejection nowhere near the cause.
 func TestEveryBlockTypeIsScrubbed(t *testing.T) {
+	// The whole package, not just the file the type lives in today: a new variant
+	// is as likely to arrive in a new file, and a check that reads one file would
+	// pass while missing it.
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "message.go", nil, parser.SkipObjectResolution)
+	pkgs, err := parser.ParseDir(fset, ".", func(info fs.FileInfo) bool {
+		return !strings.HasSuffix(info.Name(), "_test.go")
+	}, parser.SkipObjectResolution)
 	if err != nil {
-		t.Fatalf("parsing message.go: %v", err)
+		t.Fatalf("parsing the package: %v", err)
+	}
+	pkg, ok := pkgs["llm"]
+	if !ok {
+		t.Fatalf("parsed %d packages and none of them is llm; this test is reading the wrong "+
+			"directory and would pass whatever the code did", len(pkgs))
 	}
 
-	declared := blockTypeConstants(file)
+	var declared, handled []string
+	for _, file := range pkg.Files {
+		declared = append(declared, blockTypeConstants(file)...)
+		handled = append(handled, scrubbedBlockTypes(file)...)
+	}
 	if len(declared) < 4 {
 		t.Fatalf("found %d BlockType constants (%v); message.go declares at least four, so the "+
 			"parse has gone wrong rather than the source", len(declared), declared)
 	}
 
-	handled := scrubbedBlockTypes(t, file)
+	if len(handled) == 0 {
+		t.Fatal("found no switch on b.Type in Block.MarshalJSON; this test is reading the wrong " +
+			"thing and would pass whatever the code did")
+	}
+
 	for _, name := range declared {
 		if !slices.Contains(handled, name) {
 			t.Errorf("%s has no case in Block.MarshalJSON's field-scrubbing switch, so a block of "+
@@ -43,8 +63,14 @@ func TestEveryBlockTypeIsScrubbed(t *testing.T) {
 	}
 }
 
-// blockTypeConstants collects the names of every constant declared with type
-// BlockType.
+// blockTypeConstants collects the names of every constant that is a BlockType,
+// in any of the three ways Go lets one be written: with the type spelled out, by
+// repeating the previous spec's type implicitly, or through a conversion.
+//
+// All three, because the point of reading the source is to see what a future
+// author actually wrote. A version of this that only understood the spelled-out
+// form was green against `BlockRedacted = BlockType("redacted_thinking")`, which
+// is the check failing at the one job it has.
 func blockTypeConstants(file *ast.File) []string {
 	var names []string
 	for _, decl := range file.Decls {
@@ -52,12 +78,34 @@ func blockTypeConstants(file *ast.File) []string {
 		if !ok || gen.Tok != token.CONST {
 			continue
 		}
+
+		var carried bool // the type the last spec named, carried down the group
 		for _, spec := range gen.Specs {
 			value, ok := spec.(*ast.ValueSpec)
 			if !ok {
 				continue
 			}
-			if ident, ok := value.Type.(*ast.Ident); !ok || ident.Name != "BlockType" {
+
+			switch typed := value.Type.(type) {
+			case *ast.Ident:
+				carried = typed.Name == "BlockType"
+			case nil:
+				// Keeps carried as it was: an untyped spec in a group inherits.
+			default:
+				carried = false
+			}
+
+			isBlockType := carried
+			for _, expr := range value.Values {
+				call, ok := expr.(*ast.CallExpr)
+				if !ok {
+					continue
+				}
+				if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "BlockType" {
+					isBlockType = true
+				}
+			}
+			if !isBlockType {
 				continue
 			}
 			for _, name := range value.Names {
@@ -71,9 +119,7 @@ func blockTypeConstants(file *ast.File) []string {
 // scrubbedBlockTypes collects the case names of the switch on b.Type inside
 // Block.MarshalJSON — the switch that clears the fields belonging to the other
 // variants.
-func scrubbedBlockTypes(t *testing.T, file *ast.File) []string {
-	t.Helper()
-
+func scrubbedBlockTypes(file *ast.File) []string {
 	var handled []string
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -105,9 +151,5 @@ func scrubbedBlockTypes(t *testing.T, file *ast.File) []string {
 		})
 	}
 
-	if len(handled) == 0 {
-		t.Fatal("found no switch on b.Type in Block.MarshalJSON; this test is reading the wrong " +
-			"thing and would pass whatever the code did")
-	}
 	return handled
 }

@@ -809,26 +809,6 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "the result the loop writes will name the first one",
 		},
-		"a refusal with nothing in it": {
-			seq: stream(llm.Event{
-				Type:       llm.EventDone,
-				StopReason: llm.StopRefusal,
-				Partial:    &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopRefusal},
-			}),
-			want: "no blocks in it",
-		},
-		"a refusal holding an empty text block": {
-			seq: stream(llm.Event{
-				Type:       llm.EventDone,
-				StopReason: llm.StopRefusal,
-				Partial: &llm.Message{
-					Role:       llm.RoleAssistant,
-					StopReason: llm.StopRefusal,
-					Content:    []llm.Block{{Type: llm.BlockText}},
-				},
-			}),
-			want: "an empty text block at index 0",
-		},
 		"a finished turn holding an empty text block": {
 			seq: stream(llm.Event{
 				Type:       llm.EventDone,
@@ -1297,6 +1277,16 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			}
 			msg.StopReason = llm.StopEndTurn
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+		},
+
+		// A model can decline before producing anything at all: a 200, a refusal
+		// stop reason, no blocks. Requiring content from a refusal would leave an
+		// adapter nowhere to put that shape, since the error event does not take
+		// the reason either. Refusing to *commit* it is the loop's rule, not this
+		// one's.
+		"a refusal with nothing in it": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopRefusal}
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopRefusal, Partial: msg})
 		},
 
 		// A model can decline part way through a tool call, so a refusal is not
