@@ -97,7 +97,6 @@ func printResult(stdout, stderr io.Writer, res *config.Result) {
 	}
 }
 
-// newTable returns a writer that aligns tab-separated columns.
 func newTable(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 }

@@ -11,13 +11,11 @@ import (
 	"strings"
 )
 
-// File is the name every config file goes by. It stays `.json` and not
-// `.jsonc` deliberately: editors in this ecosystem already apply JSONC
-// tolerance to files by that name, and a `.jsonc` suffix would buy nothing but
-// a filename nobody's tooling recognises (design §10).
+// File is the name every config file goes by. `.json` rather than `.jsonc`
+// deliberately: editors already apply JSONC tolerance by that name, and `.jsonc`
+// would buy nothing but a filename nobody's tooling recognises (design §10).
 const File = "config.json"
 
-// Directories holding the two config files.
 const (
 	globalDir  = "rasp"  // under $XDG_CONFIG_HOME
 	projectDir = ".rasp" // under the project root
@@ -29,13 +27,9 @@ type EnvBinding struct {
 	Key string
 }
 
-// EnvBindings is the environment layer, in full.
-//
-// It is a fixed table rather than a naming convention because a config key is
-// not an environment variable's namespace: `ANTHROPIC_API_KEY` is the name the
-// rest of the world already uses for a value rasp keeps under
-// `providers.anthropic.api_key`, and no mechanical rule produces both. The
-// provider entries grow as the adapters land.
+// EnvBindings is the environment layer, in full. A fixed table rather than a
+// naming convention, because no mechanical rule produces both
+// `ANTHROPIC_API_KEY` and `providers.anthropic.api_key`.
 func EnvBindings() []EnvBinding {
 	return []EnvBinding{
 		{Var: "RASP_MODEL", Key: "model"},
@@ -56,10 +50,9 @@ type FlagBinding struct {
 // this table rather than declaring them itself, so a flag cannot exist that the
 // precedence chain does not know about.
 //
-// `--yolo` is deliberately absent, and not by oversight: it arms the rung-0
-// permission bypass rather than setting a value, and putting it here would
-// imply a lower layer could set it — which is the very thing the yolo rule in
-// validate.go exists to prevent (design §10).
+// `--yolo` is deliberately absent: it arms the rung-0 permission bypass rather
+// than setting a value, and putting it here would imply a lower layer could set
+// it (design §10).
 func FlagBindings() []FlagBinding {
 	return []FlagBinding{
 		{Flag: "model", Key: "model", Usage: "model to use, as provider/id"},
@@ -67,64 +60,54 @@ func FlagBindings() []FlagBinding {
 	}
 }
 
-// Sources says where a load should look. The zero value reads the real
-// environment and filesystem; tests fill it in to read neither.
+// Sources says where a load should look; the zero value reads the real
+// environment and filesystem.
 type Sources struct {
-	// GlobalPath is the global config file. Empty derives it from
-	// $XDG_CONFIG_HOME, or ~/.config below that.
+	// GlobalPath is empty to derive it from $XDG_CONFIG_HOME, or ~/.config.
 	GlobalPath string
 
-	// ProjectDir is the directory holding .rasp/. Empty means the working
-	// directory.
+	// ProjectDir holds .rasp/. Empty means the working directory.
 	ProjectDir string
 
-	// Getenv reads the environment. Nil means the process environment.
+	// Getenv is nil for the process environment.
 	Getenv func(string) (string, bool)
 
-	// Flags are the command-line flags that were actually set, keyed by flag
-	// name. A flag left at its default must not appear here — it would
-	// otherwise outrank every file in the chain while saying nothing.
+	// Flags are the flags that were actually set, keyed by name. One left at its
+	// default must not appear: it would outrank every file while saying nothing.
 	Flags map[string]string
 }
 
-// Result is a resolved configuration together with the account of how it got
-// that way.
+// Result is a resolved configuration and the account of how it got that way.
 type Result struct {
 	Config Config
 
-	// Origins gives the winning origin of every resolved value, keyed by key
-	// path. Every value in Config has an entry.
+	// Origins gives the winning origin of every value in Config, keyed by key
+	// path.
 	Origins Origins
 
-	// Values holds the resolved value at each of those key paths, so a caller
-	// can print the configuration without walking the typed struct.
+	// Values holds the resolved value at each of those key paths, so a caller can
+	// print the configuration without walking the typed struct.
 	Values map[string]any
 
-	// Sources lists every place Load looked, in precedence order, including
-	// the ones that held nothing.
+	// Sources lists every place Load looked, in precedence order, including the
+	// ones that held nothing.
 	Sources []Source
 
-	// Warnings are problems worth saying out loud that are not worth refusing
-	// to start over.
 	Warnings []Warning
 }
 
-// contribution is one tree and the single origin every value in it came from.
-// A layer supplies one — or, for the environment and the flags, one per
-// variable and per flag, so an origin can name `RASP_MODEL` rather than "the
-// environment".
+// contribution is one tree and the origin every value in it came from. The
+// environment and flag layers supply one per variable and per flag, so an origin
+// can name `RASP_MODEL` rather than "the environment".
 type contribution struct {
 	tree   tree
 	origin Origin
 }
 
-// Load resolves configuration through design §10's precedence chain: built-in
-// defaults, then the global file, the project file, the environment and
-// finally command-line flags, each layer deep-merged onto the one below.
-//
-// It returns an error only for configuration that cannot be honoured — a file
-// that will not parse, a mode that does not exist, a project file reaching for
-// yolo. Everything softer arrives in Warnings.
+// Load resolves configuration through design §10's precedence chain: defaults,
+// the global file, the project file, the environment, then flags, each layer
+// deep-merged onto the one below. It errors only for configuration that cannot
+// be honoured; everything softer arrives in Warnings.
 func Load(src Sources) (*Result, error) {
 	getenv := src.Getenv
 	if getenv == nil {
@@ -175,11 +158,8 @@ func Load(src Sources) (*Result, error) {
 
 		res.Sources = append(res.Sources, source)
 		for _, c := range contributions {
-			// Per-layer validation runs before the merge, so a rule about
-			// where a value came from can still see where it came from. A
-			// project file asking for yolo is rejected even when a later layer
-			// would have overridden it — the file is still asking, and the
-			// next run without that flag is the one that gets it.
+			// Before the merge, so a rule about where a value came from can
+			// still see where it came from.
 			warnings, err := validate(c.tree, c.origin)
 			if err != nil {
 				return nil, err
@@ -190,12 +170,9 @@ func Load(src Sources) (*Result, error) {
 		}
 	}
 
-	// What will not survive the decode is inspected once against the merged
-	// tree, because a key is unknown and a value is the wrong sort wherever
-	// they were written — and by now the origin table can say which file that
-	// was. encoding/json cannot: its errors are addressed to Go field names
-	// and lose map keys entirely, so `"max_total_tools": "sixty"` would be
-	// reported without naming the config file it came from.
+	// Once, against the merged tree, where the origin table can say which file a
+	// bad key or value came from. encoding/json cannot: its errors are addressed
+	// to Go field names and lose map keys entirely.
 	unknown, mismatched := inspect(merged)
 	if len(mismatched) > 0 {
 		m := mismatched[0]
@@ -207,10 +184,7 @@ func Load(src Sources) (*Result, error) {
 		}
 	}
 
-	// Unknown keys are dropped as well as reported, so that what Origins
-	// describes is exactly what Config holds — a report listing a setting rasp
-	// is ignoring, beside the settings it is honouring, would be a worse
-	// answer than the warning it already gave.
+	// Dropped as well as reported, so Origins describes exactly what Config holds.
 	for _, key := range unknown {
 		origin, _ := res.Origins.At(key)
 		res.Warnings = append(res.Warnings, Warning{
@@ -221,10 +195,8 @@ func Load(src Sources) (*Result, error) {
 		discard(merged, res.Origins, splitPath(key)...)
 	}
 
-	// A yolo preset override is ignored entirely rather than half-applied, so
-	// it is dropped here instead of handed on. Leaving it in Config would let
-	// a consumer merge it and create the impression of a constraint that is
-	// not being enforced (design §10).
+	// Dropped rather than handed on: leaving it in Config would let a consumer
+	// merge it into the impression of a constraint nothing enforces (design §10).
 	discard(merged, res.Origins, "modes", ModeYolo)
 
 	if err := decodeInto(merged, &res.Config); err != nil {
@@ -235,9 +207,8 @@ func Load(src Sources) (*Result, error) {
 	return res, nil
 }
 
-// fileLayer reads one config file. A file that is not there is an ordinary
-// outcome — most people have no project config, and many have no global one —
-// so it is reported as a source that contributed nothing rather than an error.
+// fileLayer reads one config file. A missing one is an ordinary outcome, so it
+// is reported as a source that contributed nothing rather than an error.
 func fileLayer(path string, layer Layer) ([]contribution, Source, error) {
 	origin := Origin{Layer: layer, Detail: path}
 
@@ -259,10 +230,9 @@ func fileLayer(path string, layer Layer) ([]contribution, Source, error) {
 // envLayer collects the environment variables the bindings name, one
 // contribution each so every value's origin names the variable that set it.
 //
-// A variable that is set but empty counts as unset. Exporting an empty value is
-// almost always an accident — an unset shell variable expanded into an export
-// line — and letting it outrank a file the user did write would be the wrong
-// reading of it every time.
+// Set-but-empty counts as unset: an exported empty value is almost always an
+// unset shell variable expanded into an export line, and letting that outrank a
+// file the user did write reads it wrongly every time.
 func envLayer(getenv func(string) (string, bool)) ([]contribution, Source) {
 	var (
 		contributions []contribution
@@ -283,9 +253,8 @@ func envLayer(getenv func(string) (string, bool)) ([]contribution, Source) {
 	}
 
 	if len(set) == 0 {
-		// A source that found nothing still says what it looked for. "Why is
-		// my key not being picked up" is the question, and a bare "nothing
-		// set" answers none of it.
+		// A source that found nothing still says what it looked for: "why is my
+		// key not being picked up" is the question.
 		var candidates []string
 		for _, b := range EnvBindings() {
 			candidates = append(candidates, b.Var)
@@ -295,15 +264,14 @@ func envLayer(getenv func(string) (string, bool)) ([]contribution, Source) {
 			Note:   "no variables set",
 		}
 	}
-	// The layer's own entry lists what it read; each value's origin names one.
 	return contributions, Source{
 		Origin: Origin{Layer: LayerEnv, Detail: strings.Join(set, ", ")},
 		Loaded: true,
 	}
 }
 
-// flagLayer collects the flags that were set, one contribution each so an
-// origin can name `--mode` — which is what the user would change.
+// flagLayer collects the flags that were set, one contribution each so an origin
+// can name `--mode`, which is what the user would change.
 func flagLayer(flags map[string]string) ([]contribution, Source, error) {
 	byFlag := map[string]FlagBinding{}
 	for _, b := range FlagBindings() {
@@ -319,10 +287,9 @@ func flagLayer(flags map[string]string) ([]contribution, Source, error) {
 		if !ok {
 			return nil, Source{}, fmt.Errorf("--%s is not a configuration flag", name)
 		}
-		// An empty value means "not set" here for the same reason it does in
-		// the environment: `rasp --model "$MODEL"` with MODEL unset is the
-		// same accident as an exported empty variable, and it would otherwise
-		// outrank every file in the chain while carrying no instruction.
+		// Empty means "not set" for the same reason it does in the environment:
+		// `rasp --model "$MODEL"` with MODEL unset is the same accident as an
+		// exported empty variable.
 		if flags[name] == "" {
 			continue
 		}
@@ -336,8 +303,7 @@ func flagLayer(flags map[string]string) ([]contribution, Source, error) {
 	}
 
 	if len(set) == 0 {
-		// Reached both when no flag was given and when every one given was
-		// empty. A source that found nothing still says what it looked for.
+		// Reached when no flag was given, and when every one given was empty.
 		var candidates []string
 		for _, b := range FlagBindings() {
 			candidates = append(candidates, "--"+b.Flag)
@@ -357,11 +323,10 @@ func flagLayer(flags map[string]string) ([]contribution, Source, error) {
 // GlobalPath returns the global config file's location.
 func GlobalPath() (string, error) { return globalConfigPath(os.LookupEnv) }
 
-// globalConfigPath follows the XDG base directory spec on every platform,
-// because design §10 names `~/.config/rasp/config.json` outright.
-// os.UserConfigDir would answer `~/Library/Application Support` on macOS,
-// which is a different file from the one the documentation tells people to
-// edit.
+// globalConfigPath follows the XDG base directory spec on every platform, because
+// design §10 names `~/.config/rasp/config.json` outright. os.UserConfigDir would
+// answer `~/Library/Application Support` on macOS, which is a different file from
+// the one the documentation tells people to edit.
 func globalConfigPath(getenv func(string) (string, bool)) (string, error) {
 	if dir, ok := getenv("XDG_CONFIG_HOME"); ok && dir != "" {
 		return filepath.Join(dir, globalDir, File), nil
@@ -373,8 +338,8 @@ func globalConfigPath(getenv func(string) (string, bool)) (string, error) {
 	return filepath.Join(home, ".config", globalDir, File), nil
 }
 
-// ProjectPath returns the project config file's location under dir, or under
-// the working directory when dir is empty.
+// ProjectPath returns the project config file's location under dir, or under the
+// working directory when dir is empty.
 func ProjectPath(dir string) (string, error) { return projectConfigPath(dir) }
 
 func projectConfigPath(dir string) (string, error) {
@@ -388,8 +353,7 @@ func projectConfigPath(dir string) (string, error) {
 	return filepath.Join(dir, projectDir, File), nil
 }
 
-// flatten renders the merged tree as key path to value, matching the paths in
-// Origins one for one.
+// flatten renders the merged tree as key path to value, matching Origins.
 func flatten(t tree) map[string]any {
 	values := map[string]any{}
 	var walk func(val any, path []string)

@@ -14,13 +14,11 @@ import (
 
 var _ llm.Provider = scripted{}
 
-// TestStreamHasNoErrorResult is the "never returns a Go error" half of the
-// contract, checked over the interface rather than over any implementation.
-// Reflection rather than a compile-time assertion is the point: adding an error
-// result is a change someone can make for a good local reason, and it would
-// break the build at every implementation — which reads as "update the
-// adapters", not as "you have just given every call site a second error path to
-// forget about". This test says the second thing.
+// TestStreamHasNoErrorResult checks the "never returns a Go error" half of the
+// contract over the interface. Reflection rather than a compile-time assertion,
+// because adding an error result breaks the build at every implementation, which
+// reads as "update the adapters" rather than as "every call site now has a second
+// error path to forget about".
 func TestStreamHasNoErrorResult(t *testing.T) {
 	method, ok := reflect.TypeFor[llm.Provider]().MethodByName("Stream")
 	if !ok {
@@ -40,10 +38,8 @@ func TestStreamHasNoErrorResult(t *testing.T) {
 
 }
 
-// TestEveryEventCarriesTheAccumulatedMessage drives a stream that thinks,
-// speaks and calls a tool, and checks the other half of the contract: every
-// event carries the whole message so far, as one pointer the provider keeps
-// mutating.
+// TestEveryEventCarriesTheAccumulatedMessage drives a stream that thinks, speaks
+// and calls a tool.
 func TestEveryEventCarriesTheAccumulatedMessage(t *testing.T) {
 	provider := scripted{id: "test", actions: []action{
 		thinking("The test ", "is in auth."),
@@ -67,9 +63,8 @@ func TestEveryEventCarriesTheAccumulatedMessage(t *testing.T) {
 		t.Fatalf("event sequence:\n got %v\nwant %v", got, want)
 	}
 
-	// One message, one address. A consumer holding the first event's Partial
-	// is holding the same thing the last event handed it, which is what makes
-	// "render Partial" the whole of the UI's logic.
+	// One message, one address, which is what makes "render Partial" the whole of
+	// the UI's logic.
 	for i, ev := range events {
 		if ev.Partial != events[0].Partial {
 			t.Fatalf("event %d (%s) carries a different *Message than event 0; the message is "+
@@ -93,8 +88,7 @@ func TestEveryEventCarriesTheAccumulatedMessage(t *testing.T) {
 		t.Errorf("content:\n got %+v\nwant %+v", got, wantBlocks)
 	}
 
-	// The fragments that made up the arguments do not individually parse; the
-	// completed call does, and that is the only version a consumer ever sees.
+	// The fragments do not individually parse; the completed call does.
 	call := toolCallIn(t, events)
 	var args struct{ Path string }
 	if err := json.Unmarshal(call.Input, &args); err != nil {
@@ -106,10 +100,8 @@ func TestEveryEventCarriesTheAccumulatedMessage(t *testing.T) {
 }
 
 // TestTwoToolCallsInOneTurn is the shape parallel tool execution depends on, and
-// the one that makes accumulation harder than it looks: the second call's
-// arguments start empty while the first call's are already complete, so a
-// checker comparing whole channels has to see that as growth rather than as a
-// rewrite.
+// what makes accumulation harder than it looks: a checker comparing whole
+// channels reads the second call's first fragment as a rewrite of the first.
 func TestTwoToolCallsInOneTurn(t *testing.T) {
 	provider := scripted{id: "test", actions: []action{
 		toolCall("toolu_01", "read", `{"path":`, `"auth.go"}`),
@@ -134,8 +126,8 @@ func TestTwoToolCallsInOneTurn(t *testing.T) {
 		}
 	}
 
-	// Both calls are in the message too, in the order they arrived — which is
-	// the order their results have to come back in.
+	// Both calls are in the message too, in the order their results have to come
+	// back in.
 	final := events[0].Partial
 	if got, want := len(final.Content), 2; got != want {
 		t.Fatalf("message holds %d blocks, want %d", got, want)
@@ -147,20 +139,15 @@ func TestTwoToolCallsInOneTurn(t *testing.T) {
 	}
 }
 
-// TestScriptedFailureArrivesAsATerminalEventError is the ticket's third
-// criterion. What it asserts beyond "an error turned up" is the shape of the
-// failure: which event type, which stop reason, that the original error is
-// still reachable through errors.Is, and that the text streamed before the
-// failure is still in the message — a UI that has drawn half a reply must not
-// have to erase it.
+// TestScriptedFailureArrivesAsATerminalEventError asserts the shape of the
+// failure, including that text streamed before it survives: a UI that has drawn
+// half a reply must not erase it.
 func TestScriptedFailureArrivesAsATerminalEventError(t *testing.T) {
 	overloaded := errors.New("overloaded_error: server is overloaded")
 	provider := scripted{id: "test", actions: []action{
 		text("Reading the "),
 		fail(overloaded, llm.StopError),
-		// Never streamed: a failure ends the stream, so the rest of the script
-		// is discarded rather than arriving after the terminal event.
-		text("rest of it."),
+		text("rest of it."), // never streamed: a failure ends the stream
 	}}
 
 	events := check(t, provider.Stream(context.Background(), llm.Request{}))
@@ -175,8 +162,7 @@ func TestScriptedFailureArrivesAsATerminalEventError(t *testing.T) {
 	if !errors.Is(failure.Err, overloaded) {
 		t.Errorf("Err = %v, want it to wrap %v", failure.Err, overloaded)
 	}
-	// The retry classifier is a pure function over the Message, so the message
-	// has to say the call failed.
+	// The retry classifier is a pure function over the Message.
 	if got, want := failure.Partial.StopReason, llm.StopError; got != want {
 		t.Errorf("Partial.StopReason = %q, want %q", got, want)
 	}
@@ -188,8 +174,7 @@ func TestScriptedFailureArrivesAsATerminalEventError(t *testing.T) {
 	}
 }
 
-// TestCancelledTurnArrivesAsATerminalEventError is the same rule for the other
-// kind of failure. A cancelled context is not a model error, and it still has
+// TestCancelledTurnArrivesAsATerminalEventError: not a model error, and still
 // only one way out of a stream.
 func TestCancelledTurnArrivesAsATerminalEventError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -210,14 +195,9 @@ func TestCancelledTurnArrivesAsATerminalEventError(t *testing.T) {
 	}
 }
 
-// TestConsumerCanStopEarly covers the pull half of "pull-based iterator". A
-// consumer that stops reading — the user hits escape, the loop gives up — must
-// stop the producer rather than leave it working for nobody. goleak in TestMain
-// is the other half of this check: a provider pumping events from a goroutine
-// would fail the package, not this test.
-//
-// Two places matter, hence two cases: the very first yield, and the one inside
-// the script. A provider that checks only one of them ignores half the ways a
+// TestConsumerCanStopEarly covers the pull half of "pull-based iterator"; goleak
+// in TestMain is the other half. Two cases, because a provider that checks only
+// the first yield, or only the ones inside the script, ignores half the ways a
 // turn gets abandoned.
 func TestConsumerCanStopEarly(t *testing.T) {
 	played := 0
@@ -252,19 +232,12 @@ func TestConsumerCanStopEarly(t *testing.T) {
 }
 
 // TestCheckStreamRejects is the contract's own test suite: one malformed stream
-// per rule, each asserting the failure is reported as the rule it broke rather
-// than as some error. A checker that answered "invalid stream" to every one of
-// these would pass a weaker version of this test and be useless in the one
-// moment it matters, which is an adapter author reading its output.
+// per rule, each asserting the failure names the rule it broke.
 func TestCheckStreamRejects(t *testing.T) {
-	// A message that already holds streamed text, for the cases about what
-	// happens to it afterwards.
 	streamed := func() *llm.Message {
 		return &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText, Text: "I'll"}}}
 	}
 
-	// A tool call as it looks once complete, for the cases about the ways the
-	// event and the message can disagree about it.
 	called := func(input string) *llm.Message {
 		return &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
 			Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read", Input: json.RawMessage(input),
@@ -288,8 +261,7 @@ func TestCheckStreamRejects(t *testing.T) {
 		},
 		"a message allocated inside the stream loop": {
 			seq: func(yield func(llm.Event) bool) {
-				// Both events carry the correct accumulated text, so the only
-				// rule broken is the one about the address.
+				// Correct accumulated text, so the only rule broken is the address.
 				for _, step := range []struct{ delta, accumulated string }{
 					{"I'll", "I'll"},
 					{" read", "I'll read"},
@@ -608,7 +580,7 @@ func TestCheckStreamRejects(t *testing.T) {
 				*msg = llm.Message{Content: msg.Content, StopReason: llm.StopEndTurn}
 				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
 			},
-			// Named so the per-event rule is what answers, not the settled one.
+			// Worded so the per-event rule answers, not the settled one.
 			want: "the next time it is replayed",
 		},
 		"a tool_use block with no id": {
@@ -713,7 +685,7 @@ func TestCheckStreamRejects(t *testing.T) {
 					return
 				}
 				// A second call's tail mis-routed onto the first call's block,
-				// after the loop has already been told to run it.
+				// after the loop was told to run it.
 				msg.Content[0].Input = []byte(`{"a":1}{"b":2}`)
 				yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"b":2}`, Partial: msg})
 			},
@@ -774,9 +746,7 @@ func TestCheckStreamRejects(t *testing.T) {
 				msg.Content[0].Type = llm.BlockThinking
 				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
 			},
-			// Retyping reads as the block going missing, which is caught first
-			// and says so.
-			want: "is gone",
+			want: "is gone", // retyping reads as the block going missing
 		},
 		"one ToolCall pointer reused for two calls": {
 			seq: func(yield func(llm.Event) bool) {
@@ -853,8 +823,7 @@ func TestCheckStreamRejects(t *testing.T) {
 			seq: func(yield func(llm.Event) bool) {
 				msg := &llm.Message{Role: llm.RoleAssistant}
 				// The block gets its own copy; the event gets the buffer, which
-				// the next call overwrites in place. Comparing the header rather
-				// than the bytes would not notice.
+				// the next call overwrites in place.
 				scratch := make([]byte, 0, 64)
 				for _, spec := range []struct{ id, path string }{{"toolu_01", "a.go"}, {"toolu_02", "b.go"}} {
 					args := `{"path":"` + spec.path + `"}`
@@ -886,7 +855,7 @@ func TestCheckStreamRejects(t *testing.T) {
 					ToolCall: call("toolu_01A9", "read", `{"path":"auth.go"}`)}) {
 					return
 				}
-				// Renamed, then restored before the stream ends — invisible to
+				// Renamed then restored before the stream ends — invisible to
 				// anything that only looks once the events have stopped.
 				msg.Content[0].Name = "write"
 				if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
@@ -979,13 +948,8 @@ func TestCheckStreamRejects(t *testing.T) {
 }
 
 // TestCheckStreamNoticesChangesAfterTheStream covers the window the agent loop
-// actually persists from: iteration is over, the provider is unwinding, and
-// whatever it does to the message now is what gets written down. Every rule
-// inside the loop has stopped looking by then, which is why each of these
-// mutations has to be caught here or not at all.
+// persists from, where every rule inside the loop has stopped looking.
 func TestCheckStreamNoticesChangesAfterTheStream(t *testing.T) {
-	// after runs a well-formed stream and lets the caller meddle with the message
-	// once it has ended.
 	after := func(meddle func(*llm.Message)) llm.StreamResponse {
 		return func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
@@ -1039,9 +1003,8 @@ func TestCheckStreamNoticesChangesAfterTheStream(t *testing.T) {
 			want:   "the loop dispatched the first one",
 		},
 		"a tool_result appended": {
-			// The per-channel rules cannot see this one: no channel watches a
-			// tool_result, so without the block-type check it lands in the
-			// transcript and 400s the next request.
+			// No channel watches a tool_result, so without the block-type check
+			// it lands in the transcript and 400s the next request.
 			meddle: func(m *llm.Message) {
 				m.Content = append(m.Content, llm.Block{
 					Type: llm.BlockToolResult, ToolUseID: "toolu_01", Content: "nope",
@@ -1059,10 +1022,8 @@ func TestCheckStreamNoticesChangesAfterTheStream(t *testing.T) {
 	}
 }
 
-// TestCheckStreamAcceptsAFailedStream guards the obvious way to write a
-// contract check that is useless: rejecting anything that went wrong. A stream
-// that fails still has to satisfy the contract, and a check that conflates the
-// two would fail every retry test in the project.
+// TestCheckStreamAcceptsAFailedStream guards the obvious way to write a useless
+// contract check: rejecting anything that went wrong.
 func TestCheckStreamAcceptsAFailedStream(t *testing.T) {
 	msg := &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopError}
 	_, err := llm.CheckStream(stream(llm.Event{
@@ -1076,14 +1037,12 @@ func TestCheckStreamAcceptsAFailedStream(t *testing.T) {
 	}
 }
 
-// TestCheckStreamAcceptsRealWireShapes pins three things the checker must not
-// reject, because each is what some provider actually sends and a rule tight
-// enough to forbid it would be discovered by an adapter author rather than by
-// us.
+// TestCheckStreamAcceptsRealWireShapes pins what the checker must not reject.
+// Each case is what some provider actually sends, so a rule tight enough to
+// forbid one would be discovered by an adapter author rather than by us.
 func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 	cases := map[string]llm.StreamResponse{
-		// Anthropic's content_block_start carries "input": {}, so a tool taking
-		// no arguments has its whole payload before any delta arrives.
+		// Anthropic: content_block_start carries "input": {}.
 		"a no-argument call whose payload arrives at the start": func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
 				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "list", Input: []byte(`{}`),
@@ -1102,10 +1061,8 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
 		},
 
-		// A no-argument call whose {} arrives as a fragment like any other, and
-		// the same object split across two. Both are what the regression this
-		// replaces rejected: the allowance is on the placeholder already there,
-		// not on the bytes arriving.
+		// The allowance is on the placeholder already there, not on the bytes
+		// arriving. Both shapes are what the regression this replaces rejected.
 		"an empty arguments object arriving as a fragment": func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
 				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "list",
@@ -1140,10 +1097,7 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 		},
 
 		// Anthropic opens a tool block's fragment stream with an empty
-		// partial_json, so an adapter forwarding its events one-for-one emits a
-		// delta that carries nothing. Permitted on purpose: nothing is lost, and
-		// a fragment that went missing while Delta said something arrived is
-		// caught by the accumulation rule.
+		// partial_json.
 		"a delta event whose fragment is empty": func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText}}}
 			if !yield(llm.Event{Type: llm.EventTextDelta, Partial: msg}) {
@@ -1157,8 +1111,7 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
 		},
 
-		// The Anthropic no-argument shape end to end: the empty object opens the
-		// block, and the single fragment carries the same two bytes.
+		// The Anthropic no-argument shape end to end.
 		"a no-argument call that sends the empty object twice": func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
 				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "list", Input: []byte(`{}`),
@@ -1177,10 +1130,9 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
 		},
 
-		// One call's arguments genuinely are the empty object while a sibling's
-		// are still streaming. Both blocks sit at `{}` when the first fragment
-		// of the second call arrives, which is the shape that broke when this
-		// package tried to track which block had been streamed into.
+		// Both blocks sit at `{}` when the second call's first fragment arrives —
+		// the shape that broke when this package tracked which block was streamed
+		// into.
 		"a no-argument call beside one still streaming": func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant}
 			for _, call := range []struct{ id, name string }{{"toolu_01", "list"}, {"toolu_02", "read"}} {
@@ -1191,8 +1143,8 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 					return
 				}
 			}
-			// The first call's arguments are the empty object, arriving as a
-			// fragment while its sibling still sits at the placeholder.
+			// The first call's arguments arrive as a fragment while its sibling
+			// still sits at the placeholder.
 			if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{}`, Partial: msg}) {
 				return
 			}
@@ -1212,8 +1164,7 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
 		},
 
-		// A short arguments object can arrive whole in the chunk that opens the
-		// call, so the event that starts a tool block may deliver the payload.
+		// A short arguments object can arrive whole in the opening chunk.
 		"a call whose payload arrives with the block": func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
 				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read", Input: []byte(`{"path":"auth.go"}`),
@@ -1232,9 +1183,7 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
 		},
 
-		// Anthropic's content_block_start carries "input": {} for every tool_use,
-		// so an adapter that copies the field faithfully starts at the empty
-		// object and then accumulates fragments over it.
+		// Anthropic again: a faithful adapter accumulates over the empty object.
 		"a call whose fragments replace the empty object": func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
 				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read", Input: []byte(`{}`),
@@ -1242,7 +1191,6 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
 				return
 			}
-			// Anthropic opens the fragment stream with an empty partial_json.
 			if !yield(llm.Event{Type: llm.EventToolInputDelta, Partial: msg}) {
 				return
 			}
@@ -1267,8 +1215,7 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
 		},
 
-		// An OpenAI-compatible endpoint may not reveal arguments until its final
-		// chunk, so the whole payload can equally arrive at the completed call.
+		// OpenAI-compatible: arguments may not appear until the final chunk.
 		"a call whose payload arrives at the end": func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
 				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read",
@@ -1288,9 +1235,8 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
 		},
 
-		// Two parallel calls whose fragments interleave, which is what the
-		// OpenAI-compatible shape allows: fragments are indexed by call, so
-		// nothing says one call's arguments finish before the next one starts.
+		// Fragments are indexed by call, so nothing says one call's arguments
+		// finish before the next starts.
 		"two calls whose arguments interleave": func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
 				{Type: llm.BlockToolUse, ID: "toolu_01", Name: "read"},
@@ -1318,8 +1264,7 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 		},
 
 		// Ollama and llama.cpp-style servers report finish_reason "stop" next to
-		// tool_calls, so an adapter that maps the reason faithfully ends a turn
-		// with calls in it and no claim to have stopped for them.
+		// tool_calls.
 		"tool calls reported alongside a plain ending": func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
 				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "read", Input: []byte(`{"path":"auth.go"}`),
@@ -1335,19 +1280,14 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
 		},
 
-		// A model can decline before producing anything at all: a 200, a refusal
-		// stop reason, no blocks. Requiring content from a refusal would leave an
-		// adapter nowhere to put that shape, since the error event does not take
-		// the reason either. Refusing to *commit* it is the loop's rule, not this
-		// one's.
+		// A 200, a refusal stop reason, no blocks. Committing that is the loop's
+		// rule to refuse.
 		"a refusal with nothing in it": func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopRefusal}
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopRefusal, Partial: msg})
 		},
 
-		// A model can decline part way through a tool call, so a refusal is not
-		// held to a full set of announcements — design §4's termination table
-		// covers a refusal with no tool calls and says nothing about this.
+		// Which design §4's termination table says nothing about.
 		"a refusal that stops mid-call": func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
 				Type: llm.BlockToolUse, ID: "toolu_01A9", Name: "write", Input: []byte(`{"pa`),
@@ -1359,9 +1299,8 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopRefusal, Partial: msg})
 		},
 
-		// A stream that dies right after a tool block opens leaves that block
-		// holding the empty object a provider puts there — indistinguishable from
-		// one nothing has arrived in, and impossible to have announced.
+		// Left holding the empty object a provider puts there: indistinguishable
+		// from one nothing arrived in, and impossible to have announced.
 		"a turn that broke off just after a tool block opened": func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
 				Type: llm.BlockToolUse, ID: "toolu_01", Name: "read", Input: []byte(`{}`),
@@ -1378,12 +1317,8 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			})
 		},
 
-		// The connection can drop after the last argument fragment and before the
-		// event that confirms the call. Holding that turn to an announcement
-		// would leave an adapter no way through except to announce a call the
-		// provider never finished asking for — and then the loop writes a file
-		// on the strength of a dropped connection. Failing those calls is the
-		// loop's job, per design §4 invariant 2.
+		// See checkComplete on why holding this turn to an announcement is the
+		// more dangerous rule.
 		"a call complete but unconfirmed when the stream broke": func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{
 				Type: llm.BlockToolUse, ID: "toolu_01", Name: "write", Input: []byte(`{"path":"a.go"}`),
@@ -1400,8 +1335,7 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			})
 		},
 
-		// A cancelled turn is an error to the code that was streaming and a
-		// completion to design §4's termination table, so it may end either way.
+		// A cancelled turn may end either way — see doneReasons.
 		"an abort reported as a normal ending": func(yield func(llm.Event) bool) {
 			msg := &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopAborted}
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopAborted, Partial: msg})
@@ -1417,11 +1351,8 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 	}
 }
 
-// TestCheckStreamReadsPastAViolation is the other half of the early-stop rule
-// CheckStream declines to check. It must not be the thing that abandons a
-// stream: a provider that ignores a false yield would die of the runtime's
-// range-function panic instead of being told which rule it broke, which loses
-// the diagnostic exactly when it is needed.
+// TestCheckStreamReadsPastAViolation: CheckStream must not be the thing that
+// abandons a stream.
 func TestCheckStreamReadsPastAViolation(t *testing.T) {
 	yielded := 0
 	seq := func(yield func(llm.Event) bool) {
@@ -1450,11 +1381,8 @@ func TestCheckStreamReadsPastAViolation(t *testing.T) {
 }
 
 // TestCheckStreamAcceptsAnUnfinishedCall is the boundary of the rule that every
-// tool_use block was announced. A stream cut off mid-call — the failure, or the
-// output limit — leaves a block no EventToolCall could have announced, because
-// the arguments never finished arriving. That is the input design §4 invariant
-// 2's guard is written for, so rejecting it here would fail every test of that
-// guard before it was written.
+// tool_use block was announced: rejecting a stream cut off mid-call would fail
+// every test of design §4 invariant 2's guard.
 func TestCheckStreamAcceptsAnUnfinishedCall(t *testing.T) {
 	half := func(stop llm.StopReason, terminal llm.EventType) llm.StreamResponse {
 		return func(yield func(llm.Event) bool) {

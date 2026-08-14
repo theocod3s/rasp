@@ -1,10 +1,10 @@
 package config
 
-// This test is in package config rather than config_test because its subject
-// is parseValue itself. Design §13 fuzzes internal/tool/edit for the reason
-// that applies here too: a pure string function with no I/O is the one shape
-// where fuzzing is cheap, and the failure it hunts — a parse that succeeds
-// while meaning something else — is one no table test would think to write.
+// In package config rather than config_test because its subject is parseValue
+// itself. Design §13's argument for fuzzing internal/tool/edit applies here: a
+// pure string function with no I/O is where fuzzing is cheap, and the failure it
+// hunts — a parse that succeeds while meaning something else — is one no table
+// test would think to write.
 
 import (
 	"slices"
@@ -12,16 +12,14 @@ import (
 	"testing"
 )
 
-// FuzzParseValue hunts for a panic, for a literal silently rewritten, and for
-// a parse that is not stable.
+// FuzzParseValue hunts for a panic, a literal silently rewritten, and a parse
+// that is not stable.
 //
-// The stability check is the interesting one, and it is deliberately expressed
-// without a second copy of the grammar: render the segments back into source
-// and parse *that*, and the segments must come out identical. An earlier
-// version of this test compared against a hand-written canonical form, which
-// only proved that two implementations of the same parser disagreed — the `$`
-// in `$(echo $$)` is shell syntax passed through untouched, not our escape,
-// and the canonicaliser did not know that.
+// The stability check avoids a second copy of the grammar: render the segments
+// back into source, parse *that*, and require identical segments. An earlier
+// version compared against a hand-written canonical form, which only proved two
+// implementations of the same parser disagreed — the `$` in `$(echo $$)` is
+// shell syntax passed through untouched, not our escape.
 func FuzzParseValue(f *testing.F) {
 	seeds := []string{
 		"",
@@ -52,15 +50,14 @@ func FuzzParseValue(f *testing.F) {
 	f.Fuzz(func(t *testing.T, value string) {
 		segs, err := parseValue(value)
 		if err != nil {
-			// A rejected value is a fine outcome. It only has to be a
-			// rejection rather than a panic, which getting here proves.
+			// A rejection is a fine outcome, and getting here proves it was
+			// not a panic.
 			return
 		}
 
-		// The common path, checked exactly: a value with nothing to substitute
-		// comes back as itself. Any drift here is a literal credential quietly
-		// rewritten, which would fail authentication somewhere far from this
-		// package with nothing pointing back.
+		// A value with nothing to substitute comes back as itself. Any drift is a
+		// literal credential quietly rewritten, which fails authentication far
+		// from here with nothing pointing back.
 		if !strings.ContainsRune(value, '$') {
 			switch {
 			case value == "" && len(segs) == 0:
@@ -83,14 +80,13 @@ func FuzzParseValue(f *testing.F) {
 	})
 }
 
-// render writes segments back out as source.
 func render(segs []segment) string {
 	var out strings.Builder
 	for _, seg := range segs {
 		switch seg.kind {
 		case segLiteral:
-			// A literal dollar has to go back out escaped, or rendering a
-			// literal would produce a reference on the way back in.
+			// Escaped on the way out, or rendering a literal produces a
+			// reference on the way back in.
 			out.WriteString(strings.ReplaceAll(seg.text, "$", dollarEscape))
 		case segCommand:
 			out.WriteString("$(")

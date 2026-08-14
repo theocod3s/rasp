@@ -17,9 +17,8 @@ const (
 	LayerFlag
 )
 
-// layers is the chain in application order, lowest first. Load walks it in
-// this order, so the slice is the precedence rule rather than a description of
-// one written somewhere else.
+// layers is the chain in application order, lowest first. Load walks it, so this
+// slice is the precedence rule rather than a description of one.
 var layers = []Layer{LayerDefault, LayerGlobal, LayerProject, LayerEnv, LayerFlag}
 
 // String names the layer as `rasp config check` prints it.
@@ -39,14 +38,12 @@ func (l Layer) String() string {
 	return "unknown"
 }
 
-// Origin says where one resolved value came from: which layer, and which file,
-// environment variable or flag within it.
+// Origin says where one resolved value came from.
 type Origin struct {
 	Layer Layer
 
 	// Detail identifies the source inside the layer — a file path, a variable
-	// name, a flag name. Empty for the built-in defaults, which have no
-	// location to name.
+	// name, a flag name. Empty for the defaults, which have no location to name.
 	Detail string
 }
 
@@ -64,24 +61,19 @@ func (o Origin) String() string {
 	return o.Layer.String() + " " + o.Detail
 }
 
-// Origins records the winning origin of every resolved value, keyed by the
-// value's key path.
-//
-// A key path is the JSON keys from the root joined with ".", so `model` and
-// `providers.anthropic.api_key`. A literal "." inside a key — legal in a bash
-// pattern like `rm *.go` — is escaped as `\.`, so two different locations can
-// never collapse onto one entry.
+// Origins records the winning origin of every resolved value, keyed by key path:
+// the JSON keys from the root joined with ".". A literal "." inside a key — legal
+// in a bash pattern — is escaped as `\.`, so two locations cannot collapse onto
+// one entry.
 type Origins map[string]Origin
 
 // At returns the origin of the value at a key path.
 //
-// When the key holds an object, the origins sit on its leaves rather than on
-// the key — which is exactly the case a caller asking about a *malformed*
-// value runs into, since "an object where a string belongs" has no leaf of its
-// own. So a miss falls back to the first origin recorded beneath the key. The
-// leaves under one wrongly-shaped value normally share an origin; where a
-// later layer has overridden part of it they do not, and taking the first in
-// sorted order at least makes the answer the same every run.
+// When the key holds an object the origins sit on its leaves — exactly the case a
+// caller asking about a *malformed* value runs into, since "an object where a
+// string belongs" has no leaf of its own. So a miss falls back to the first
+// origin beneath the key, in sorted order, for an answer that is the same every
+// run even when those leaves disagree.
 func (o Origins) At(key string) (Origin, bool) {
 	if origin, ok := o[key]; ok {
 		return origin, true
@@ -104,12 +96,10 @@ func (o Origins) Paths() []string {
 	return paths
 }
 
-// pathEscaper escapes a separator that appears inside a key. A bash pattern
-// like `rm *.go` is a legal key, and joining it unescaped would put it at a
-// path some other setting could also occupy.
+// pathEscaper escapes a separator inside a key. `rm *.go` is a legal key, and
+// joining it unescaped would put it at a path another setting could occupy.
 var pathEscaper = strings.NewReplacer(`\`, `\\`, `.`, `\.`)
 
-// joinPath renders a key path from its segments.
 func joinPath(segments []string) string {
 	escaped := make([]string, len(segments))
 	for i, s := range segments {
@@ -118,8 +108,7 @@ func joinPath(segments []string) string {
 	return strings.Join(escaped, ".")
 }
 
-// splitPath is joinPath's inverse: it recovers the segments of a key path,
-// honouring the escapes joinPath wrote.
+// splitPath is joinPath's inverse, honouring the escapes joinPath wrote.
 func splitPath(key string) []string {
 	var (
 		segments []string
@@ -143,13 +132,12 @@ func splitPath(key string) []string {
 	return append(segments, cur.String())
 }
 
-// Warning is a configuration problem that is worth saying out loud but is not
-// worth refusing to start over.
+// Warning is a configuration problem worth saying out loud but not worth
+// refusing to start over.
 type Warning struct {
 	Origin Origin
 
-	// Key is the key path the warning is about, or "" when it concerns the
-	// source as a whole.
+	// Key is the key path, or "" when the warning is about the source as a whole.
 	Key string
 
 	Message string
@@ -163,22 +151,20 @@ func (w Warning) String() string {
 	return w.Key + ": " + w.Message + " (" + w.Origin.String() + ")"
 }
 
-// Source reports one place Load looked, whether or not it found anything. The
-// misses matter as much as the hits: "which file is it not reading" is the
-// question `rasp config check` exists to answer.
+// Source reports one place Load looked. The misses matter as much as the hits:
+// "which file is it not reading" is what `rasp config check` answers.
 type Source struct {
 	Origin Origin
 
 	// Loaded is whether this source contributed any value.
 	Loaded bool
 
-	// Note explains a source that contributed nothing — "not found",
-	// "no variables set". Empty when Loaded.
+	// Note explains a source that contributed nothing — "not found", "no
+	// variables set". Empty when Loaded.
 	Note string
 }
 
-// sortWarnings orders warnings by layer, then key, then message, so repeated
-// runs print the same thing.
+// sortWarnings makes repeated runs print the same thing.
 func sortWarnings(ws []Warning) {
 	slices.SortStableFunc(ws, func(a, b Warning) int {
 		return cmp.Or(

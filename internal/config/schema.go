@@ -8,8 +8,7 @@ import (
 	"sync"
 )
 
-// kind is the sort of JSON value a key holds, named the way an error message
-// wants to say it.
+// kind is the sort of JSON value a key holds, named the way an error says it.
 type kind int
 
 const (
@@ -40,8 +39,8 @@ func (k kind) String() string {
 	return "a value"
 }
 
-// kindOf names the sort of a decoded JSON value. The second result is false
-// for null, which JSON allows anywhere and the decoder reads as a zero value.
+// kindOf names the sort of a decoded JSON value. The second result is false for
+// null, which JSON allows anywhere and the decoder reads as a zero value.
 func kindOf(val any) (kind, bool) {
 	switch val.(type) {
 	case nil:
@@ -61,15 +60,13 @@ func kindOf(val any) (kind, bool) {
 	}
 }
 
-// keySpec is the shape Config accepts: what a key holds, and what may sit
-// below it. A child named "*" stands for a map, where the keys are the user's
-// to choose — a provider id, an MCP server name, a bash glob.
+// keySpec is the shape Config accepts. A child named "*" stands for a map, whose
+// keys are the user's to choose.
 type keySpec struct {
 	kind     kind
 	children map[string]*keySpec
 }
 
-// child resolves one key name, falling back to the wildcard.
 func (k *keySpec) child(name string) *keySpec {
 	if k == nil {
 		return nil
@@ -87,13 +84,11 @@ const wildcardKey = "*"
 var configSpec = sync.OnceValue(func() *keySpec {
 	spec := specOf(reflect.TypeFor[Config]())
 
-	// `modes` is a Go map, so reflection reads its keys as the user's to
-	// invent. They are not: they are the four mode names. Left as a wildcard,
-	// `modes.manaul` would load clean and its rules would never be consulted
-	// — a permission override that reads as applied and is not, which is the
-	// expensive direction to be wrong in. Narrowing the spec routes a typo
-	// through the unknown-key warning that already exists rather than adding a
-	// second mechanism beside it.
+	// `modes` is a Go map, so reflection reads its keys as the user's to invent.
+	// They are the four mode names, and left as a wildcard `modes.manaul` would
+	// load clean and never be consulted — a permission override that reads as
+	// applied and is not. Narrowing routes the typo through the unknown-key
+	// warning that already exists.
 	if modes := spec.children["modes"]; modes != nil {
 		perMode := modes.children[wildcardKey]
 		modes.children = make(map[string]*keySpec, len(modeNames))
@@ -130,8 +125,7 @@ func specOf(t reflect.Type) *keySpec {
 		}
 
 	case reflect.Slice, reflect.Array:
-		// Not walked: arrays replace rather than merge, so nothing addresses a
-		// key inside one.
+		// Not walked: arrays replace rather than merge.
 		return &keySpec{kind: kindArray}
 
 	case reflect.String:
@@ -152,21 +146,19 @@ func specOf(t reflect.Type) *keySpec {
 	}
 }
 
-// mismatch is a value Config cannot hold.
 type mismatch struct {
 	key  string
 	want kind
 
-	// got names what arrived. It is a kind ("a string") except where the kind
-	// is not the problem — `16.5` where a whole number belongs is a number,
-	// and saying so would explain nothing — in which case it is the value.
+	// got names what arrived: a kind ("a string"), or the value itself where the
+	// kind is not the problem — `16.5` where a whole number belongs is a number,
+	// and saying so would explain nothing.
 	got string
 }
 
-// fitsInteger reports whether a decoded JSON number is a whole number Go can
-// hold in an int. A stray decimal point and a value past the 64-bit range both
-// fail here, and both would otherwise reach encoding/json — whose error names
-// a Go field and never the file it came from.
+// fitsInteger reports whether a decoded JSON number fits an int. A stray decimal
+// point and a value past the 64-bit range both fail here, and both would reach
+// encoding/json otherwise, whose error names a Go field and never a file.
 func fitsInteger(val any) bool {
 	num, ok := val.(json.Number)
 	if !ok {
@@ -176,17 +168,10 @@ func fitsInteger(val any) bool {
 	return err == nil
 }
 
-// inspect walks the merged tree against Config's shape and reports what will
-// not survive the decode: keys Config has no home for, and values of the wrong
-// sort. Both are keyed by key path, so the caller can name the file each came
-// from — the answer a reader wants, and the one encoding/json cannot give,
-// since its errors are addressed to Go field names and lose map keys entirely.
-//
-// The two carry different severities. An unknown key is a warning: the decoder
-// ignores it in silence, which turns one typo into a setting that reads as
-// applied and is not, but refusing to start would mean a config written for a
-// newer rasp could not run against an older one. A value of the wrong sort is
-// an error, because there is nothing to fall back to.
+// inspect reports what will not survive the decode, keyed by key path so the
+// caller can name the file each came from. An unknown key is a warning, because
+// refusing to start would mean a config written for a newer rasp could not run
+// against an older one; a value of the wrong sort is an error.
 func inspect(t tree) (unknown []string, mismatched []mismatch) {
 	var walk func(node tree, spec *keySpec, path []string)
 	walk = func(node tree, spec *keySpec, path []string) {
@@ -201,7 +186,7 @@ func inspect(t tree) (unknown []string, mismatched []mismatch) {
 			switch {
 			case !known || sub.kind == kindAny:
 				// A key with no opinion about its contents. Nulls are gone by
-				// now — merge drops them — so `known` is defensive.
+				// now, so `known` is defensive.
 			case sub.kind == kindInteger:
 				if got != kindNumber {
 					mismatched = append(mismatched, mismatch{joinPath(here), sub.kind, got.String()})

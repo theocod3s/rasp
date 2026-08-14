@@ -2,12 +2,10 @@ package llm
 
 import "encoding/json"
 
-// Role is who produced a message.
-//
-// There is no system role. The system prompt travels in Request.System as
-// ordered blocks with cache breakpoints (design §11), because a prefix-matched
-// cache needs to know where the stable text ends — something a message in the
-// transcript cannot express.
+// Role is who produced a message. There is no system role: a prefix-matched
+// cache needs to know where the stable text ends, which a message in the
+// transcript cannot express, so the system prompt travels in Request.System as
+// ordered blocks with cache breakpoints (design §11).
 type Role string
 
 const (
@@ -26,25 +24,20 @@ const (
 	BlockToolResult BlockType = "tool_result"
 )
 
-// Block is one piece of a message's content: a union with a discriminant rather
-// than an interface, because every consumer already switches on the type and an
-// interface would buy nothing but a MarshalJSON per variant. The field comments
-// say which type owns which field; a field set on the wrong type is a bug that
-// the adapters, not the type system, have to avoid.
-//
-// The json tags are the session file's format (design §9), not only the
-// provider's: session storage persists llm.Message verbatim, so renaming a tag
-// here breaks every transcript already on disk.
+// Block is one piece of a message's content: a flat union, so the field comments
+// rather than the type system say which type owns which field. The json tags are
+// the session file's format (design §9) as well as the provider's — session
+// storage persists llm.Message verbatim, so renaming one breaks every transcript
+// already on disk.
 type Block struct {
 	Type BlockType `json:"type"`
 
 	// Text carries BlockText and BlockThinking content.
 	//
-	// Thinking is not only for the reader: Anthropic requires a thinking block
-	// to be replayed verbatim, signature and all, when a turn that thought went
-	// on to call a tool. There is no field for that signature yet, and adding
-	// one is additive — an older transcript simply has none — so the adapter
-	// that first meets the wire format settles its shape, with a test.
+	// Anthropic requires a thinking block to be replayed verbatim, signature and
+	// all, when the turn that thought went on to call a tool. There is no field
+	// for that signature yet; adding one is additive, so the first adapter to meet
+	// the wire format settles its shape.
 	Text string `json:"text,omitempty"`
 
 	ID    string          `json:"id,omitempty"`    // BlockToolUse — the provider's call id
@@ -52,50 +45,29 @@ type Block struct {
 	Input json.RawMessage `json:"input,omitempty"` // BlockToolUse — arguments, as they arrived
 
 	// ToolUseID must match the ID of a BlockToolUse. Providers reject a
-	// tool_result that names no tool_use and a tool_use with no result, which
-	// is the invariant the agent loop and session.Sanitize exist to hold
-	// (design §4 invariant 1).
+	// tool_result naming no tool_use, and a tool_use with no result — the
+	// invariant the agent loop and session.Sanitize exist to hold (design §4
+	// invariant 1).
 	ToolUseID string `json:"tool_use_id,omitempty"`
 	Content   string `json:"content,omitempty"`  // BlockToolResult — what the model sees
 	IsError   bool   `json:"is_error,omitempty"` // BlockToolResult
 }
 
-// Arguments is a tool call's arguments as anything sending them should read them:
-// the bytes that arrived, or an empty object when those bytes are not one. For
-// any other block type it is whatever Input held, which should be nothing.
+// Arguments is a tool call's arguments as anything sending them should read
+// them: the bytes that arrived, or `{}` when those bytes are not an object. The
+// substitution is BlockToolUse-only; any other block type gets Input back as it
+// stands, which should be nothing.
 //
-// Exported because the substitution has to hold everywhere a message is used, not
-// only where one is written. A turn cut off at the output limit is committed with
-// its fragment — design §4 invariant 2 fails the call and the block stays — and
-// the loop keeps going, so the NEXT request is built from that same in-memory
-// message. An adapter reading Input directly would put `{"pa` on the wire and
-// take a 400 for a message already in history; reading this cannot.
+// The state it exists for is a turn truncated at the output limit, committed with
+// its tool_use block and a fragment cut mid-object (design §4 invariant 2 fails
+// the call; the block stays). Three shapes are rejected on replay — a fragment,
+// which json.Marshal refuses so the whole message encodes to nothing; no input at
+// all; and `null`, which is how an OpenAI-compatible endpoint normalises an empty
+// arguments string. Substituting `{}` keeps the block for the failing tool_result
+// to point at, and loses only arguments the guard exists to refuse.
 //
-// MarshalJSON writes a block: its arguments through Arguments, and none of the
-// fields belonging to another block type.
-//
-// The substitution exists because of one state the rest of the system requires:
-// a response truncated at the output limit is committed, tool_use block and all
-// (design §4 invariant 2 fails every call in it), and that block's arguments are
-// a fragment cut mid-object. json.Marshal validates a json.RawMessage, so
-// without this the whole message fails to encode and returns zero bytes — and a
-// message that cannot be written cannot be committed together with its results,
-// which is invariant 1.
-//
-// An object rather than merely valid JSON, because `null` is both valid and how
-// an OpenAI-compatible endpoint normalises an empty arguments string — and a
-// tool_use whose input is null is rejected on replay exactly like one with no
-// input at all.
-//
-// Absent arguments go the same way, and for the same reason: a turn can be cut
-// off before any arguments chunk arrives, and every provider rejects a tool_use
-// block with no input at all — so omitting the field would brick the replay this
-// method exists to keep working.
-//
-// Dropping the fragment loses nothing that means anything: those arguments are
-// the ones the guard exists to refuse, and what has to survive is the block, so
-// the tool_result that fails it has something to point at. What is written stays
-// an object, so the turn replays.
+// Exported because the loop keeps running after a truncated turn, so the next
+// request is built from that same in-memory message.
 func (b Block) Arguments() json.RawMessage {
 	if b.Type != BlockToolUse || isJSONObject(b.Input) {
 		return b.Input
@@ -106,10 +78,9 @@ func (b Block) Arguments() json.RawMessage {
 func (b Block) MarshalJSON() ([]byte, error) {
 	b.Input = b.Arguments()
 
-	// Fields belonging to other block types go before anything else. Block is a
-	// flat union, so the natural mistake — copy a block, switch the type — leaves
-	// the old type's fields behind, and `content` on a tool_use is a 400 exactly
-	// like `input` on a tool_result.
+	// The natural mistake with a flat union — copy a block, switch the type —
+	// leaves the old type's fields behind, and `content` on a tool_use is a 400
+	// exactly like `input` on a tool_result.
 	switch b.Type {
 	case BlockText, BlockThinking:
 		b.ID, b.Name, b.ToolUseID, b.Content, b.IsError = "", "", "", "", false
@@ -118,69 +89,51 @@ func (b Block) MarshalJSON() ([]byte, error) {
 	case BlockToolResult:
 		b.Text, b.ID, b.Name = "", "", ""
 	default:
-		// A type this switch has not been taught about keeps nothing but its
-		// type. The alternative is emitting whichever variant's fields happen to
-		// be set, which is the 400 this scrubbing exists to prevent — and the
-		// case that most plausibly triggers it is someone adding a fifth block
-		// type by copying a fourth. Their content coming out empty is a loud way
-		// to be told to add a case here.
+		// An untaught type keeps nothing but its type: emitting whichever
+		// variant's fields happen to be set is the 400 the scrubbing prevents.
+		// Content coming out empty tells whoever added it to add a case here.
 		b.Text, b.ID, b.Name, b.Input, b.ToolUseID, b.Content, b.IsError = "", "", "", nil, "", "", false
 	}
 
 	switch {
 	case b.Type != BlockToolUse && len(b.Input) > 0:
-		// Arguments on a block that has no business holding them are a bug
-		// somewhere upstream, and dropping them keeps the message writable rather
-		// than making the whole turn unencodable over a stray field. Valid ones
-		// go too, and are the more dangerous half: these tags are the provider's
-		// format as well as the session file's, and an extra input key on a
-		// tool_result is a 400 rather than something we quietly clean up.
+		// A *valid* stray is the dangerous half: these tags are the provider's
+		// format as well as the session file's, so an extra input key on a
+		// tool_result is a 400 rather than something anyone cleans up later.
 		b.Input = nil
 	}
 	type block Block // no methods, so no recursion
 	return json.Marshal(block(b))
 }
 
-// Message is the provider-neutral message. The model is Anthropic-shaped
-// because Anthropic's block model is the more expressive of the two and
-// translating down to OpenAI is easier than the reverse (design §3.1).
-//
-// A streaming provider allocates exactly one of these per call and mutates it
-// in place, handing the same pointer back as Event.Partial on every event. See
-// the StreamResponse contract.
+// Message is the provider-neutral message, Anthropic-shaped because their block
+// model is the more expressive of the two and translating down to OpenAI is
+// easier than the reverse (design §3.1). A streaming provider allocates one per
+// call and mutates it in place — see the StreamResponse contract.
 type Message struct {
 	Role Role `json:"role"`
 
-	// Content is required, and an empty one is not something this type can
-	// rescue: nil encodes as null and `[]` is refused by the same providers, so
-	// there is no value that makes an empty message replayable. Nor is a block
-	// with nothing in it — a text block whose text never arrived encodes as
-	// {"type":"text"} and is rejected the same way. Both are reachable when a
-	// turn breaks off before anything streams, and both belong to whoever
-	// commits: a message with no content, or content with nothing in it, must
-	// not be written. Block.MarshalJSON below defends what it can, which is a
-	// field whose value can be corrected rather than a message whose absence
-	// cannot.
+	// Content is required, and no value of it rescues an empty message: nil
+	// encodes as null, `[]` is refused by the same providers, and a text block
+	// whose text never arrived encodes as {"type":"text"} and is refused too.
+	// Both are reachable when a turn breaks off before anything streams, and
+	// refusing to commit them belongs to whoever commits — Block.MarshalJSON can
+	// correct a field's value, not a message's absence.
 	Content    []Block    `json:"content"`
 	StopReason StopReason `json:"stop_reason,omitempty"`
 
 	// Usage is what the provider reported, and it is authoritative: context
 	// estimation trusts the last reported usage and only guesses at the tail
-	// after it (design §11). omitzero keeps it out of user messages, which
-	// never have any.
+	// after it (design §11). omitzero keeps it out of user messages.
 	Usage Usage `json:"usage,omitzero"`
 
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
 }
 
-// Usage is the token count for one model call.
-//
-// The two cache fields are separate because Anthropic reports them separately
-// and they price differently, but the reason both are here rather than one
-// merged number is context estimation: input excludes anything served from or
-// written to the cache, so the size of the context actually sent is the sum of
-// all three. A cache write is counted once, on the turn that creates it.
+// Usage is the token count for one model call. Input excludes anything served
+// from or written to the cache, so the context actually sent is the sum of all
+// three counts; a cache write is counted once, on the turn that creates it.
 type Usage struct {
 	Input      int `json:"input,omitempty"`
 	Output     int `json:"output,omitempty"`
@@ -195,10 +148,9 @@ const (
 	StopEndTurn StopReason = "end_turn"
 	StopToolUse StopReason = "tool_use"
 
-	// StopMaxTokens means the response was cut off at the output limit. It is
-	// not merely informational: it fails every pending tool call in that step,
-	// because truncated arguments can parse and validate while being
-	// semantically wrong (design §4 invariant 2).
+	// StopMaxTokens fails every pending tool call in that step, because truncated
+	// arguments can parse and validate while being semantically wrong (design §4
+	// invariant 2).
 	StopMaxTokens StopReason = "max_tokens"
 
 	StopRefusal StopReason = "refusal"

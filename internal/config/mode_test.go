@@ -9,10 +9,9 @@ import (
 	"github.com/theocod3s/rasp/internal/config"
 )
 
-// TestProjectYoloIsRejected is design §10's first constraint on `mode`. A
-// project config arrives with `git clone` and nobody reads it, so a repository
-// that could set yolo could disable every approval prompt on a stranger's
-// machine before they opened a single file.
+// TestProjectYoloIsRejected is design §10's first constraint on `mode`: a
+// repository that could set yolo could disable every approval prompt on a
+// stranger's machine.
 func TestProjectYoloIsRejected(t *testing.T) {
 	dir := project(t, `{"mode": "yolo"}`)
 	path := filepath.Join(dir, ".rasp", config.File)
@@ -26,8 +25,7 @@ func TestProjectYoloIsRejected(t *testing.T) {
 		t.Fatal(`Load accepted "mode": "yolo" from a project config`)
 	}
 
-	// "Rejected with an explanatory error" means the reader can act on it
-	// without opening the design document: which file, why not, what instead.
+	// Which file, why not, what instead.
 	invalid, ok := errors.AsType[*config.InvalidError](err)
 	if !ok {
 		t.Fatalf("error is %T, want *config.InvalidError", err)
@@ -43,9 +41,7 @@ func TestProjectYoloIsRejected(t *testing.T) {
 	}
 }
 
-// TestProjectYoloIsRejectedEvenWhenOverridden: the file is still asking. A
-// flag that happens to override it today is not a reason to accept it, because
-// the next run without that flag is the one that gets yolo.
+// TestProjectYoloIsRejectedEvenWhenOverridden: the file is still asking.
 func TestProjectYoloIsRejectedEvenWhenOverridden(t *testing.T) {
 	_, err := config.Load(config.Sources{
 		GlobalPath: filepath.Join(t.TempDir(), config.File),
@@ -58,9 +54,7 @@ func TestProjectYoloIsRejectedEvenWhenOverridden(t *testing.T) {
 	}
 }
 
-// TestYoloIsAcceptedFromTheGlobalConfig is the other half of the rule: the
-// global config is the user's own file on their own machine, and it is one of
-// the three places design §10 says yolo may come from.
+// TestYoloIsAcceptedFromTheGlobalConfig is the other half.
 func TestYoloIsAcceptedFromTheGlobalConfig(t *testing.T) {
 	res := load(t, config.Sources{GlobalPath: global(t, `{"mode": "yolo"}`)})
 	if got := res.Config.Mode; got != "yolo" {
@@ -69,10 +63,7 @@ func TestYoloIsAcceptedFromTheGlobalConfig(t *testing.T) {
 }
 
 // TestYoloIsNotSelectableThroughTheChain covers the layers design §10 does not
-// list. yolo arms a bypass ahead of the permission ladder rather than
-// selecting a preset within it, so it arrives through `--yolo` and not by
-// winning a precedence contest — which is exactly why `--yolo` is absent from
-// the chain in the first place.
+// list.
 func TestYoloIsNotSelectableThroughTheChain(t *testing.T) {
 	tests := []struct {
 		name string
@@ -108,9 +99,8 @@ func TestYoloIsNotSelectableThroughTheChain(t *testing.T) {
 	}
 }
 
-// TestUnknownModeIsRejected: a typo that resolves to something reasonable is
-// worse than one that stops the process, because the mode is the thing
-// standing between the agent and the filesystem.
+// TestUnknownModeIsRejected: the mode stands between the agent and the
+// filesystem, so a typo resolving to something reasonable is the worse outcome.
 func TestUnknownModeIsRejected(t *testing.T) {
 	_, err := config.Load(config.Sources{
 		GlobalPath: global(t, `{"mode": "manaul"}`),
@@ -127,8 +117,8 @@ func TestUnknownModeIsRejected(t *testing.T) {
 	}
 }
 
-// TestModeMustBeAString names what arrived rather than failing somewhere else
-// with a decoder message about types.
+// TestModeMustBeAString names what arrived, rather than failing later with a
+// decoder message about Go types.
 func TestModeMustBeAString(t *testing.T) {
 	_, err := config.Load(config.Sources{
 		GlobalPath: global(t, `{"mode": ["manual"]}`),
@@ -143,11 +133,8 @@ func TestModeMustBeAString(t *testing.T) {
 	}
 }
 
-// TestModesYoloWarnsAndIsDropped is design §10's second constraint. yolo
-// short-circuits ahead of pattern evaluation, so an override under `modes.yolo`
-// could only ever look like a constraint that is not being enforced — which is
-// why it is dropped rather than passed on, and said out loud rather than
-// dropped in silence.
+// TestModesYoloWarnsAndIsDropped is design §10's second constraint: dropped
+// rather than passed on, and said out loud rather than dropped in silence.
 func TestModesYoloWarnsAndIsDropped(t *testing.T) {
 	globalPath := global(t, `{
 	  "modes": {
