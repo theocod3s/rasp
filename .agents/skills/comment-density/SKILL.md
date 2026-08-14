@@ -148,43 +148,51 @@ file runs high by construction and driving it to 15% means deleting wire shapes.
 **A ratio is a smell, not a rule.** Judge the comments, then check the number; a
 file above the bar for a reason you can name in a sentence is fine.
 
-To measure:
+To measure. This is an eyeball aid, not a gate — it ranks files so you can look
+at the top of the list, and nothing depends on its output:
 
-```bash
-# Resolve the base first and fail if there is none. `git diff main` in a repo
-# with no `main` — a fork, a --single-branch clone with only origin/main, a
-# trunk-named default — writes `fatal:` to stderr, substitutes nothing, and the
-# loop prints an empty report and exits 0. That reads as "no file is over the
-# bar".
-base=$(git merge-base main HEAD) || { echo "no 'main' to compare against" >&2; exit 1; }
+```sh
+comment_density() {
+  # Paths from git are repo-root-relative, so measuring from a subdirectory
+  # would find none of them and print a clean report.
+  cd "$(git rev-parse --show-toplevel)" || return 1
 
-# merge-base, not `git diff main`: two-dot compares main's tip to the working
-# tree, so anything landed on main since you branched shows up as yours.
-files=$(git diff --name-only "$base" -- '*.go')
-[ -n "$files" ] || { echo "no .go files changed since $base" >&2; exit 0; }
+  base=$(git merge-base main HEAD) || { echo "no 'main' to compare against" >&2; return 1; }
 
-# `read -r` per line, not `for f in $files`: zsh does not word-split an unquoted
-# parameter expansion, so the for-loop hands the whole list over as one filename.
-# This form also survives a path with a space in it.
-printf '%s\n' "$files" | while IFS= read -r f; do
-  # A deleted or empty file has no ratio. Say so rather than skipping in silence:
-  # unguarded, `wc -l < gone.go` leaves the arithmetic an empty operand, and the
-  # loop prints a syntax error, carries on, and still exits 0.
-  [ -s "$f" ] || { echo "  --   $f (deleted or empty)" >&2; continue; }
-  # `grep -c ''`, not `wc -l`: wc counts newlines, so a file with no trailing one
-  # is undercounted and the ratio comes out too high — with no error, which is
-  # the worse half. gofmt makes that unreachable for .go files today; the check
-  # should not depend on that staying true.
-  printf "%3d%%  %s\n" "$(( $(grep -cE '^[[:space:]]*//' "$f") * 100 / $(grep -c '' "$f") ))" "$f"
-done | sort -rn
+  # merge-base, not `git diff main`: two-dot compares main's tip to the working
+  # tree, so anything landed on main since you branched shows up as yours.
+  # --others adds untracked files, without which a brand-new package — the case
+  # this skill exists for — measures as "nothing changed".
+  # quotePath=false stops a non-ASCII path arriving C-quoted and unopenable.
+  changed=$(git -c core.quotePath=false diff --name-only "$base" -- '*.go') || return 1
+  new=$(git -c core.quotePath=false ls-files --others --exclude-standard -- '*.go') || return 1
+
+  files=$(printf '%s\n%s\n' "$changed" "$new" | sort -u | sed '/^$/d')
+  [ -n "$files" ] || { echo "no .go files changed since $base" >&2; return 0; }
+
+  # `read -r` per line, not `for f in $files`: zsh does not word-split an
+  # unquoted parameter expansion, so the for-loop hands the whole list over as
+  # one filename. This form also survives a path with a space in it.
+  printf '%s\n' "$files" | while IFS= read -r f; do
+    [ -s "$f" ] || { echo "  --   $f (deleted or empty)" >&2; continue; }
+    # `grep -c ''`, not `wc -l`: wc counts newlines, so a file with no trailing
+    # one is undercounted and the ratio comes out too high — with no error,
+    # which is the worse half.
+    printf "%3d%%  %s\n" "$(( $(grep -cE '^[[:space:]]*//' "$f") * 100 / $(grep -c '' "$f") ))" "$f"
+  done | sort -rn
+}
 ```
 
-Four guards for six lines of work is what this cost: review found a fail-open bug
-in it on three consecutive passes — a missing file, a missing trailing newline, a
-missing `main` — and the rewrite that fixed the third introduced a fourth. Each
-printed a plausible answer and exited 0. A check reporting "nothing is over the
-bar" when it could not run is the version of AGENTS.md's process-hygiene rule you
-act on, so leave the guards where they are.
+A function rather than a paste-and-run block, because `exit 1` on a missing
+`main` would close the terminal of anyone who pasted it.
+
+Six guards for six lines of work is what this cost: four review passes found a
+fail-open bug each time — a missing file, a missing trailing newline, a missing
+`main`, a subdirectory, an untracked package — every one printing a plausible
+answer and exiting 0. That is AGENTS.md's process-hygiene rule collecting on a
+throwaway script, and the lesson generalises past this file: **a check nobody
+runs from the wrong directory, on the wrong branch, with the wrong files, is a
+check you have only seen pass.**
 
 ## Two rasp-specific rules
 
