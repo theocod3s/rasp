@@ -9,7 +9,6 @@ import (
 	"github.com/theocod3s/rasp/internal/config"
 )
 
-// TestUnknownKeysWarnAndAreDropped.
 func TestUnknownKeysWarnAndAreDropped(t *testing.T) {
 	res := load(t, config.Sources{
 		GlobalPath: global(t, `{
@@ -157,7 +156,6 @@ func TestAValueOfTheWrongSortNamesItsFile(t *testing.T) {
 	}
 }
 
-// TestNullMeansNotSet.
 func TestNullMeansNotSet(t *testing.T) {
 	res := load(t, config.Sources{
 		GlobalPath: global(t, `{
@@ -286,7 +284,6 @@ func TestSourcesAreReportedInPrecedenceOrder(t *testing.T) {
 	}
 }
 
-// TestEmptySourcesSayWhatTheyLookedFor.
 func TestEmptySourcesSayWhatTheyLookedFor(t *testing.T) {
 	res := load(t, config.Sources{})
 

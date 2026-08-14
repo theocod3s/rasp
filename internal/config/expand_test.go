@@ -114,7 +114,6 @@ func TestBareReferenceToAnUnsetVariableFails(t *testing.T) {
 	}
 }
 
-// TestUnsupportedFormsAreRejected.
 func TestUnsupportedFormsAreRejected(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -184,7 +183,6 @@ func TestASecretReachesTheCaller(t *testing.T) {
 	}
 }
 
-// TestOutputIsTrimmed.
 func TestOutputIsTrimmed(t *testing.T) {
 	e := expanderOver(t, "$(printf 'hunter2\n')", env{}, config.ExpanderOptions{})
 
@@ -209,7 +207,6 @@ func TestAQuotedParenDoesNotEndTheCommand(t *testing.T) {
 	}
 }
 
-// TestCommandsAreCached.
 func TestCommandsAreCached(t *testing.T) {
 	var (
 		mu    sync.Mutex
@@ -348,7 +345,6 @@ func TestAnUnresolvableNestedDefaultFails(t *testing.T) {
 	}
 }
 
-// TestACommandThatPrintsNothingFails.
 func TestACommandThatPrintsNothingFails(t *testing.T) {
 	for _, value := range []string{"$(true)", "$(printf '')"} {
 		e := expanderOver(t, value, env{}, config.ExpanderOptions{})
@@ -403,7 +399,6 @@ func TestAnEscapedQuoteInACommand(t *testing.T) {
 	}
 }
 
-// TestACancelledTurnIsNotReportedAsATimeout.
 func TestACancelledTurnIsNotReportedAsATimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	e := expanderOver(t, "$(op read op://vault/key)", env{}, config.ExpanderOptions{
@@ -427,7 +422,6 @@ func TestACancelledTurnIsNotReportedAsATimeout(t *testing.T) {
 	}
 }
 
-// TestNestingIsBounded.
 func TestNestingIsBounded(t *testing.T) {
 	const depth = 64
 
@@ -481,7 +475,6 @@ func TestACommandThatNeverFinishesTimesOut(t *testing.T) {
 	}
 }
 
-// TestLargeOutputDoesNotDeadlock.
 func TestLargeOutputDoesNotDeadlock(t *testing.T) {
 	const size = 300 << 10
 	// No newlines: the result is trimmed, which would skew the length assertion.
@@ -548,7 +541,6 @@ func TestABareBraceInADefaultIsAnOrdinaryCharacter(t *testing.T) {
 	}
 }
 
-// TestAFloodOfStderrIsCapped.
 func TestAFloodOfStderrIsCapped(t *testing.T) {
 	e := expanderOver(t, `$(head -c 100000 /dev/zero | tr '\0' x >&2; exit 1)`,
 		env{}, config.ExpanderOptions{})
@@ -565,7 +557,6 @@ func TestAFloodOfStderrIsCapped(t *testing.T) {
 	}
 }
 
-// TestABadCommandInsideABraceNamesTheRealProblem.
 func TestABadCommandInsideABraceNamesTheRealProblem(t *testing.T) {
 	tests := []struct{ value, want string }{
 		{"${KEY:-$()}", "no command in it"},

@@ -65,7 +65,6 @@ func TestTheGlobalConfigMayRunCommands(t *testing.T) {
 	}
 }
 
-// TestAValueFromTheEnvironmentIsLiteral.
 func TestAValueFromTheEnvironmentIsLiteral(t *testing.T) {
 	tests := []struct {
 		name  string
