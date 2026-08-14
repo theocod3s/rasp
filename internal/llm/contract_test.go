@@ -842,6 +842,55 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "never rewritten or dropped",
 		},
+		"one scratch buffer reused for two sets of arguments": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant}
+				// The block gets its own copy; the event gets the buffer, which
+				// the next call overwrites in place. Comparing the header rather
+				// than the bytes would not notice.
+				scratch := make([]byte, 0, 64)
+				for _, spec := range []struct{ id, path string }{{"toolu_01", "a.go"}, {"toolu_02", "b.go"}} {
+					args := `{"path":"` + spec.path + `"}`
+					scratch = append(scratch[:0], args...)
+					msg.Content = append(msg.Content, llm.Block{
+						Type: llm.BlockToolUse, ID: spec.id, Name: "read", Input: []byte(args),
+					})
+					if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+						return
+					}
+					ev := llm.Event{Type: llm.EventToolCall, Partial: msg,
+						ToolCall: &llm.ToolCall{ID: spec.id, Name: "read", Input: scratch}}
+					if !yield(ev) {
+						return
+					}
+				}
+				msg.StopReason = llm.StopToolUse
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+			},
+			want: "each announcement is its own value",
+		},
+		"a call renamed mid-stream and put back": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := called(`{"path":"auth.go"}`)
+				if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+					return
+				}
+				if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg,
+					ToolCall: call("toolu_01A9", "read", `{"path":"auth.go"}`)}) {
+					return
+				}
+				// Renamed, then restored before the stream ends — invisible to
+				// anything that only looks once the events have stopped.
+				msg.Content[0].Name = "write"
+				if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+					return
+				}
+				msg.Content[0].Name = "read"
+				msg.StopReason = llm.StopToolUse
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+			},
+			want: "the loop dispatched the first one",
+		},
 		"an empty-object fragment with nowhere to land": {
 			seq: func(yield func(llm.Event) bool) {
 				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{

@@ -90,7 +90,14 @@ func blockTypeConstants(file *ast.File) []string {
 			case *ast.Ident:
 				carried = typed.Name == "BlockType"
 			case nil:
-				// Keeps carried as it was: an untyped spec in a group inherits.
+				// Go carries the previous spec's type only when a spec gives
+				// neither type nor value, so anything else in the group ends the
+				// inheritance — including an ordinary untyped constant, which was
+				// being read as a block type and failing this test with an
+				// impossible instruction.
+				if len(value.Values) > 0 {
+					carried = carried && onlyStrings(value.Values)
+				}
 			default:
 				carried = false
 			}
@@ -116,6 +123,35 @@ func blockTypeConstants(file *ast.File) []string {
 	return names
 }
 
+// receiverIs reports whether fn is a method on the named type. Without it, a
+// second MarshalJSON in the package that switches on some other .Type field would
+// contribute its cases here, and a block type missing from the real switch could
+// be reported as covered.
+func receiverIs(fn *ast.FuncDecl, name string) bool {
+	if fn.Recv == nil || len(fn.Recv.List) != 1 {
+		return false
+	}
+	expr := fn.Recv.List[0].Type
+	if star, ok := expr.(*ast.StarExpr); ok {
+		expr = star.X
+	}
+	ident, ok := expr.(*ast.Ident)
+	return ok && ident.Name == name
+}
+
+// onlyStrings reports whether every value is a string literal, which is how a
+// block type is written even when its author leaves the type off. A constant that
+// shares the group and holds anything else — a count, a flag — is not one.
+func onlyStrings(values []ast.Expr) bool {
+	for _, expr := range values {
+		lit, ok := expr.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return false
+		}
+	}
+	return true
+}
+
 // scrubbedBlockTypes collects the case names of the switch on b.Type inside
 // Block.MarshalJSON — the switch that clears the fields belonging to the other
 // variants.
@@ -123,7 +159,7 @@ func scrubbedBlockTypes(file *ast.File) []string {
 	var handled []string
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "MarshalJSON" {
+		if !ok || fn.Name.Name != "MarshalJSON" || !receiverIs(fn, "Block") {
 			continue
 		}
 		ast.Inspect(fn, func(node ast.Node) bool {
@@ -152,4 +188,46 @@ func scrubbedBlockTypes(file *ast.File) []string {
 	}
 
 	return handled
+}
+
+// TestBlockTypeConstantsReadsEveryForm pins the reader itself, in both
+// directions: every way a block type can be written is found, and a constant
+// that merely shares the group is left alone. The second half is not
+// hypothetical — an earlier version read `blockLimit` as a block type and failed
+// with an instruction nobody could follow, which is worse than the gap it was
+// closing.
+func TestBlockTypeConstantsReadsEveryForm(t *testing.T) {
+	const src = `package llm
+
+type BlockType string
+
+const (
+	BlockText     BlockType = "text"
+	BlockThinking           = "thinking"
+	BlockToolUse            = BlockType("tool_use")
+	blockLimit              = 4
+)
+
+const BlockToolResult BlockType = "tool_result"
+`
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "snippet.go", src, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parsing the snippet: %v", err)
+	}
+
+	// A constant with no type of its own counts while its value is a string, which
+	// is how a block type is written when the author leaves the type off; a count
+	// is not one, and ends the run. A real BlockType group holds only block types,
+	// so the interesting half of this is that BlockThinking and BlockToolUse are
+	// found at all.
+	want := []string{"BlockText", "BlockThinking", "BlockToolUse", "BlockToolResult"}
+	got := blockTypeConstants(file)
+	if !slices.Equal(got, want) {
+		t.Errorf("blockTypeConstants:\n got %v\nwant %v", got, want)
+	}
+	if slices.Contains(got, "blockLimit") {
+		t.Error("blockLimit is a count that shares the group, not a block type")
+	}
 }
