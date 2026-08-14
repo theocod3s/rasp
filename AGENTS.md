@@ -145,9 +145,9 @@ what the work is and where it stands.
 - **Writing comments — follow `.agents/skills/comment-density/SKILL.md`.** Named here for the
   same reason, and it needs it more: nobody stops to ask about comment policy before writing a
   file, and the habit it prevents is invisible from inside. Each review round appends a
-  justification to a comment and never takes one back out, so every round is an improvement and
-  `internal/llm` still shipped at 45% of its non-test lines. The rule in one line: a comment earns its
-  place by recording what the code cannot say, and it is written once, in the place the reader is
-  standing when it matters.
+  justification to a comment and never takes one back out, so every round is an improvement
+  and `internal/llm` still shipped at 45% comment lines across its non-test files. The rule in
+  one line: a comment earns its place by recording what the code cannot say, and it is written
+  once, in the place the reader is standing when it matters.
 - Split `internal/agent/agent.go` by concern (`step.go`, `tools.go`, `invariants.go`) before it
   passes ~800 lines. That file is this project's named collapse risk (design §2).

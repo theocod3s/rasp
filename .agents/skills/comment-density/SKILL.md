@@ -104,7 +104,9 @@ After — the same facts, none of the argument:
 
 ```go
 // Arguments is a tool call's arguments as anything sending them should read
-// them: the bytes that arrived, or `{}` when those bytes are not an object.
+// them: the bytes that arrived, or `{}` when those bytes are not an object. The
+// substitution is BlockToolUse-only; any other block type gets Input back as it
+// stands, which should be nothing.
 //
 // The state it exists for is a turn truncated at the output limit, committed with
 // its tool_use block and a fragment cut mid-object (design §4 invariant 2 fails
@@ -122,23 +124,47 @@ Every wire fact survived. What went was the third restatement of the truncation
 story, a paragraph about a method two lines below, and the sentence explaining
 why the method is exported *twice*.
 
+**The sentence about other block types was cut first, and a review put it back.**
+It reads like scope-narrowing boilerplate, and it is not: `Arguments` returns
+`Input` untouched for anything that is not a tool_use, so a doc that omits the
+qualifier is wrong about behaviour rather than merely terse. That is the shape to
+watch for — a clause carrying a boundary, wearing the clothes of ceremony.
+
 ## Where the bar sits
 
-Roughly: under 15% comment lines for most files, under 25% for one whose whole
-job is a contract other packages implement. A small file that *is* a contract is
-the exception — `internal/llm/provider.go` is ninety lines, twenty of them the
-stream contract every adapter satisfies, and it stays near 50% after a hard cut.
-**A ratio is a smell, not a rule.** Judge the comments, then check the number.
+Roughly: under 15% comment lines for a file that mostly does something, rising
+for a file that mostly *declares* something. Type definitions and contracts are
+the exception, and not a narrow one — after the audit cut 42% of the comments in
+these two packages, five files still sit above 25%:
 
-`bash <<'EOF'` to measure:
+    51%  internal/config/shell_windows.go   one function, all of it Windows
+                                            quoting rules nothing else records
+    50%  internal/llm/provider.go           88 lines, 20 of them the stream
+                                            contract every adapter satisfies
+    40%  internal/llm/message.go            a union whose every field carries a
+                                            wire fact
+    39%  internal/llm/event.go              the same
+    29%  internal/config/config.go          the settings schema
+
+All five are right where they are. The per-field facts do not shrink when the
+file does, so a small declaration-heavy file runs high by construction, and
+driving these to 15% would mean deleting wire shapes. **A ratio is a smell, not a
+rule.** Judge the comments, then check the number — and if a file is above the
+bar for a reason you can name in a sentence, it is fine.
+
+To measure:
 
 ```bash
 for f in $(git diff --name-only main -- '*.go'); do
-  # Deleted and empty files have no ratio. Say so rather than skipping in
-  # silence: unguarded, `wc -l < missing.go` leaves the arithmetic with an empty
-  # operand, and the loop prints a syntax error, carries on, and still exits 0.
+  # A deleted or empty file has no ratio. Say so rather than skipping in silence:
+  # unguarded, `wc -l < gone.go` leaves the arithmetic an empty operand, and the
+  # loop prints a syntax error, carries on, and still exits 0.
   [ -s "$f" ] || { echo "  --   $f (deleted or empty)" >&2; continue; }
-  printf "%3d%%  %s\n" "$(( $(grep -cE '^[[:space:]]*//' "$f") * 100 / $(wc -l < "$f") ))" "$f"
+  # `grep -c ''`, not `wc -l`: wc counts newlines, so a file with no trailing one
+  # is undercounted and the ratio comes out too high — with no error, which is
+  # the worse half. gofmt makes that unreachable for .go files today; the check
+  # should not depend on that staying true.
+  printf "%3d%%  %s\n" "$(( $(grep -cE '^[[:space:]]*//' "$f") * 100 / $(grep -c '' "$f") ))" "$f"
 done | sort -rn
 ```
 
