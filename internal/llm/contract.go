@@ -489,25 +489,26 @@ func checkShape(at string, msg *Message) error {
 // drops the input count to zero, and Message.Usage is what context estimation
 // trusts (design §11).
 //
-// Three things here a tidy-up would undo. The fields are read by reflection, so
-// a count added later is watched without anyone editing this. A field it cannot
-// compare is refused rather than skipped, which stops the whole check on event 0
-// — if the cache-creation buckets ever arrive as a nested struct, flatten them
-// or teach the loop to descend. And it runs on every event, because returning
-// early when nothing moved lets a stream reporting no usage past the kind check
-// entirely.
+// The fields are read by reflection rather than named, so a count added later is
+// watched without anyone editing this — Anthropic already splits cache creation
+// into 5-minute and 1-hour buckets.
+//
+// A field of another kind is skipped here, not refused. Whether Usage holds one
+// is a property of the struct, not of any stream, so failing on it per event
+// would abort the whole contract on event 0 for every adapter — and an adapter
+// test that asserts only that *some* error came back would go on passing, for
+// the wrong reason. TestEveryUsageCountIsWatched is the guard, and it fails on
+// the commit that adds the field rather than on everyone else's streams.
 func (c *streamChecker) checkUsage(at string, msg *Message) error {
 	was, now := reflect.ValueOf(c.usage), reflect.ValueOf(msg.Usage)
 	for i := range now.NumField() {
-		name := now.Type().Field(i).Name
 		if now.Field(i).Kind() != reflect.Int {
-			return fmt.Errorf("%s: Usage.%s is a %s, which this rule cannot compare; a count "+
-				"nothing watches is where the next adapter's bug lands", at, name, now.Field(i).Kind())
+			continue
 		}
 		if now.Field(i).Int() < was.Field(i).Int() {
 			return fmt.Errorf("%s: Usage.%s fell from %d to %d; a chunk carrying one count is a "+
 				"refinement of the report, not a replacement for it",
-				at, name, was.Field(i).Int(), now.Field(i).Int())
+				at, now.Type().Field(i).Name, was.Field(i).Int(), now.Field(i).Int())
 		}
 	}
 	c.usage = msg.Usage

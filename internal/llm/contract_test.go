@@ -1066,7 +1066,9 @@ func TestEveryUsageCountIsWatched(t *testing.T) {
 				// instead of the one naming the field.
 				field := opening.Field(j)
 				if kind := field.Kind(); kind != reflect.Int || !field.CanSet() {
-					t.Fatalf("Usage.%s is an unsettable %s; the rule compares exported ints",
+					t.Fatalf("Usage.%s is an unsettable %s, and checkUsage skips what it cannot "+
+						"compare — so this test failing is the only thing between that count and "+
+						"nothing watching it. Make it an exported int, or teach both to descend.",
 						usage.Field(j).Name, kind)
 				}
 				field.SetInt(10)
@@ -1498,8 +1500,10 @@ func TestCheckStreamMissesAMisroutedFragment(t *testing.T) {
 		yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
 	})
 	if err != nil {
-		t.Fatalf("CheckStream now catches a mis-routed fragment (%v); that is an improvement, "+
-			"but design §3.1a says it does not, so the spec needs rewriting with it", err)
+		t.Fatalf("this stream no longer passes: %v.\nIf that error is about the mis-routed "+
+			"arguments, the gap is closed — keep the rule and rewrite design §3.1a, which says it "+
+			"is open. If it is about anything else, a new rule caught this stream in passing and "+
+			"the gap is still there; adjust the stream, not the spec.", err)
 	}
 }
 
