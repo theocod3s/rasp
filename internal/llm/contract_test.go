@@ -1061,10 +1061,15 @@ func TestEveryUsageCountIsWatched(t *testing.T) {
 			// reading this field can notice.
 			opening := reflect.New(usage).Elem()
 			for j := range usage.NumField() {
-				if kind := opening.Field(j).Kind(); kind != reflect.Int {
-					t.Fatalf("Usage.%s is a %s; the rule compares ints", usage.Field(j).Name, kind)
+				// CanSet as well as Kind: an unexported count would pass the kind
+				// check and then panic in SetInt with a reflect internals message
+				// instead of the one naming the field.
+				field := opening.Field(j)
+				if kind := field.Kind(); kind != reflect.Int || !field.CanSet() {
+					t.Fatalf("Usage.%s is an unsettable %s; the rule compares exported ints",
+						usage.Field(j).Name, kind)
 				}
-				opening.Field(j).SetInt(10)
+				field.SetInt(10)
 			}
 			dropped := reflect.New(usage).Elem()
 			dropped.Set(opening)

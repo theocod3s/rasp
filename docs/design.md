@@ -304,7 +304,11 @@ degrade to estimates rather than refuse. An adapter that knows its own endpoint 
 asserts that itself.
 
 Usage is held to one thing: **a count only ever grows.** An endpoint reporting nothing stays at
-zero, which is monotone, so the rule rejects no wire shape at all. What it catches is a report
+zero, which is monotone, so the rule rejects no usage-free shape. The shape it *does* reject is
+a count revised downward, and that is the thing to watch: a gateway that publishes an estimated
+input count early and corrects it in the final chunk would be faithful and would fail here. No
+such endpoint is known, and if one turns up the rule goes rather than gets narrowed. What it
+catches is a report
 one field short — Anthropic's `message_delta` carries `output_tokens` alone, so an adapter that
 assigns where it should merge drops the input count to zero, and the symptom surfaces a hundred
 turns later as compaction firing at the wrong point.
