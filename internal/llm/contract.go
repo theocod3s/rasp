@@ -120,7 +120,8 @@ func (c *streamChecker) checkComplete() error {
 	}
 
 	// However the stream ended: truncation writes a tool_result per pending call
-	// too (design §4 invariant 2).
+	// too (design §4 invariant 2). Reached only once every block has an id, so a
+	// repeat here is a real one and not two blocks both missing theirs.
 	for i, id := range recorded {
 		if slices.Index(recorded, id) != i {
 			return fmt.Errorf("the message holds two tool_use blocks with id %q; one tool_result "+
@@ -451,13 +452,9 @@ func (c *streamChecker) checkSettled() error {
 	}
 
 	// checkFrozen, checkShape and checkUsage run per event, so they stop looking
-	// at exactly the point the loop starts reading.
-	//
-	// checkUsage closes less of that window than the two beside it, and on
-	// purpose: it still only refuses a count going backwards, so an adapter that
-	// fills usage in while unwinding passes. Content appearing here is content no
-	// event announced and no UI drew; a count appearing here is the right count
-	// arriving late, and the loop commits it either way.
+	// at exactly the point the loop starts reading. checkUsage closes less of
+	// that window on purpose: content appearing here was announced by nothing,
+	// where a count appearing here is the right count arriving late.
 	if err := checkShape("after the stream ended", c.partial); err != nil {
 		return err
 	}
@@ -483,31 +480,22 @@ func checkShape(at string, msg *Message) error {
 	return nil
 }
 
-// checkUsage: a count only ever grows. Nothing here requires usage at all —
-// an endpoint reporting none leaves every field at zero, which is monotone, and
-// design §3.1a says why demanding it would be the wrong trade.
+// checkUsage: a count only ever grows. It neither requires usage — an endpoint
+// reporting none stays at zero, which is monotone — nor catches a count that was
+// never mapped at all. Design §3.1a holds both decisions and what they cost.
 //
-// What falls foul of it is a report one field short. Anthropic's message_delta
+// The shape it does catch is a report one field short: Anthropic's message_delta
 // carries output_tokens alone, so an adapter that assigns where it should merge
-// drops the input count to zero — and Message.Usage is what context estimation
-// trusts (design §11), so the symptom surfaces a hundred turns later as
-// compaction firing at the wrong point. Only once the larger count has been
-// published, though: an adapter that never maps message_start climbs from zero
-// and passes, being indistinguishable here from an endpoint reporting nothing.
+// drops the input count to zero, and Message.Usage is what context estimation
+// trusts (design §11).
 //
-// Field by field through reflection rather than by name, because Usage gains a
-// count whenever a provider starts reporting something new — Anthropic already
-// splits cache creation into 5-minute and 1-hour buckets. A hand-written list
-// would leave the new count the one field nothing watches, and an adapter
-// dropping it is precisely the bug above, passing. A field this cannot compare
-// is an error rather than a skip, and it stops the whole contract check on the
-// first event — deliberately, because the alternative is carrying on while a
-// count goes unwatched.
-//
-// It runs on every event rather than only on the ones that change a count,
-// because skipping it when nothing moved is what would let a stream reporting no
-// usage at all pass without the kind check ever running — the absence of a
-// signal reading as a pass, in the guard against exactly that.
+// Three things here a tidy-up would undo. The fields are read by reflection, so
+// a count added later is watched without anyone editing this. A field it cannot
+// compare is refused rather than skipped, which stops the whole check on event 0
+// — if the cache-creation buckets ever arrive as a nested struct, flatten them
+// or teach the loop to descend. And it runs on every event, because returning
+// early when nothing moved lets a stream reporting no usage past the kind check
+// entirely.
 func (c *streamChecker) checkUsage(at string, msg *Message) error {
 	was, now := reflect.ValueOf(c.usage), reflect.ValueOf(msg.Usage)
 	for i := range now.NumField() {
@@ -538,6 +526,10 @@ type announced struct {
 // checkFrozen re-reads the blocks whose calls have been announced. The
 // accumulation rules watch their arguments; this watches what the call IS, since
 // renaming read to write after the loop ran read rewrites history.
+//
+// It walks msg.Content rather than c.frozen: a block that left the message is
+// caught by the rules watching content, so ranging the map and indexing Content
+// instead would add an out-of-range panic and find nothing new.
 func (c *streamChecker) checkFrozen(at string, msg *Message) error {
 	for index, block := range msg.Content {
 		was, ok := c.frozen[index]

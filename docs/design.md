@@ -308,10 +308,9 @@ zero, which is monotone, so the rule rejects no usage-free shape. The shape it *
 a count revised downward, and that is the thing to watch: a gateway that publishes an estimated
 input count early and corrects it in the final chunk would be faithful and would fail here. No
 such endpoint is known, and if one turns up the rule goes rather than gets narrowed. What it
-catches is a report
-one field short — Anthropic's `message_delta` carries `output_tokens` alone, so an adapter that
-assigns where it should merge drops the input count to zero, and the symptom surfaces a hundred
-turns later as compaction firing at the wrong point.
+catches is a report one field short — Anthropic's `message_delta` carries `output_tokens` alone,
+so an adapter that assigns where it should merge drops the input count to zero, and the symptom
+surfaces a hundred turns later as compaction firing at the wrong point.
 
 It catches that only once the larger count has been published. An adapter that never maps
 `message_start` in the first place climbs monotonically from zero and passes, because at this
