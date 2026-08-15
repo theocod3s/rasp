@@ -90,7 +90,6 @@ func dropNulls(t tree) {
 	}
 }
 
-// syntaxOffset digs the byte offset out of an encoding/json error, or -1.
 func syntaxOffset(err error) int64 {
 	if syn, ok := errors.AsType[*json.SyntaxError](err); ok {
 		return syn.Offset

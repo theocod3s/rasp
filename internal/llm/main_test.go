@@ -145,7 +145,6 @@ func types(events []llm.Event) []llm.EventType {
 	return out
 }
 
-// toolCallIn is the one completed tool call in a stream.
 func toolCallIn(t *testing.T, events []llm.Event) *llm.ToolCall {
 	t.Helper()
 	var found []*llm.ToolCall

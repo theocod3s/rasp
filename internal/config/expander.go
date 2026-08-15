@@ -231,7 +231,6 @@ func unsetError(name string, present bool) error {
 		name, dollarEscape)
 }
 
-// expandCommand runs one `$(command)`, or refuses to.
 func (e *Expander) expandCommand(ctx context.Context, key, command string) (string, error) {
 	// The first two arms are unreachable through Expand, which refuses an
 	// unrecorded origin and returns a shell-sourced value literally long before a
@@ -425,8 +424,6 @@ func displayKind(val any) string {
 	return kind.String()
 }
 
-// globalConfigHint falls back to the documented location when the real path
-// cannot be derived.
 func globalConfigHint() string {
 	if path, err := GlobalPath(); err == nil {
 		return path
