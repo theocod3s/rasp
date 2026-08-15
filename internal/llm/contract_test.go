@@ -345,6 +345,21 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "blocks are only ever added to",
 		},
+		// Anthropic's message_delta carries output_tokens and nothing else, so an
+		// adapter that assigns where it should merge loses the input count.
+		"a usage count revised downward": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := streamed()
+				msg.Usage = llm.Usage{Input: 25, Output: 1}
+				if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll", Partial: msg}) {
+					return
+				}
+				msg.Usage = llm.Usage{Output: 15}
+				msg.StopReason = llm.StopEndTurn
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+			},
+			want: "Usage fell",
+		},
 		"an event after the terminal one": {
 			seq: func(yield func(llm.Event) bool) {
 				msg := &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopEndTurn}
@@ -952,9 +967,11 @@ func TestCheckStreamRejects(t *testing.T) {
 func TestCheckStreamNoticesChangesAfterTheStream(t *testing.T) {
 	after := func(meddle func(*llm.Message)) llm.StreamResponse {
 		return func(yield func(llm.Event) bool) {
-			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
-				{Type: llm.BlockText, Text: "I'll read it."},
-			}}
+			msg := &llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.Block{{Type: llm.BlockText, Text: "I'll read it."}},
+				Usage:   llm.Usage{Input: 25, Output: 12},
+			}
 			if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll read it.", Partial: msg}) {
 				return
 			}
@@ -1001,6 +1018,10 @@ func TestCheckStreamNoticesChangesAfterTheStream(t *testing.T) {
 		"an announced call renamed": {
 			meddle: func(m *llm.Message) { m.Content[1].Name = "write" },
 			want:   "the loop dispatched the first one",
+		},
+		"the usage cleared": {
+			meddle: func(m *llm.Message) { m.Usage = llm.Usage{} },
+			want:   "Usage fell",
 		},
 		"a tool_result appended": {
 			// No channel watches a tool_result, so without the block-type check
@@ -1261,6 +1282,48 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			}
 			msg.StopReason = llm.StopToolUse
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+		},
+
+		// The three usage shapes the monotonicity rule was weighed against. The
+		// last is the one a rule *requiring* usage would have rejected, and the
+		// reason this one only forbids a count going backwards.
+		//
+		// Anthropic: message_start reports the input counts with output_tokens at
+		// 1, and message_delta refines the output count once the reply is done.
+		"usage opened at the start and refined at the end": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Usage: llm.Usage{Input: 25, CacheRead: 1024, Output: 1}}
+			if !yield(llm.Event{Type: llm.EventMessageStart, Partial: msg}) {
+				return
+			}
+			msg.Content = []llm.Block{{Type: llm.BlockText, Text: "I'll read it."}}
+			if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll read it.", Partial: msg}) {
+				return
+			}
+			msg.Usage.Output = 15
+			msg.StopReason = llm.StopEndTurn
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+		},
+
+		// OpenAI-compatible with stream_options.include_usage: nothing at all
+		// until the final chunk, which is a jump from zero, not a revision.
+		"usage that arrives only in the final chunk": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText}}}
+			msg.Content[0].Text = "I'll read it."
+			if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll read it.", Partial: msg}) {
+				return
+			}
+			msg.Usage = llm.Usage{Input: 25, Output: 15}
+			msg.StopReason = llm.StopEndTurn
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+		},
+
+		"a stream that reports no usage at all": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText, Text: "I'll read it."}}}
+			if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll read it.", Partial: msg}) {
+				return
+			}
+			msg.StopReason = llm.StopEndTurn
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
 		},
 
 		// Ollama and llama.cpp-style servers report finish_reason "stop" next to
