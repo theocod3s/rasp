@@ -497,10 +497,11 @@ func checkShape(at string, msg *Message) error {
 // would leave the new count the one field nothing watches, and an adapter
 // dropping it is precisely the bug above, passing. A field this cannot compare
 // is an error rather than a skip, for the same reason.
+// It runs on every event rather than only on the ones that change a count,
+// because skipping it when nothing moved is what would let a stream reporting no
+// usage at all pass without the kind check ever running — the absence of a
+// signal reading as a pass, in the guard against exactly that.
 func (c *streamChecker) checkUsage(at string, msg *Message) error {
-	if msg.Usage == c.usage {
-		return nil
-	}
 	was, now := reflect.ValueOf(c.usage), reflect.ValueOf(msg.Usage)
 	for i := range now.NumField() {
 		name := now.Type().Field(i).Name
