@@ -197,7 +197,7 @@ func (e *Expander) expandVar(ctx context.Context, key string, seg segment, depth
 	switch seg.op {
 	case '-':
 		// The default is a value, not text: `${A:-${B}}` means "A, or B".
-		// Passing it through unexpanded would hand the caller the nine
+		// Passing it through unexpanded would hand the caller the four
 		// characters `${B}` as a credential.
 		segs, err := parseValue(seg.arg)
 		if err != nil {

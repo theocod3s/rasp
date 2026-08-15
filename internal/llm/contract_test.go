@@ -358,7 +358,7 @@ func TestCheckStreamRejects(t *testing.T) {
 				msg.StopReason = llm.StopEndTurn
 				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
 			},
-			want: "Usage fell",
+			want: "Usage.Input fell",
 		},
 		"an event after the terminal one": {
 			seq: func(yield func(llm.Event) bool) {
@@ -1021,7 +1021,7 @@ func TestCheckStreamNoticesChangesAfterTheStream(t *testing.T) {
 		},
 		"the usage cleared": {
 			meddle: func(m *llm.Message) { m.Usage = llm.Usage{} },
-			want:   "Usage fell",
+			want:   "Usage.Input fell",
 		},
 		"a tool_result appended": {
 			// No channel watches a tool_result, so without the block-type check
@@ -1039,6 +1039,51 @@ func TestCheckStreamNoticesChangesAfterTheStream(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, err := llm.CheckStream(after(tc.meddle))
 			mustContain(t, err, tc.want)
+		})
+	}
+}
+
+// TestEveryUsageCountIsWatched walks Usage's fields instead of naming them, so a
+// count added the day a provider starts reporting one is covered without anyone
+// remembering to come back here — Anthropic already splits cache creation into
+// 5-minute and 1-hour buckets. Naming them is how a rule ends up with one field
+// nothing watches, which is where the next adapter's bug lands.
+func TestEveryUsageCountIsWatched(t *testing.T) {
+	usage := reflect.TypeFor[llm.Usage]()
+	if usage.NumField() == 0 {
+		t.Fatal("llm.Usage has no fields, so this test checks nothing at all")
+	}
+
+	for i := range usage.NumField() {
+		name := usage.Field(i).Name
+		t.Run(name, func(t *testing.T) {
+			// Every count opens at 10 and this one alone drops, so only a rule
+			// reading this field can notice.
+			opening := reflect.New(usage).Elem()
+			for j := range usage.NumField() {
+				if kind := opening.Field(j).Kind(); kind != reflect.Int {
+					t.Fatalf("Usage.%s is a %s; the rule compares ints", usage.Field(j).Name, kind)
+				}
+				opening.Field(j).SetInt(10)
+			}
+			dropped := reflect.New(usage).Elem()
+			dropped.Set(opening)
+			dropped.Field(i).SetInt(9)
+
+			_, err := llm.CheckStream(func(yield func(llm.Event) bool) {
+				msg := &llm.Message{
+					Role:    llm.RoleAssistant,
+					Content: []llm.Block{{Type: llm.BlockText, Text: "I'll read it."}},
+					Usage:   opening.Interface().(llm.Usage),
+				}
+				if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll read it.", Partial: msg}) {
+					return
+				}
+				msg.Usage = dropped.Interface().(llm.Usage)
+				msg.StopReason = llm.StopEndTurn
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+			})
+			mustContain(t, err, "Usage."+name+" fell from 10 to 9")
 		})
 	}
 }

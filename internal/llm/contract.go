@@ -450,6 +450,12 @@ func (c *streamChecker) checkSettled() error {
 
 	// checkFrozen, checkShape and checkUsage run per event, so they stop looking
 	// at exactly the point the loop starts reading.
+	//
+	// checkUsage closes less of that window than the two beside it, and on
+	// purpose: it still only refuses a count going backwards, so an adapter that
+	// fills usage in while unwinding passes. Content appearing here is content no
+	// event announced and no UI drew; a count appearing here is the right count
+	// arriving late, and the loop commits it either way.
 	if err := checkShape("after the stream ended", c.partial); err != nil {
 		return err
 	}
@@ -484,14 +490,31 @@ func checkShape(at string, msg *Message) error {
 // drops the input count to zero — and Message.Usage is what context estimation
 // trusts (design §11), so the symptom surfaces a hundred turns later as
 // compaction firing at the wrong point.
+//
+// Field by field through reflection rather than by name, because Usage gains a
+// count whenever a provider starts reporting something new — Anthropic already
+// splits cache creation into 5-minute and 1-hour buckets. A hand-written list
+// would leave the new count the one field nothing watches, and an adapter
+// dropping it is precisely the bug above, passing. A field this cannot compare
+// is an error rather than a skip, for the same reason.
 func (c *streamChecker) checkUsage(at string, msg *Message) error {
-	was, now := c.usage, msg.Usage
-	if now.Input < was.Input || now.Output < was.Output ||
-		now.CacheRead < was.CacheRead || now.CacheWrite < was.CacheWrite {
-		return fmt.Errorf("%s: Usage fell from %+v to %+v; a chunk carrying one count is a "+
-			"refinement of the report, not a replacement for it", at, was, now)
+	if msg.Usage == c.usage {
+		return nil
 	}
-	c.usage = now
+	was, now := reflect.ValueOf(c.usage), reflect.ValueOf(msg.Usage)
+	for i := range now.NumField() {
+		name := now.Type().Field(i).Name
+		if now.Field(i).Kind() != reflect.Int {
+			return fmt.Errorf("%s: Usage.%s is a %s, which this rule cannot compare; a count "+
+				"nothing watches is where the next adapter's bug lands", at, name, now.Field(i).Kind())
+		}
+		if now.Field(i).Int() < was.Field(i).Int() {
+			return fmt.Errorf("%s: Usage.%s fell from %d to %d; a chunk carrying one count is a "+
+				"refinement of the report, not a replacement for it",
+				at, name, was.Field(i).Int(), now.Field(i).Int())
+		}
+	}
+	c.usage = msg.Usage
 	return nil
 }
 
