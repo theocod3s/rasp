@@ -22,11 +22,12 @@ import (
 // What it deliberately leaves unchecked, and why each gap is cheaper than the
 // rule that would close it, is design §3.1a.
 //
-// One of those gaps shapes this function: only a provider's own package can see
-// how much work it did after yield returned false, so nothing here abandons a
-// stream. That is why it reads to the end even after a violation — cutting one
-// short makes a provider that ignores yield die of the runtime's range-function
-// panic instead of being told which rule it broke.
+// A further gap is this function's rather than the contract's, so it is not in
+// that list: only a provider's own package can see how much work it did after
+// yield returned false. That is why nothing here abandons a stream, and why it
+// reads to the end even after a violation — cutting one short makes a provider
+// that ignores yield die of the runtime's range-function panic instead of being
+// told which rule it broke.
 func CheckStream(seq StreamResponse) ([]Event, error) {
 	if seq == nil {
 		return nil, errors.New("nil StreamResponse; Stream always returns a sequence, and a " +
@@ -489,7 +490,9 @@ func checkShape(at string, msg *Message) error {
 // carries output_tokens alone, so an adapter that assigns where it should merge
 // drops the input count to zero — and Message.Usage is what context estimation
 // trusts (design §11), so the symptom surfaces a hundred turns later as
-// compaction firing at the wrong point.
+// compaction firing at the wrong point. Only once the larger count has been
+// published, though: an adapter that never maps message_start climbs from zero
+// and passes, being indistinguishable here from an endpoint reporting nothing.
 //
 // Field by field through reflection rather than by name, because Usage gains a
 // count whenever a provider starts reporting something new — Anthropic already

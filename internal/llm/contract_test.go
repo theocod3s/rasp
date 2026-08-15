@@ -1459,6 +1459,45 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 	}
 }
 
+// TestCheckStreamMissesAMisroutedFragment pins a hole rather than a rule, which
+// is worth a test because design §3.1a now tells a future reader the hole is
+// there. An adapter that pours call 2's payload into call 1's block and then
+// announces each call from the block it just wrote compares every value against
+// itself, so nothing here can see it — the loop would run toolu_1 with b.go's
+// arguments and toolu_2 with none.
+//
+// If this ever starts failing, someone has closed the gap: keep the rule and
+// rewrite §3.1a, which currently says closing it belongs to an adapter's own
+// tests against a recorded response.
+func TestCheckStreamMissesAMisroutedFragment(t *testing.T) {
+	_, err := llm.CheckStream(func(yield func(llm.Event) bool) {
+		msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+			{Type: llm.BlockToolUse, ID: "toolu_1", Name: "read", Input: []byte(`{}`)},
+			{Type: llm.BlockToolUse, ID: "toolu_2", Name: "read", Input: []byte(`{}`)},
+		}}
+		if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+			return
+		}
+		msg.Content[0].Input = []byte(`{"path":"b.go"}`) // call 2's payload, call 1's block
+		if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"path":"b.go"}`, Partial: msg}) {
+			return
+		}
+		for i, id := range []string{"toolu_1", "toolu_2"} {
+			if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg, ToolCall: &llm.ToolCall{
+				ID: id, Name: "read", Input: msg.Content[i].Input,
+			}}) {
+				return
+			}
+		}
+		msg.StopReason = llm.StopToolUse
+		yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+	})
+	if err != nil {
+		t.Fatalf("CheckStream now catches a mis-routed fragment (%v); that is an improvement, "+
+			"but design §3.1a says it does not, so the spec needs rewriting with it", err)
+	}
+}
+
 // TestCheckStreamReadsPastAViolation: CheckStream must not be the thing that
 // abandons a stream.
 func TestCheckStreamReadsPastAViolation(t *testing.T) {

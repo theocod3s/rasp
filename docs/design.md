@@ -276,8 +276,15 @@ mis-route needs the index derived twice by independent paths, and no adapter has
 that. For an OpenAI-compatible endpoint the wire's `tool_calls` index and the neutral message's
 block index are different numbering spaces anyway, joined by the very mapping under suspicion.
 The field would also invite a consumer to key off it, which is what contract rule 2 exists to
-prevent. So there is no block index, and the mis-routing that survives is caught at the end of
-the turn, where each announced call is compared against its block byte for byte.
+prevent. So there is no block index.
+
+What survives is less well covered than it looks, and the honest version matters more than the
+reassuring one. `checkToolCall` compares each announced call against its block byte for byte,
+which is a real check against an adapter that assembles announcements separately — and the same
+mirror as above against one that announces from the block it has just written into, which
+compares a value with itself. A mis-route where both halves still parse is therefore **not
+closed by this contract at all**. Closing it is the adapter's own tests against a recorded
+response, where the wire and the neutral message are two independent things to compare.
 
 The same blindness is why a call whose arguments genuinely are `{}` may be replaced wholesale
 before it is announced: a block sitting at the empty object cannot be told from one still
@@ -287,7 +294,8 @@ reverted — it rejected two real wire shapes.
 **How many blocks one completing event may add to.** A single chunk from an OpenAI-compatible
 endpoint can carry two `tool_calls` entries, so "at most one block per completing event" would
 reject a faithful adapter in order to catch a payload landing in a sibling's arguments — which
-a finished turn catches anyway. Revisit only if a real adapter makes the stricter rule safe.
+a finished turn catches under the condition above, and misses under the same one. Revisit only
+if a real adapter makes the stricter rule safe.
 
 **That usage is reported at all.** `Message.Usage` is authoritative for context estimation
 (§11), so an adapter that never maps it is a real bug. Requiring it here is still wrong: an
@@ -300,6 +308,12 @@ zero, which is monotone, so the rule rejects no wire shape at all. What it catch
 one field short — Anthropic's `message_delta` carries `output_tokens` alone, so an adapter that
 assigns where it should merge drops the input count to zero, and the symptom surfaces a hundred
 turns later as compaction firing at the wrong point.
+
+It catches that only once the larger count has been published. An adapter that never maps
+`message_start` in the first place climbs monotonically from zero and passes, because at this
+level it is indistinguishable from an endpoint that reports nothing — which is the shape the
+paragraph above refuses to reject. That half is the adapter's to assert, and M0-07 and M1-23
+carry the requirement.
 
 One consequence belongs here rather than in §12: **a retry wrapper cannot satisfy this
 contract** by replaying attempt 2 after attempt 1. That is an event after the terminal one, a
