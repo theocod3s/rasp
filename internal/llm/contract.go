@@ -147,6 +147,7 @@ func (c *streamChecker) checkComplete() error {
 	// blocks": a subsequence containing every element, of a list with no repeats,
 	// is the list. A turn that broke off is exempt, and the rule was tried the
 	// other way round.
+	//
 	// The connection can drop after the last argument fragment and before the event
 	// confirming the call, so requiring an announcement leaves an adapter no way
 	// through but to announce it anyway — and then the loop dispatches a call
@@ -499,7 +500,10 @@ func checkShape(at string, msg *Message) error {
 // splits cache creation into 5-minute and 1-hour buckets. A hand-written list
 // would leave the new count the one field nothing watches, and an adapter
 // dropping it is precisely the bug above, passing. A field this cannot compare
-// is an error rather than a skip, for the same reason.
+// is an error rather than a skip, and it stops the whole contract check on the
+// first event — deliberately, because the alternative is carrying on while a
+// count goes unwatched.
+//
 // It runs on every event rather than only on the ones that change a count,
 // because skipping it when nothing moved is what would let a stream reporting no
 // usage at all pass without the kind check ever running — the absence of a

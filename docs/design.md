@@ -316,8 +316,8 @@ turns later as compaction firing at the wrong point.
 It catches that only once the larger count has been published. An adapter that never maps
 `message_start` in the first place climbs monotonically from zero and passes, because at this
 level it is indistinguishable from an endpoint that reports nothing — which is the shape the
-paragraph above refuses to reject. That half is the adapter's to assert, and M0-07 and M1-23
-carry the requirement.
+paragraph above refuses to reject. That half is the adapter's own to assert, against the
+endpoint it knows — each adapter's ticket requires it.
 
 One consequence belongs here rather than in §12: **a retry wrapper cannot satisfy this
 contract** by replaying attempt 2 after attempt 1. That is an event after the terminal one, a
