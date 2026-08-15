@@ -158,7 +158,10 @@ under the current directory, so from a package you get that package:
 
 ```sh
 # doc.go is exempt (see below), and at 85-90% it would otherwise fill the top.
-git ls-files --cached --others --exclude-standard -- '*.go' | grep -v 'doc\.go$' |
+files=$(git ls-files --cached --others --exclude-standard -- '*.go' | grep -v 'doc\.go$')
+# No files is not a clean bill of health: say so, or the empty run reads as a pass.
+[ -n "$files" ] || echo 'MEASURED NOTHING: no .go files under this directory' >&2
+printf '%s\n' "$files" |
   while IFS= read -r f; do
     [ -s "$f" ] || continue
     # `grep -c ''`, not `wc -l`: wc counts newlines, so a file with no trailing

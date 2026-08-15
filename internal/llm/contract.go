@@ -19,30 +19,15 @@ import (
 // Partial is a stable pointer, so those events all show the FINAL message rather
 // than the message as it stood when each was yielded.
 //
-// Four things go deliberately unchecked:
+// What it deliberately leaves unchecked, and why each gap is cheaper than the
+// rule that would close it, is design §3.1a.
 //
-// Which block a fragment landed in — Event carries no block index, so an adapter
-// routing call 2's fragment into call 1's arguments passes as long as both halves
-// parse. The same blindness is why arguments that genuinely are `{}` may be
-// replaced wholesale: telling that apart from a provider's opening placeholder
-// was tried and reverted for rejecting two real wire shapes.
-//
-// How many blocks an event completing a call may add to — one OpenAI-compatible
-// chunk can carry two entries, and a finished turn catches the mis-routing
-// anyway, byte for byte.
-//
-// Token usage, because requiring it would reject an endpoint that reports none,
-// and design §10.2 degrades to estimates rather than refusing.
-//
-// That a provider stops producing when yield returns false — only its own package
-// can see how much work it did after being abandoned. That is also why this reads
-// every stream to the end even after a violation: abandoning it makes a provider
+// A further gap is this function's rather than the contract's, so it is not in
+// that list: only a provider's own package can see how much work it did after
+// yield returned false. That is why nothing here abandons a stream, and why it
+// reads to the end even after a violation — cutting one short makes a provider
 // that ignores yield die of the runtime's range-function panic instead of being
 // told which rule it broke.
-//
-// A retry wrapper cannot satisfy this by replaying attempt 2 after attempt 1:
-// that is an event after the terminal one, a second *Message, and content
-// streamed then dropped, all at once.
 func CheckStream(seq StreamResponse) ([]Event, error) {
 	if seq == nil {
 		return nil, errors.New("nil StreamResponse; Stream always returns a sequence, and a " +
@@ -83,6 +68,7 @@ type streamChecker struct {
 	seen      []map[int]string  // per channel, what each block held on the previous event
 	announced []string          // tool call ids, in the order EventToolCall reported them
 	frozen    map[int]announced // blocks whose call was announced, and what it was announced as
+	usage     Usage             // what the last event reported; the floor for the next
 
 	terminal EventType  // the terminal event's type, once one has arrived
 	stop     StopReason // and the reason it carried
@@ -134,7 +120,8 @@ func (c *streamChecker) checkComplete() error {
 	}
 
 	// However the stream ended: truncation writes a tool_result per pending call
-	// too (design §4 invariant 2).
+	// too (design §4 invariant 2). Reached only once every block has an id, so a
+	// repeat here is a real one and not two blocks both missing theirs.
 	for i, id := range recorded {
 		if slices.Index(recorded, id) != i {
 			return fmt.Errorf("the message holds two tool_use blocks with id %q; one tool_result "+
@@ -161,6 +148,7 @@ func (c *streamChecker) checkComplete() error {
 	// blocks": a subsequence containing every element, of a list with no repeats,
 	// is the list. A turn that broke off is exempt, and the rule was tried the
 	// other way round.
+	//
 	// The connection can drop after the last argument fragment and before the event
 	// confirming the call, so requiring an announcement leaves an adapter no way
 	// through but to announce it anyway — and then the loop dispatches a call
@@ -355,6 +343,9 @@ func (c *streamChecker) check(index int, ev Event) error {
 	if err := checkShape(at, ev.Partial); err != nil {
 		return err
 	}
+	if err := c.checkUsage(at, ev.Partial); err != nil {
+		return err
+	}
 
 	if ev.Type == EventToolCall {
 		index, err := checkToolCall(at, ev)
@@ -460,9 +451,14 @@ func (c *streamChecker) checkSettled() error {
 			c.partial.StopReason, c.stop)
 	}
 
-	// checkFrozen and checkShape run per event, so they stop looking at exactly
-	// the point the loop starts reading.
+	// checkFrozen, checkShape and checkUsage run per event, so they stop looking
+	// at exactly the point the loop starts reading. checkUsage closes less of
+	// that window on purpose: content appearing here was announced by nothing,
+	// where a count appearing here is the right count arriving late.
 	if err := checkShape("after the stream ended", c.partial); err != nil {
+		return err
+	}
+	if err := c.checkUsage("after the stream ended", c.partial); err != nil {
 		return err
 	}
 	return c.checkFrozen("after the stream ended", c.partial)
@@ -484,6 +480,41 @@ func checkShape(at string, msg *Message) error {
 	return nil
 }
 
+// checkUsage: a count only ever grows. It neither requires usage — an endpoint
+// reporting none stays at zero, which is monotone — nor catches a count that was
+// never mapped at all. Design §3.1a holds both decisions and what they cost.
+//
+// The shape it does catch is a report one field short: Anthropic's message_delta
+// carries output_tokens alone, so an adapter that assigns where it should merge
+// drops the input count to zero, and Message.Usage is what context estimation
+// trusts (design §11).
+//
+// The fields are read by reflection rather than named, so a count added later is
+// watched without anyone editing this — Anthropic already splits cache creation
+// into 5-minute and 1-hour buckets.
+//
+// A field of another kind is skipped here, not refused. Whether Usage holds one
+// is a property of the struct, not of any stream, so failing on it per event
+// would abort the whole contract on event 0 for every adapter — and an adapter
+// test that asserts only that *some* error came back would go on passing, for
+// the wrong reason. TestEveryUsageCountIsWatched is the guard, and it fails on
+// the commit that adds the field rather than on everyone else's streams.
+func (c *streamChecker) checkUsage(at string, msg *Message) error {
+	was, now := reflect.ValueOf(c.usage), reflect.ValueOf(msg.Usage)
+	for i := range now.NumField() {
+		if now.Field(i).Kind() != reflect.Int {
+			continue
+		}
+		if now.Field(i).Int() < was.Field(i).Int() {
+			return fmt.Errorf("%s: Usage.%s fell from %d to %d; a chunk carrying one count is a "+
+				"refinement of the report, not a replacement for it",
+				at, now.Type().Field(i).Name, was.Field(i).Int(), now.Field(i).Int())
+		}
+	}
+	c.usage = msg.Usage
+	return nil
+}
+
 // announced is one confirmed call: the event's pointer, and a copy of what it
 // said at the time. Both halves, because the block can drift from the call, and
 // the call from itself when an adapter reuses one *ToolCall.
@@ -496,6 +527,10 @@ type announced struct {
 // checkFrozen re-reads the blocks whose calls have been announced. The
 // accumulation rules watch their arguments; this watches what the call IS, since
 // renaming read to write after the loop ran read rewrites history.
+//
+// It walks msg.Content rather than c.frozen: a block that left the message is
+// caught by the rules watching content, so ranging the map and indexing Content
+// instead would add an out-of-range panic and find nothing new.
 func (c *streamChecker) checkFrozen(at string, msg *Message) error {
 	for index, block := range msg.Content {
 		was, ok := c.frozen[index]
@@ -607,8 +642,6 @@ func isJSONObject(raw json.RawMessage) bool {
 // It works per block rather than on the channel's blocks joined together, because
 // two parallel calls can stream interleaved: a joined string would see call 2's
 // first fragment land in the middle of call 1's arguments and call it a rewrite.
-// Rejecting a conformant adapter is worse than missing a bug, since its author
-// cannot tell which they are looking at.
 func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, frozen map[int]announced) error {
 	now := ch.snapshot(ev.Partial)
 
@@ -664,7 +697,10 @@ func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, fro
 				"message, not the delta", at, ch.name, added, ev.Delta)
 		}
 	case slices.Contains(ch.grows, ev.Type):
-		// Any amount, in any block: see the latitude above.
+		// Any amount, in any block. The second half is the loosest rule here and
+		// the easiest to tighten by symmetry with the branch above: one
+		// OpenAI-compatible chunk can carry two tool_calls entries, so `grew <= 1`
+		// rejects a faithful adapter (design §3.1a).
 	case grew > 0:
 		return fmt.Errorf("%s: Partial %s grew by %q; only %v adds to it, and content nobody "+
 			"announced is content nobody draws", at, ch.name, added, append([]EventType{ch.delta}, ch.grows...))

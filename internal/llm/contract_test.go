@@ -345,6 +345,21 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "blocks are only ever added to",
 		},
+		// Anthropic's message_delta carries output_tokens and nothing else, so an
+		// adapter that assigns where it should merge loses the input count.
+		"a usage count revised downward": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := streamed()
+				msg.Usage = llm.Usage{Input: 25, Output: 1}
+				if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll", Partial: msg}) {
+					return
+				}
+				msg.Usage = llm.Usage{Output: 15}
+				msg.StopReason = llm.StopEndTurn
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+			},
+			want: "Usage.Input fell",
+		},
 		"an event after the terminal one": {
 			seq: func(yield func(llm.Event) bool) {
 				msg := &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopEndTurn}
@@ -952,9 +967,11 @@ func TestCheckStreamRejects(t *testing.T) {
 func TestCheckStreamNoticesChangesAfterTheStream(t *testing.T) {
 	after := func(meddle func(*llm.Message)) llm.StreamResponse {
 		return func(yield func(llm.Event) bool) {
-			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
-				{Type: llm.BlockText, Text: "I'll read it."},
-			}}
+			msg := &llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.Block{{Type: llm.BlockText, Text: "I'll read it."}},
+				Usage:   llm.Usage{Input: 25, Output: 12},
+			}
 			if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll read it.", Partial: msg}) {
 				return
 			}
@@ -1002,6 +1019,10 @@ func TestCheckStreamNoticesChangesAfterTheStream(t *testing.T) {
 			meddle: func(m *llm.Message) { m.Content[1].Name = "write" },
 			want:   "the loop dispatched the first one",
 		},
+		"the usage cleared": {
+			meddle: func(m *llm.Message) { m.Usage = llm.Usage{} },
+			want:   "Usage.Input fell",
+		},
 		"a tool_result appended": {
 			// No channel watches a tool_result, so without the block-type check
 			// it lands in the transcript and 400s the next request.
@@ -1018,6 +1039,62 @@ func TestCheckStreamNoticesChangesAfterTheStream(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, err := llm.CheckStream(after(tc.meddle))
 			mustContain(t, err, tc.want)
+		})
+	}
+}
+
+// TestEveryUsageCountIsWatched walks Usage's fields instead of naming them, so a
+// count added the day a provider starts reporting one is covered without anyone
+// remembering to come back here — Anthropic already splits cache creation into
+// 5-minute and 1-hour buckets. Naming them is how a rule ends up with one field
+// nothing watches, which is where the next adapter's bug lands.
+func TestEveryUsageCountIsWatched(t *testing.T) {
+	usage := reflect.TypeFor[llm.Usage]()
+	if usage.NumField() == 0 {
+		t.Fatal("llm.Usage has no fields, so this test checks nothing at all")
+	}
+
+	for i := range usage.NumField() {
+		name := usage.Field(i).Name
+		t.Run(name, func(t *testing.T) {
+			// Every count opens at 10 and this one alone drops, so only a rule
+			// reading this field can notice.
+			opening := reflect.New(usage).Elem()
+			for j := range usage.NumField() {
+				// CanSet as well as Kind: an unexported count would pass the kind
+				// check and then panic in SetInt with a reflect internals message
+				// instead of the one naming the field.
+				field, name := opening.Field(j), usage.Field(j).Name
+				switch {
+				case field.Kind() != reflect.Int:
+					t.Fatalf("Usage.%s is a %s, and checkUsage compares only ints — so this test "+
+						"failing is all that stands between that count and nothing watching it. "+
+						"Make it an int, or teach this and checkUsage to descend into it.",
+						name, field.Kind())
+				case !field.CanSet():
+					t.Fatalf("Usage.%s is unexported, so this test cannot drive it; a count has "+
+						"to be exported to be watched here", name)
+				}
+				field.SetInt(10)
+			}
+			dropped := reflect.New(usage).Elem()
+			dropped.Set(opening)
+			dropped.Field(i).SetInt(9)
+
+			_, err := llm.CheckStream(func(yield func(llm.Event) bool) {
+				msg := &llm.Message{
+					Role:    llm.RoleAssistant,
+					Content: []llm.Block{{Type: llm.BlockText, Text: "I'll read it."}},
+					Usage:   opening.Interface().(llm.Usage),
+				}
+				if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll read it.", Partial: msg}) {
+					return
+				}
+				msg.Usage = dropped.Interface().(llm.Usage)
+				msg.StopReason = llm.StopEndTurn
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+			})
+			mustContain(t, err, "Usage."+name+" fell from 10 to 9")
 		})
 	}
 }
@@ -1263,6 +1340,73 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
 		},
 
+		// The three usage shapes the monotonicity rule was weighed against. The
+		// last is the one a rule *requiring* usage would have rejected, and the
+		// reason this one only forbids a count going backwards.
+		//
+		// Anthropic: message_start reports the input counts with output_tokens at
+		// 1, and message_delta refines the output count once the reply is done.
+		"usage opened at the start and refined at the end": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Usage: llm.Usage{Input: 25, CacheRead: 1024, Output: 1}}
+			if !yield(llm.Event{Type: llm.EventMessageStart, Partial: msg}) {
+				return
+			}
+			msg.Content = []llm.Block{{Type: llm.BlockText, Text: "I'll read it."}}
+			if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll read it.", Partial: msg}) {
+				return
+			}
+			msg.Usage.Output = 15
+			msg.StopReason = llm.StopEndTurn
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+		},
+
+		// OpenAI-compatible with stream_options.include_usage: nothing at all
+		// until the final chunk, which is a jump from zero, not a revision.
+		"usage that arrives only in the final chunk": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText}}}
+			msg.Content[0].Text = "I'll read it."
+			if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll read it.", Partial: msg}) {
+				return
+			}
+			msg.Usage = llm.Usage{Input: 25, Output: 15}
+			msg.StopReason = llm.StopEndTurn
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+		},
+
+		"a stream that reports no usage at all": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText, Text: "I'll read it."}}}
+			if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "I'll read it.", Partial: msg}) {
+				return
+			}
+			msg.StopReason = llm.StopEndTurn
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+		},
+
+		// One OpenAI-compatible chunk can carry two tool_calls entries, so a
+		// completing event may finish more than one block at a time. Nothing else
+		// here sends that, which is what would let "one block per event" be
+		// tightened into the loosest rule in the file and pass.
+		"one chunk completing two calls at once": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+				{Type: llm.BlockToolUse, ID: "toolu_01", Name: "read"},
+				{Type: llm.BlockToolUse, ID: "toolu_02", Name: "read"},
+			}}
+			if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+				return
+			}
+			msg.Content[0].Input = []byte(`{"path":"a.go"}`)
+			msg.Content[1].Input = []byte(`{"path":"b.go"}`) // both, in the one chunk
+			for i, id := range []string{"toolu_01", "toolu_02"} {
+				if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg, ToolCall: &llm.ToolCall{
+					ID: id, Name: "read", Input: msg.Content[i].Input,
+				}}) {
+					return
+				}
+			}
+			msg.StopReason = llm.StopToolUse
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+		},
+
 		// Ollama and llama.cpp-style servers report finish_reason "stop" next to
 		// tool_calls.
 		"tool calls reported alongside a plain ending": func(yield func(llm.Event) bool) {
@@ -1348,6 +1492,47 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 				t.Fatalf("CheckStream: %v", err)
 			}
 		})
+	}
+}
+
+// TestCheckStreamMissesAMisroutedFragment pins a hole rather than a rule, which
+// is worth a test because design §3.1a now tells a future reader the hole is
+// there. An adapter that pours call 2's payload into call 1's block and then
+// announces each call from the block it just wrote compares every value against
+// itself, so nothing here can see it — the loop would run toolu_1 with b.go's
+// arguments and toolu_2 with none.
+//
+// If this ever starts failing, someone has closed the gap: keep the rule and
+// rewrite §3.1a, which currently says closing it belongs to an adapter's own
+// tests against a recorded response.
+func TestCheckStreamMissesAMisroutedFragment(t *testing.T) {
+	_, err := llm.CheckStream(func(yield func(llm.Event) bool) {
+		msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+			{Type: llm.BlockToolUse, ID: "toolu_1", Name: "read", Input: []byte(`{}`)},
+			{Type: llm.BlockToolUse, ID: "toolu_2", Name: "read", Input: []byte(`{}`)},
+		}}
+		if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+			return
+		}
+		msg.Content[0].Input = []byte(`{"path":"b.go"}`) // call 2's payload, call 1's block
+		if !yield(llm.Event{Type: llm.EventToolInputDelta, Delta: `{"path":"b.go"}`, Partial: msg}) {
+			return
+		}
+		for i, id := range []string{"toolu_1", "toolu_2"} {
+			if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg, ToolCall: &llm.ToolCall{
+				ID: id, Name: "read", Input: msg.Content[i].Input,
+			}}) {
+				return
+			}
+		}
+		msg.StopReason = llm.StopToolUse
+		yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
+	})
+	if err != nil {
+		t.Fatalf("this stream no longer passes: %v.\nIf that error is about the mis-routed "+
+			"arguments, the gap is closed — keep the rule and rewrite design §3.1a, which says it "+
+			"is open. If it is about anything else, a new rule caught this stream in passing and "+
+			"the gap is still there; adjust the stream, not the spec.", err)
 	}
 }
 

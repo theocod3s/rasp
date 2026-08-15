@@ -260,6 +260,70 @@ const (
 `StopMaxTokens` is called out because it is not merely informational — it triggers the
 truncated-tool-call guard, and getting that wrong silently corrupts files.
 
+### 3.1a What the contract deliberately does not check
+
+`llm.CheckStream` is the contract above in executable form, and every adapter is run against
+it. Three of its gaps are deliberate, and all three were settled the same way: **a rule that
+rejects a wire format some provider actually sends costs more than the bug it would have
+caught**, because the adapter's author cannot tell which of the two they are looking at.
+
+**Which block a fragment landed in.** `Event` carries no block index, so an adapter that routes
+call 2's fragment into call 1's arguments passes as long as both halves still parse — which is
+internals §4.2's hazard exactly, arguments that parse and mean something else. Putting the
+index on delta events does not close it. An adapter appends to a block and reports the index
+from the same variable, so the check compares that variable against itself; catching a
+mis-route needs the index derived twice by independent paths, and no adapter has a reason to do
+that. For an OpenAI-compatible endpoint the wire's `tool_calls` index and the neutral message's
+block index are different numbering spaces anyway, joined by the very mapping under suspicion.
+The field would also invite a consumer to key off it, which is what contract rule 2 exists to
+prevent. So there is no block index.
+
+What survives is less well covered than it looks, and the honest version matters more than the
+reassuring one. `checkToolCall` compares each announced call against its block byte for byte,
+which is a real check against an adapter that assembles announcements separately — and the same
+mirror as above against one that announces from the block it has just written into, which
+compares a value with itself. A mis-route where both halves still parse is therefore **not
+closed by this contract at all**. Closing it is the adapter's own tests against a recorded
+response, where the wire and the neutral message are two independent things to compare.
+
+The same blindness is why a call whose arguments genuinely are `{}` may be replaced wholesale
+before it is announced: a block sitting at the empty object cannot be told from one still
+holding the placeholder a provider opened it with. Tracking that difference was tried and
+reverted — it rejected two real wire shapes.
+
+**How many blocks one completing event may add to.** A single chunk from an OpenAI-compatible
+endpoint can carry two `tool_calls` entries, so "at most one block per completing event" would
+reject a faithful adapter in order to catch a payload landing in a sibling's arguments — which
+a finished turn catches under the condition above, and misses under the same one. Revisit only
+if a real adapter makes the stricter rule safe.
+
+**That usage is reported at all.** `Message.Usage` is authoritative for context estimation
+(§11), so an adapter that never maps it is a real bug. Requiring it here is still wrong: an
+endpoint that reports no usage would be rejected, and §10.2's answer to missing metadata is to
+degrade to estimates rather than refuse. An adapter that knows its own endpoint reports usage
+asserts that itself.
+
+Usage is held to one thing: **a count only ever grows.** An endpoint reporting nothing stays at
+zero, which is monotone, so the rule rejects no usage-free shape. The shape it *does* reject is
+a count revised downward, and that is the thing to watch: a gateway that publishes an estimated
+input count early and corrects it in the final chunk would be faithful and would fail here. No
+such endpoint is known, and if one turns up the rule goes rather than gets narrowed. What it
+catches is a report one field short — Anthropic's `message_delta` carries `output_tokens` alone,
+so an adapter that assigns where it should merge drops the input count to zero, and the symptom
+surfaces a hundred turns later as compaction firing at the wrong point.
+
+It catches that only once the larger count has been published. An adapter that never maps
+`message_start` in the first place climbs monotonically from zero and passes, because at this
+level it is indistinguishable from an endpoint that reports nothing — which is the shape the
+paragraph above refuses to reject. That half is the adapter's own to assert, against the
+endpoint it knows — each adapter's ticket requires it.
+
+One consequence belongs here rather than in §12: **a retry wrapper cannot satisfy this
+contract** by replaying attempt 2 after attempt 1. That is an event after the terminal one, a
+second `*Message`, and content streamed then dropped, all at once. A retry after half a
+streamed reply either abandons streaming on the first attempt, or discards what the user has
+already seen.
+
 ### 3.2 Tool — one interface, two producers
 
 MCP forces a decision here, and it is a better decision than we would have made without it.
