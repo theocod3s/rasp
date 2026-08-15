@@ -132,8 +132,9 @@ type Message struct {
 }
 
 // Usage is the token count for one model call. Input excludes anything served
-// from or written to the cache, so the context actually sent is the sum of all
-// three counts; a cache write is counted once, on the turn that creates it.
+// from or written to the cache, so the context actually sent is Input plus
+// CacheRead plus CacheWrite, and not Output. A cache write is counted once, on
+// the turn that creates it.
 type Usage struct {
 	Input      int `json:"input,omitempty"`
 	Output     int `json:"output,omitempty"`
