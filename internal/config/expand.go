@@ -157,7 +157,6 @@ func parseCommand(s string) (cmd string, n int, err error) {
 	return "", 0, fmt.Errorf("unterminated %q — no closing parenthesis", "$(")
 }
 
-// parseBraced reads `${…}` from the front of s.
 func parseBraced(s string) (seg segment, n int, err error) {
 	end, err := matchingBrace(s)
 	if err != nil {
@@ -234,7 +233,6 @@ func matchingBrace(s string) (int, error) {
 	return 0, fmt.Errorf("unterminated %q — no closing brace", "${")
 }
 
-// leadingName returns the environment-variable name at the front of s, if any.
 func leadingName(s string) string {
 	for i := 0; i < len(s); i++ {
 		c := s[i]

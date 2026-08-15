@@ -53,6 +53,20 @@ Most real offenders are here: one true idea in six sentences. One or two
 sentences is usually enough. When unsure whether something is load-bearing,
 **keep it and shorten it** rather than dropping it.
 
+That last rule is for genuinely hard cases, and it is the one this skill's own
+audit over-applied. Shortening feels safe and cutting feels irreversible, so with
+nothing pushing back everything drifts into compression: 765 comment lines came
+off and only 56 whole comments went with them, 11% of the groups. Seven pure
+restatements got *shorter* instead of deleted. `syntaxOffset` lost "when the error
+carries no position" and kept "digs the byte offset out of an encoding/json error,
+or -1" — above a function whose body ends in `return -1`.
+
+**A restatement compressed is still a restatement.** Settle Keep-or-Cut first,
+then ask how long. The forcing question is whether the identifier is exported: an
+exported one owes `go doc` a sentence whatever else is true, an unexported one
+owes nothing and has to survive on content alone. That is where restatements
+hide, and shortening one only makes it cheaper to keep.
+
 ## Say it once
 
 The single largest source of bloat found in the August 2026 audit was not bad
@@ -71,31 +85,22 @@ three of them restating each other:
 
 ```go
 // Arguments is a tool call's arguments as anything sending them should read them:
-// the bytes that arrived, or an empty object when those bytes are not one. For
-// any other block type it is whatever Input held, which should be nothing.
+// the bytes that arrived, or an empty object when those bytes are not one. [...]
 //
 // Exported because the substitution has to hold everywhere a message is used, not
 // only where one is written. A turn cut off at the output limit is committed with
-// its fragment — design §4 invariant 2 fails the call and the block stays — and
-// the loop keeps going, so the NEXT request is built from that same in-memory
-// message. An adapter reading Input directly would put `{"pa` on the wire and
-// take a 400 for a message already in history; reading this cannot.
+// its fragment [...] so the NEXT request is built from that same in-memory
+// message. An adapter reading Input directly would put `{"pa` on the wire [...]
 //
 // MarshalJSON writes a block: its arguments through Arguments, and none of the
 // fields belonging to another block type.
 //
 // The substitution exists because of one state the rest of the system requires:
 // a response truncated at the output limit is committed, tool_use block and all
-// (design §4 invariant 2 fails every call in it), and that block's arguments are
-// a fragment cut mid-object. json.Marshal validates a json.RawMessage, so
-// without this the whole message fails to encode and returns zero bytes — and a
-// message that cannot be written cannot be committed together with its results,
-// which is invariant 1.
+// [...] and that block's arguments are a fragment cut mid-object. [...]
 //
 // An object rather than merely valid JSON, because `null` is both valid and how
-// an OpenAI-compatible endpoint normalises an empty arguments string — and a
-// tool_use whose input is null is rejected on replay exactly like one with no
-// input at all.
+// an OpenAI-compatible endpoint normalises an empty arguments string [...]
 //
 // Absent arguments go the same way, and for the same reason: [...]
 ```
@@ -163,18 +168,13 @@ git ls-files --cached --others --exclude-standard -- '*.go' | grep -v 'doc\.go$'
 ```
 
 This is the second version. The first took a diff against `main` and grew a guard
-per review pass — a missing file, a missing trailing newline, a missing `main`, a
-subdirectory, an untracked package — until it was six guards over six lines of
-work and *still* had defects: it silently `cd`-ed the caller's shell to the repo
-root, and its own explanatory comment described a mechanism that had stopped
-being true two commits earlier.
-
-That is this skill's subject, committed against the skill. Each round found
-something real, appended a justification, and removed nothing; the fix was never
-another guard, it was to want less. Comparing against a base ref bought a
-shorter list and cost `main`-exists, merge-base, untracked-files and
-working-directory failures, every one of which reported "nothing is over the bar"
-and exited 0. Listing every Go file needs none of them.
+per review pass — missing file, missing trailing newline, missing `main`, untracked
+package — until it was six guards over six lines and *still* silently `cd`-ed the
+caller's shell to the repo root. Each round found something real, appended a
+guard, and removed nothing: this skill's subject, committed against the skill. The
+fix was never a seventh guard, it was to want less. Comparing against a base ref
+bought a shorter list and cost four failure modes that all reported "nothing is
+over the bar" and exited 0. Listing every Go file needs none of them.
 
 **When a comment keeps needing another sentence, the sentence is rarely the
 problem.**
