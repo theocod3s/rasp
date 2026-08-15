@@ -1064,12 +1064,16 @@ func TestEveryUsageCountIsWatched(t *testing.T) {
 				// CanSet as well as Kind: an unexported count would pass the kind
 				// check and then panic in SetInt with a reflect internals message
 				// instead of the one naming the field.
-				field := opening.Field(j)
-				if kind := field.Kind(); kind != reflect.Int || !field.CanSet() {
-					t.Fatalf("Usage.%s is an unsettable %s, and checkUsage skips what it cannot "+
-						"compare — so this test failing is the only thing between that count and "+
-						"nothing watching it. Make it an exported int, or teach both to descend.",
-						usage.Field(j).Name, kind)
+				field, name := opening.Field(j), usage.Field(j).Name
+				switch {
+				case field.Kind() != reflect.Int:
+					t.Fatalf("Usage.%s is a %s, and checkUsage compares only ints — so this test "+
+						"failing is all that stands between that count and nothing watching it. "+
+						"Make it an int, or teach this and checkUsage to descend into it.",
+						name, field.Kind())
+				case !field.CanSet():
+					t.Fatalf("Usage.%s is unexported, so this test cannot drive it; a count has "+
+						"to be exported to be watched here", name)
 				}
 				field.SetInt(10)
 			}
@@ -1376,6 +1380,31 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 			}
 			msg.StopReason = llm.StopEndTurn
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+		},
+
+		// One OpenAI-compatible chunk can carry two tool_calls entries, so a
+		// completing event may finish more than one block at a time. Nothing else
+		// here sends that, which is what would let "one block per event" be
+		// tightened into the loosest rule in the file and pass.
+		"one chunk completing two calls at once": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+				{Type: llm.BlockToolUse, ID: "toolu_01", Name: "read"},
+				{Type: llm.BlockToolUse, ID: "toolu_02", Name: "read"},
+			}}
+			if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
+				return
+			}
+			msg.Content[0].Input = []byte(`{"path":"a.go"}`)
+			msg.Content[1].Input = []byte(`{"path":"b.go"}`) // both, in the one chunk
+			for i, id := range []string{"toolu_01", "toolu_02"} {
+				if !yield(llm.Event{Type: llm.EventToolCall, Partial: msg, ToolCall: &llm.ToolCall{
+					ID: id, Name: "read", Input: msg.Content[i].Input,
+				}}) {
+					return
+				}
+			}
+			msg.StopReason = llm.StopToolUse
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopToolUse, Partial: msg})
 		},
 
 		// Ollama and llama.cpp-style servers report finish_reason "stop" next to

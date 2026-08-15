@@ -697,7 +697,10 @@ func checkAccumulation(at string, ev Event, ch channel, seen map[int]string, fro
 				"message, not the delta", at, ch.name, added, ev.Delta)
 		}
 	case slices.Contains(ch.grows, ev.Type):
-		// Any amount, in any block: see the latitude above.
+		// Any amount, in any block. The second half is the loosest rule here and
+		// the easiest to tighten by symmetry with the branch above: one
+		// OpenAI-compatible chunk can carry two tool_calls entries, so `grew <= 1`
+		// rejects a faithful adapter (design §3.1a).
 	case grew > 0:
 		return fmt.Errorf("%s: Partial %s grew by %q; only %v adds to it, and content nobody "+
 			"announced is content nobody draws", at, ch.name, added, append([]EventType{ch.delta}, ch.grows...))
