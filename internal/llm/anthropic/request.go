@@ -9,6 +9,10 @@ import (
 	"github.com/theocod3s/rasp/internal/llm"
 )
 
+// errNothingLeftToSend marks a message whose every block this adapter drops, as
+// against one that arrived with no blocks at all.
+var errNothingLeftToSend = errors.New("every block was dropped")
+
 // buildParams translates a neutral request onto the wire. It fails rather than
 // dropping anything it cannot express: a tool_result quietly left out of a
 // request is design §4 invariant 1 broken at the last layer that can still see it.
@@ -40,7 +44,15 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 
 	for i, msg := range req.Messages {
 		converted, err := messageParam(msg)
-		if err != nil {
+		switch {
+		case errors.Is(err, errNothingLeftToSend):
+			// A turn truncated while the model was still thinking commits an
+			// assistant message holding nothing but a thinking block. Dropping the
+			// thinking leaves nothing to send, and failing here would fail every
+			// later request built from that transcript too — one truncated turn
+			// would wedge the session with no way out but editing the file.
+			continue
+		case err != nil:
 			return sdk.MessageNewParams{}, fmt.Errorf("anthropic: message %d: %w", i, err)
 		}
 		params.Messages = append(params.Messages, converted)
@@ -78,6 +90,12 @@ func messageParam(msg llm.Message) (sdk.MessageParam, error) {
 		}
 	}
 	if len(content) == 0 {
+		// Two different failures. A message that arrived empty is a caller's bug and
+		// says so; one emptied by the drop above is a state the transcript can
+		// legitimately hold, and buildParams skips it rather than refusing forever.
+		if len(msg.Content) > 0 {
+			return sdk.MessageParam{}, errNothingLeftToSend
+		}
 		return sdk.MessageParam{}, errors.New("no content to send; providers reject an empty message")
 	}
 

@@ -28,6 +28,8 @@ type Client struct {
 	api sdk.Client
 }
 
+var _ llm.Provider = (*Client)(nil)
+
 func New(cfg Config) *Client {
 	// Retries are llm/retry's (design §12): its sleep is interruptible by the turn's
 	// context and it refuses a Retry-After above its cap instead of sleeping through
@@ -89,8 +91,10 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) llm.StreamResponse
 			}
 		}
 
-		// NewStreaming defers the request itself to the first Next, so a 401, a 429
-		// and a half-delivered message all surface in this one place.
+		// NewStreaming runs the request before it returns and hands the result — a
+		// response body or an error — to the stream it builds, which is why a 401, a
+		// 429 and a half-delivered message all surface in this one place rather than
+		// splitting across a return value and a loop.
 		if err := stream.Err(); err != nil {
 			yield(errorEvent(msg, fmt.Errorf("anthropic: %w", err)))
 			return

@@ -125,11 +125,6 @@ func TestBuildParamsRejectsEmptyAndUnknown(t *testing.T) {
 			"empty message",
 		},
 		{
-			"only a dropped block",
-			llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockThinking, Text: "x"}}},
-			"empty message",
-		},
-		{
 			"unknown role",
 			llm.Message{Role: "system", Content: []llm.Block{{Type: llm.BlockText, Text: "x"}}},
 			"unknown role",
@@ -213,5 +208,42 @@ func TestBuildParamsRefusesUnsetMaxTokens(t *testing.T) {
 
 	if _, err := buildParams(req); err == nil || !strings.Contains(err.Error(), "MaxTokens") {
 		t.Errorf("error = %v, want one naming MaxTokens", err)
+	}
+}
+
+// TestBuildParamsSkipsAThinkingOnlyTurn: a turn truncated while the model was
+// still thinking commits an assistant message holding nothing else. Refusing it
+// would refuse every later request built from the same transcript, so one
+// truncated turn would end the session with no way out but editing the file.
+func TestBuildParamsSkipsAThinkingOnlyTurn(t *testing.T) {
+	req := ask()
+	req.Messages = append(req.Messages,
+		llm.Message{
+			Role:       llm.RoleAssistant,
+			Content:    []llm.Block{{Type: llm.BlockThinking, Text: "Still reasoning when the cap hit"}},
+			StopReason: llm.StopMaxTokens,
+		},
+		llm.Message{Role: llm.RoleUser, Content: []llm.Block{{Type: llm.BlockText, Text: "carry on"}}},
+	)
+
+	params, err := buildParams(req)
+	if err != nil {
+		t.Fatalf("buildParams: %v; the session is now unrecoverable without editing the file", err)
+	}
+	if len(params.Messages) != 2 {
+		t.Fatalf("sent %d messages, want the thinking-only turn omitted and the other two kept", len(params.Messages))
+	}
+	body, _ := json.Marshal(params)
+	if strings.Contains(string(body), "Still reasoning") {
+		t.Error("the thinking block went out without the signature Anthropic requires with it")
+	}
+}
+
+// TestNewSatisfiesProvider: Stream's signature is pinned incidentally by
+// CheckStream, ID's by nothing, so a rename here would compile and stay green.
+func TestNewSatisfiesProvider(t *testing.T) {
+	var p llm.Provider = New(Config{APIKey: "test"})
+	if p.ID() != ProviderID {
+		t.Errorf("ID() = %q, want %q", p.ID(), ProviderID)
 	}
 }

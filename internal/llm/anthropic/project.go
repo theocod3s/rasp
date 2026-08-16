@@ -79,6 +79,13 @@ func terminalEvent(msg *llm.Message, reason sdk.StopReason) llm.Event {
 	if reason == "" {
 		return errorEvent(msg, errors.New("anthropic: stream ended without a stop reason"))
 	}
+	// The one unmapped reason a long session reaches routinely, and §12 wants it
+	// fatal with a fix hint rather than retried. The classifier is a pure function
+	// over the message, so the distinction has to be in the text it can read.
+	if reason == sdk.StopReasonModelContextWindowExceeded {
+		return errorEvent(msg, errors.New("anthropic: the conversation is longer than the model's "+
+			"context window; it has to be compacted or started again"))
+	}
 	stop, ok := stopReasons[reason]
 	if !ok {
 		// end_turn is the tempting default and the wrong one: it would present a

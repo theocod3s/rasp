@@ -303,3 +303,23 @@ func TestNoAPIKeyLeavesCredentialResolutionAlone(t *testing.T) {
 		t.Errorf("Authorization = %q, want the environment's credential to have been used", got)
 	}
 }
+
+// TestStreamContextWindowExceeded: §12 wants this one fatal with a fix hint, and
+// the retry classifier is a pure function over the message — so it has to be
+// distinguishable from a stop reason nobody has taught the adapter yet.
+func TestStreamContextWindowExceeded(t *testing.T) {
+	events, err := llm.CheckStream(replay(t, "context_exceeded.sse").Stream(context.Background(), ask()))
+	if err != nil {
+		t.Fatalf("CheckStream: %v", err)
+	}
+	end := last(t, events)
+	if end.Type != llm.EventError || end.StopReason != llm.StopError {
+		t.Fatalf("terminal event = %s/%s", end.Type, end.StopReason)
+	}
+	if end.Err == nil || !strings.Contains(end.Err.Error(), "context window") {
+		t.Errorf("error = %v, want one naming the context window rather than an unsupported reason", end.Err)
+	}
+	if strings.Contains(end.Err.Error(), "unsupported") {
+		t.Error("the context-window overflow arrived as a generic unsupported stop reason")
+	}
+}

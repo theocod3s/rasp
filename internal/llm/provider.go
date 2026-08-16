@@ -81,8 +81,12 @@ type ToolSpec struct {
 type ThinkingConfig struct {
 	Enabled bool
 
-	// BudgetTokens caps the thinking tokens. Zero leaves the choice to the
-	// adapter: Anthropic rejects a budget below its own floor, and a caller
-	// here should not have to know what that floor is this month.
+	// BudgetTokens caps the thinking tokens, and nothing can currently send one.
+	// The models that take Anthropic's adaptive shape reject a fixed budget and
+	// express depth as an effort level instead, which this struct has nowhere to
+	// carry; the models that do take a budget take only that. An adapter cannot
+	// tell which it faces, because a model id is never validated against a
+	// catalog (scope.md), so a non-zero value is refused rather than dropped
+	// until the field is either removed or replaced by an effort level.
 	BudgetTokens int
 }
