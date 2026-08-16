@@ -22,9 +22,9 @@ func TestMain(m *testing.M) {
 }
 
 // fake is a client pointed at a server that replays one recorded response and
-// keeps the request that asked for it. Recorded frames rather than a hand-built
-// event slice, because the wire format and the neutral message have to stay two
-// independent things to compare (design §3.1a).
+// keeps the request that asked for it. Tests enter at the socket so that the SSE
+// decoder, Accumulate and the projection all run; a hand-built []llm.Event would
+// assert against events the test itself constructed.
 type fake struct {
 	*Client
 
