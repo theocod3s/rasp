@@ -29,7 +29,17 @@ type Client struct {
 }
 
 func New(cfg Config) *Client {
-	opts := []option.RequestOption{option.WithAPIKey(cfg.APIKey)}
+	// Retries are llm/retry's (design §12): its sleep is interruptible by the turn's
+	// context and it refuses a Retry-After above its cap instead of sleeping through
+	// it, where the SDK's timers ignore cancellation and honour whatever delay a
+	// provider names. Left on they would also multiply with tier 1's attempts.
+	opts := []option.RequestOption{option.WithMaxRetries(0)}
+	if cfg.APIKey != "" {
+		// Applied unconditionally, an empty key would send an empty X-Api-Key and
+		// suppress the SDK's credential chain, so "nothing configured" would reach
+		// the user as an opaque 401 with an ambient token left unconsulted.
+		opts = append(opts, option.WithAPIKey(cfg.APIKey))
+	}
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
 	}

@@ -13,6 +13,18 @@ import (
 // dropping anything it cannot express: a tool_result quietly left out of a
 // request is design §4 invariant 1 broken at the last layer that can still see it.
 func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
+	if req.MaxTokens <= 0 {
+		return sdk.MessageNewParams{}, fmt.Errorf("anthropic: MaxTokens is %d; the API requires a positive cap, "+
+			"and sending this costs an authenticated round trip to be told so", req.MaxTokens)
+	}
+	// The quietest failure this adapter could have: the loop passes its per-turn
+	// registry snapshot, no tools reach the wire, the model answers in prose, and
+	// the turn completes looking successful with the user's tools never offered.
+	if len(req.Tools) > 0 {
+		return sdk.MessageNewParams{}, fmt.Errorf("anthropic: the request carries %d tools; this adapter "+
+			"streams text only and would send none of them", len(req.Tools))
+	}
+
 	params := sdk.MessageNewParams{
 		Model:     sdk.Model(req.Model),
 		MaxTokens: int64(req.MaxTokens),
@@ -35,9 +47,15 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 	}
 
 	if req.Thinking.Enabled {
-		// Adaptive rather than a token budget: budget_tokens was removed from the
-		// API and is a 400 on every model this runs against, so Request.Thinking's
-		// BudgetTokens goes no further than here.
+		if req.Thinking.BudgetTokens != 0 {
+			return sdk.MessageNewParams{}, fmt.Errorf("anthropic: Thinking.BudgetTokens is %d and cannot be sent; "+
+				"depth is an effort level on the models that take the shape below, and ThinkingConfig has "+
+				"nowhere to carry one", req.Thinking.BudgetTokens)
+		}
+		// Adaptive is the shape current models take, and budget_tokens is the only
+		// one older models accept. Nothing here can tell which is which: rasp never
+		// validates a model id against a catalog, so that `openrouter/auto` and any
+		// future router keep working (scope.md).
 		params.Thinking = sdk.ThinkingConfigParamUnion{OfAdaptive: &sdk.ThinkingConfigAdaptiveParam{}}
 	}
 	return params, nil

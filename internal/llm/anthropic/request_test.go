@@ -53,8 +53,8 @@ func TestRequestOnTheWire(t *testing.T) {
 		t.Error("an unflagged system block went out with a cache breakpoint")
 	}
 
-	// Adaptive, never budget_tokens: the field was removed from the API and is a
-	// 400 on the models this runs against.
+	// Adaptive, never budget_tokens: current models reject the budget shape, and a
+	// caller who asks for one is refused rather than silently sent this instead.
 	thinking, _ := json.Marshal(sent["thinking"])
 	if got := string(thinking); !strings.Contains(got, `"adaptive"`) || strings.Contains(got, "budget_tokens") {
 		t.Errorf("thinking = %s", got)
@@ -170,5 +170,48 @@ func TestStreamRefusesToSendBadRequest(t *testing.T) {
 	}
 	if events[0].Type != llm.EventError || events[0].StopReason != llm.StopError {
 		t.Errorf("terminal event = %s/%s", events[0].Type, events[0].StopReason)
+	}
+}
+
+// TestBuildParamsRefusesToolsAndBudget covers the two fields the adapter reads
+// nowhere. Both would otherwise vanish between the caller and the wire, and the
+// turn would look successful with the request quietly missing half its meaning.
+func TestBuildParamsRefusesToolsAndBudget(t *testing.T) {
+	t.Run("tools", func(t *testing.T) {
+		req := ask()
+		req.Tools = []llm.ToolSpec{{Name: "read", Description: "read a file"}}
+
+		_, err := buildParams(req)
+		if err == nil {
+			t.Fatal("no error; the model would answer in prose with the tools never offered, and nothing above could tell")
+		}
+		if !strings.Contains(err.Error(), "tools") {
+			t.Errorf("error = %v, want one naming the tools", err)
+		}
+	})
+
+	t.Run("thinking budget", func(t *testing.T) {
+		req := ask()
+		req.Thinking = llm.ThinkingConfig{Enabled: true, BudgetTokens: 8000}
+
+		_, err := buildParams(req)
+		if err == nil {
+			t.Fatal("no error; the caller's budget would be dropped and the request sent as though none was asked for")
+		}
+		if !strings.Contains(err.Error(), "BudgetTokens") {
+			t.Errorf("error = %v, want one naming the field", err)
+		}
+	})
+}
+
+// TestBuildParamsRefusesUnsetMaxTokens: the zero value a caller gets by forgetting
+// the field serializes as "max_tokens":0, which costs an authenticated round trip
+// to be told about. Every other unsendable shape in this file is refused locally.
+func TestBuildParamsRefusesUnsetMaxTokens(t *testing.T) {
+	req := ask()
+	req.MaxTokens = 0
+
+	if _, err := buildParams(req); err == nil || !strings.Contains(err.Error(), "MaxTokens") {
+		t.Errorf("error = %v, want one naming MaxTokens", err)
 	}
 }

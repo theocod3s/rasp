@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/theocod3s/rasp/internal/llm"
 )
@@ -241,5 +242,64 @@ func TestStreamConsumerStopsEarly(t *testing.T) {
 	}
 	if seen != 2 {
 		t.Errorf("consumer saw %d events before breaking, want 2", seen)
+	}
+}
+
+// TestStreamDoesNotRetry counts requests rather than timing the turn: a retry the
+// adapter was not supposed to make is otherwise invisible. Why it must not is in New.
+func TestStreamDoesNotRetry(t *testing.T) {
+	client, requests := refuse(t)
+
+	events, err := llm.CheckStream(client.Stream(context.Background(), ask()))
+	if err != nil {
+		t.Fatalf("CheckStream: %v", err)
+	}
+	if got := last(t, events); got.Type != llm.EventError {
+		t.Fatalf("terminal event = %s, want %s", got.Type, llm.EventError)
+	}
+	if n := requests(); n != 1 {
+		t.Errorf("the adapter made %d requests for one turn, want 1: retrying here is llm/retry's job", n)
+	}
+}
+
+// TestStreamDeadlineIsNotAnAbort pins the half of errorEvent's classification that
+// looks like an oversight — a deadline is a context error and still not an abort.
+func TestStreamDeadlineIsNotAnAbort(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	events, err := llm.CheckStream(replay(t, "text.sse").Stream(ctx, ask()))
+	if err != nil {
+		t.Fatalf("CheckStream: %v", err)
+	}
+	end := last(t, events)
+	if end.Type != llm.EventError || end.StopReason != llm.StopError {
+		t.Fatalf("terminal event = %s/%s, want %s/%s", end.Type, end.StopReason, llm.EventError, llm.StopError)
+	}
+	if !errors.Is(end.Err, context.DeadlineExceeded) {
+		t.Errorf("error = %v, want one wrapping context.DeadlineExceeded", end.Err)
+	}
+}
+
+// TestNoAPIKeyLeavesCredentialResolutionAlone needs a credential in the
+// environment: with none, the SDK refuses either way and the guard in New looks
+// like it changes nothing.
+func TestNoAPIKeyLeavesCredentialResolutionAlone(t *testing.T) {
+	noAmbientCredentials(t)
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "ambient-token")
+
+	client := replayAs(t, "text.sse", Config{})
+	for range client.Stream(context.Background(), ask()) {
+	}
+
+	headers := client.maybeHeaders()
+	if headers == nil {
+		t.Fatal("the adapter sent no request, so the credential in the environment was never reached")
+	}
+	if _, present := headers["X-Api-Key"]; present {
+		t.Error("an empty X-Api-Key went out; with no key configured the header belongs off the request")
+	}
+	if got := headers.Get("Authorization"); got != "Bearer ambient-token" {
+		t.Errorf("Authorization = %q, want the environment's credential to have been used", got)
 	}
 }

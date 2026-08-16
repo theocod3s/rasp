@@ -104,9 +104,14 @@ var stopReasons = map[sdk.StopReason]llm.StopReason{
 // errorEvent ends a stream that failed. Cancellation is separated out because
 // design §4's termination table treats it as a completion, and the retry
 // classifier must not read it as a transport failure worth another turn.
+//
+// An expired deadline is deliberately NOT cancellation. §4 commits an aborted
+// turn and never retries it, while §12 counts a timeout among the retryable
+// failures — so calling one an abort would present a turn that timed out as one
+// the user interrupted, and take it out of the retry path on the way.
 func errorEvent(msg *llm.Message, err error) llm.Event {
 	reason := llm.StopError
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) {
 		reason = llm.StopAborted
 	}
 	msg.StopReason = reason
