@@ -3,6 +3,8 @@ package anthropic
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -69,11 +71,21 @@ func TestStreamUsageIsMerged(t *testing.T) {
 		t.Errorf("final usage = %+v, want %+v", got, want)
 	}
 
-	// And the input count was there from the start, not filled in at the end:
-	// context estimation reads Usage off whatever the turn left behind, including
-	// a turn that broke off mid-stream.
-	if got := events[0].Partial.Usage.Input; got != 1200 {
-		t.Errorf("input tokens after message_start = %d, want 1200", got)
+	// And the count was there from the first event, not filled in at the end.
+	// Sampling has to happen DURING iteration: Partial is one pointer, so reading
+	// events[0].Partial afterwards shows the final message and asserts nothing.
+	// Context estimation reads Usage off whatever a turn left behind, including one
+	// that broke off mid-stream.
+	var first llm.Usage
+	seen := 0
+	for ev := range replay(t, "text.sse").Stream(context.Background(), ask()) {
+		if seen == 0 {
+			first = ev.Partial.Usage
+		}
+		seen++
+	}
+	if first.Input != 1200 || first.CacheRead != 800 {
+		t.Errorf("usage on the first event = %+v, want the message_start counts already in place", first)
 	}
 }
 
@@ -229,12 +241,33 @@ func TestStreamCancelled(t *testing.T) {
 	}
 }
 
-// TestStreamConsumerStopsEarly: yield returning false means the consumer has
-// gone. The adapter has to unwind rather than keep producing — goleak in
-// TestMain is what proves the HTTP body was closed on the way out.
+// TestStreamConsumerStopsEarly: yield returning false means the consumer has gone,
+// and the adapter has to unwind and close the response body.
+//
+// The server holds the response open and watches for the disconnect, because
+// goleak does not see this: with a fully buffered fixture the handler returns on
+// its own and the test server reaps the connection at cleanup, so deleting the
+// adapter's Close leaves every check green.
 func TestStreamConsumerStopsEarly(t *testing.T) {
+	body := fixtureBytes(t, "text.sse")
+	disconnected := make(chan struct{})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+			close(disconnected)
+		case <-time.After(3 * time.Second):
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	client := New(Config{APIKey: "test-key", BaseURL: srv.URL})
 	var seen int
-	for ev := range replay(t, "text.sse").Stream(context.Background(), ask()) {
+	for ev := range client.Stream(context.Background(), ask()) {
 		seen++
 		if ev.Type == llm.EventTextDelta {
 			break
@@ -242,6 +275,11 @@ func TestStreamConsumerStopsEarly(t *testing.T) {
 	}
 	if seen != 2 {
 		t.Errorf("consumer saw %d events before breaking, want 2", seen)
+	}
+	select {
+	case <-disconnected:
+	case <-time.After(2 * time.Second):
+		t.Error("the server never saw the client go; the response body was left open")
 	}
 }
 
@@ -321,5 +359,23 @@ func TestStreamContextWindowExceeded(t *testing.T) {
 	}
 	if strings.Contains(end.Err.Error(), "unsupported") {
 		t.Error("the context-window overflow arrived as a generic unsupported stop reason")
+	}
+}
+
+// TestStreamUnknownBlock: Anthropic ships new content block types regularly, and
+// dropping one silently is the quietest failure the receive side could have — the
+// user reads an answer with a hole in it, and a turn whose only block was unknown
+// commits with no content at all, which every provider refuses on replay.
+func TestStreamUnknownBlock(t *testing.T) {
+	events, err := llm.CheckStream(replay(t, "unknown_block.sse").Stream(context.Background(), ask()))
+	if err != nil {
+		t.Fatalf("CheckStream: %v", err)
+	}
+	end := last(t, events)
+	if end.Type != llm.EventError || end.StopReason != llm.StopError {
+		t.Fatalf("terminal event = %s/%s, want %s/%s", end.Type, end.StopReason, llm.EventError, llm.StopError)
+	}
+	if end.Err == nil || !strings.Contains(end.Err.Error(), "some_future_block") {
+		t.Errorf("error = %v, want one naming the block type", end.Err)
 	}
 }

@@ -299,3 +299,55 @@ func TestBuildParamsRejectsEmptySystemBlock(t *testing.T) {
 		t.Errorf("error = %v, want one naming the empty system block", err)
 	}
 }
+
+// TestBuildParamsSkipIsAssistantOnly: the skip exists for a transcript state only
+// an interrupted assistant turn produces. A user message is written by rasp, so an
+// unsendable one is a bug here — and skipping it would leave the model answering
+// the previous turn again, with the user's words still in the transcript.
+func TestBuildParamsSkipIsAssistantOnly(t *testing.T) {
+	req := ask()
+	req.Messages = append(req.Messages, llm.Message{
+		Role:    llm.RoleUser,
+		Content: []llm.Block{{Type: llm.BlockText, Text: ""}},
+	})
+
+	if _, err := buildParams(req); err == nil {
+		t.Fatal("no error; the user's turn vanished from the request while staying in the transcript")
+	}
+}
+
+// TestBuildParamsRefusesAnEmptyMessageList is what the skip can reach on its own:
+// a transcript of nothing but interrupted assistant turns leaves no messages, and
+// the API refuses an empty list.
+func TestBuildParamsRefusesAnEmptyMessageList(t *testing.T) {
+	req := ask()
+	req.Messages = []llm.Message{{
+		Role:    llm.RoleAssistant,
+		Content: []llm.Block{{Type: llm.BlockThinking, Text: "cut off here"}},
+	}}
+
+	if _, err := buildParams(req); err == nil || !strings.Contains(err.Error(), "no messages") {
+		t.Errorf("error = %v, want one about there being no messages left", err)
+	}
+}
+
+func TestBuildParamsRefusesUnsetModel(t *testing.T) {
+	req := ask()
+	req.Model = ""
+
+	if _, err := buildParams(req); err == nil || !strings.Contains(err.Error(), "no model") {
+		t.Errorf("error = %v, want one naming the missing model", err)
+	}
+}
+
+// TestBuildParamsRefusesBudgetWithThinkingOff: provider.go promises a non-zero
+// budget is refused rather than dropped, and a caller who set one on a disabled
+// config believes it just as much as one who set it on an enabled config.
+func TestBuildParamsRefusesBudgetWithThinkingOff(t *testing.T) {
+	req := ask()
+	req.Thinking = llm.ThinkingConfig{Enabled: false, BudgetTokens: 8000}
+
+	if _, err := buildParams(req); err == nil || !strings.Contains(err.Error(), "BudgetTokens") {
+		t.Errorf("error = %v, want one naming the field", err)
+	}
+}

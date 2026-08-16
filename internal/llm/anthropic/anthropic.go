@@ -76,7 +76,10 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) llm.StreamResponse
 				yield(errorEvent(msg, fmt.Errorf("anthropic: %w", err)))
 				return
 			}
-			project(msg, &acc)
+			if err := project(msg, &acc); err != nil {
+				yield(errorEvent(msg, err))
+				return
+			}
 
 			ev, ok := neutralEvent(event)
 			if !ok {

@@ -16,7 +16,7 @@ import (
 // message_delta carries output_tokens alone, so an adapter reading the event
 // would zero the input and cache counts on the last event of every turn — and
 // Message.Usage is what context estimation trusts from there on (design §11).
-func project(msg *llm.Message, acc *sdk.Message) {
+func project(msg *llm.Message, acc *sdk.Message) error {
 	msg.Usage = llm.Usage{
 		Input:      int(acc.Usage.InputTokens),
 		Output:     int(acc.Usage.OutputTokens),
@@ -27,11 +27,15 @@ func project(msg *llm.Message, acc *sdk.Message) {
 		msg.Model = string(acc.Model)
 	}
 
-	// Filled by index rather than rebuilt, so the slice a consumer is holding
-	// grows instead of being replaced underneath it.
+	// Filled by index rather than rebuilt: after the first few events the blocks
+	// are already there, so this costs no allocation per event. Same argument as
+	// the one message allocated per call.
 	at := 0
 	for i := range acc.Content {
-		block, ok := projectBlock(&acc.Content[i])
+		block, ok, err := projectBlock(&acc.Content[i])
+		if err != nil {
+			return err
+		}
 		if !ok {
 			continue
 		}
@@ -42,19 +46,29 @@ func project(msg *llm.Message, acc *sdk.Message) {
 		}
 		at++
 	}
+	return nil
 }
 
-// projectBlock maps one wire block, reporting false for a type the neutral
-// message has nowhere to put. A redacted_thinking block carries nothing to draw,
-// and tool_use cannot arrive because buildParams sends no tools.
-func projectBlock(block *sdk.ContentBlockUnion) (llm.Block, bool) {
+// projectBlock maps one wire block: a value, or false for one deliberately
+// dropped, or an error for a type nobody has taught this adapter.
+//
+// The three-way split is the point. Dropping an unknown type silently is the
+// quietest failure the receive side could have — the user reads an answer with a
+// hole in it, and a turn whose only block was unknown commits with no content at
+// all, which every provider refuses on replay. Anthropic adds block types
+// regularly, so the default has to be loud.
+func projectBlock(block *sdk.ContentBlockUnion) (llm.Block, bool, error) {
 	switch block.Type {
 	case "text":
-		return llm.Block{Type: llm.BlockText, Text: block.Text}, true
+		return llm.Block{Type: llm.BlockText, Text: block.Text}, true, nil
 	case "thinking":
-		return llm.Block{Type: llm.BlockThinking, Text: block.Thinking}, true
+		return llm.Block{Type: llm.BlockThinking, Text: block.Thinking}, true, nil
+	case "redacted_thinking":
+		// Encrypted reasoning. Dropped rather than refused because it is known to
+		// carry nothing drawable — the one type where silence loses nothing.
+		return llm.Block{}, false, nil
 	}
-	return llm.Block{}, false
+	return llm.Block{}, false, fmt.Errorf("anthropic: unsupported content block %q", block.Type)
 }
 
 // neutralEvent maps one wire event onto the event union, reporting false for
@@ -99,14 +113,16 @@ func terminalEvent(msg *llm.Message, reason sdk.StopReason) llm.Event {
 	return llm.Event{Type: llm.EventDone, StopReason: stop, Partial: msg}
 }
 
-// stopReasons covers what a request built here can provoke. pause_turn needs a
-// server-side tool and model_context_window_exceeded is a failure, so both take
-// the unsupported path above rather than a mapping that would read as success.
+// stopReasons covers what a request built here can provoke. Everything else takes
+// the unsupported path above rather than a mapping that would read as success:
+// pause_turn needs a server-side tool, model_context_window_exceeded is a failure,
+// and tool_use would be the quietest of the three — projectBlock cannot represent
+// a tool_use block, so the loop would be told the model stopped to call a tool
+// with no call anywhere in the message.
 var stopReasons = map[sdk.StopReason]llm.StopReason{
 	sdk.StopReasonEndTurn:      llm.StopEndTurn,
 	sdk.StopReasonStopSequence: llm.StopEndTurn,
 	sdk.StopReasonMaxTokens:    llm.StopMaxTokens,
-	sdk.StopReasonToolUse:      llm.StopToolUse,
 	sdk.StopReasonRefusal:      llm.StopRefusal,
 }
 

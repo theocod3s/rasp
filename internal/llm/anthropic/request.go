@@ -17,6 +17,18 @@ var errNothingLeftToSend = errors.New("every block was dropped")
 // dropping anything it cannot express: a tool_result quietly left out of a
 // request is design §4 invariant 1 broken at the last layer that can still see it.
 func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
+	if req.Model == "" {
+		return sdk.MessageNewParams{}, errors.New("anthropic: no model; the API requires one, " +
+			"and sending this costs an authenticated round trip to be told so")
+	}
+	// Outside the Enabled branch: a budget set on a disabled config is still a
+	// caller who believes it is being honoured, and provider.go now promises it is
+	// refused rather than dropped.
+	if req.Thinking.BudgetTokens != 0 {
+		return sdk.MessageNewParams{}, fmt.Errorf("anthropic: Thinking.BudgetTokens is %d and cannot be sent; "+
+			"depth is an effort level on the models that take the shape used here, and ThinkingConfig has "+
+			"nowhere to carry one", req.Thinking.BudgetTokens)
+	}
 	if req.MaxTokens <= 0 {
 		return sdk.MessageNewParams{}, fmt.Errorf("anthropic: MaxTokens is %d; the API requires a positive cap, "+
 			"and sending this costs an authenticated round trip to be told so", req.MaxTokens)
@@ -53,25 +65,27 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 	for i, msg := range req.Messages {
 		converted, err := messageParam(msg)
 		switch {
-		case errors.Is(err, errNothingLeftToSend):
-			// A turn truncated while the model was still thinking commits an
-			// assistant message holding nothing but a thinking block. Dropping the
-			// thinking leaves nothing to send, and failing here would fail every
-			// later request built from that transcript too — one truncated turn
-			// would wedge the session with no way out but editing the file.
+		case errors.Is(err, errNothingLeftToSend) && msg.Role == llm.RoleAssistant:
+			// A turn truncated mid-flight commits an assistant message holding only
+			// blocks this adapter drops. Failing here would fail every later request
+			// built from that transcript too, wedging the session with no way out but
+			// editing the file. Assistant only: a user message is written by rasp, so
+			// an unsendable one is a bug here, and dropping it silently would have the
+			// model answer the previous turn again.
 			continue
 		case err != nil:
 			return sdk.MessageNewParams{}, fmt.Errorf("anthropic: message %d: %w", i, err)
 		}
 		params.Messages = append(params.Messages, converted)
 	}
+	// Reached by skipping every message there was. The API refuses an empty list,
+	// and the guards above exist so that costs no round trip.
+	if len(params.Messages) == 0 {
+		return sdk.MessageNewParams{}, errors.New("anthropic: no messages left to send; " +
+			"the API requires at least one")
+	}
 
 	if req.Thinking.Enabled {
-		if req.Thinking.BudgetTokens != 0 {
-			return sdk.MessageNewParams{}, fmt.Errorf("anthropic: Thinking.BudgetTokens is %d and cannot be sent; "+
-				"depth is an effort level on the models that take the shape below, and ThinkingConfig has "+
-				"nowhere to carry one", req.Thinking.BudgetTokens)
-		}
 		// Adaptive is the shape current models take, and budget_tokens is the only
 		// one older models accept. Nothing here can tell which is which: rasp never
 		// validates a model id against a catalog, so that `openrouter/auto` and any
