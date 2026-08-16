@@ -187,9 +187,9 @@ func TestStreamCutShort(t *testing.T) {
 	}
 }
 
-// TestStreamRequestFailure covers the half of stream.Err() that never reaches
-// the decoder: NewStreaming defers the request to the first Next, so a non-2xx
-// response surfaces exactly where a mid-stream failure does.
+// TestStreamRequestFailure covers the half of stream.Err() that never reaches the
+// decoder: a non-2xx response surfaces in exactly the place a mid-stream failure
+// does, which is the property that keeps the adapter to one error path.
 func TestStreamRequestFailure(t *testing.T) {
 	client := respond(t, 401, `{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`)
 

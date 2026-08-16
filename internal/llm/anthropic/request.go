@@ -34,7 +34,15 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 		MaxTokens: int64(req.MaxTokens),
 	}
 
-	for _, block := range req.System {
+	for i, block := range req.System {
+		// Refused rather than skipped, unlike an empty text block in a message: the
+		// system prompt is assembled here rather than replayed from a transcript, so
+		// an empty one is a bug upstream and skipping it would also lose whatever
+		// cache breakpoint it was carrying.
+		if block.Text == "" {
+			return sdk.MessageNewParams{}, fmt.Errorf("anthropic: system block %d has no text; "+
+				"providers reject an empty block", i)
+		}
 		text := sdk.TextBlockParam{Text: block.Text}
 		if block.Cache {
 			text.CacheControl = sdk.NewCacheControlEphemeralParam()
@@ -78,6 +86,14 @@ func messageParam(msg llm.Message) (sdk.MessageParam, error) {
 	for _, block := range msg.Content {
 		switch block.Type {
 		case llm.BlockText:
+			// A block whose text never arrived: the connection died between
+			// content_block_start and the first delta, or the output cap landed on a
+			// block boundary. Anthropic rejects a text block with no text, and this
+			// one is in the transcript — sent, it would 400 every later request in
+			// the session, not just this one.
+			if block.Text == "" {
+				continue
+			}
 			content = append(content, sdk.NewTextBlock(block.Text))
 		case llm.BlockThinking:
 			// Dropped rather than replayed. Anthropic wants a thinking block back

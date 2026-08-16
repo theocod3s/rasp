@@ -104,7 +104,10 @@ func TestBuildParamsDropsThinking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
-	body, _ := json.Marshal(params)
+	body, err := json.Marshal(params)
+	if err != nil || len(body) == 0 {
+		t.Fatalf("marshalling the params: %v; a nil body would pass every check below", err)
+	}
 	if strings.Contains(string(body), "internal") {
 		t.Error("a thinking block went out without the signature Anthropic requires with it")
 	}
@@ -233,7 +236,10 @@ func TestBuildParamsSkipsAThinkingOnlyTurn(t *testing.T) {
 	if len(params.Messages) != 2 {
 		t.Fatalf("sent %d messages, want the thinking-only turn omitted and the other two kept", len(params.Messages))
 	}
-	body, _ := json.Marshal(params)
+	body, err := json.Marshal(params)
+	if err != nil || len(body) == 0 {
+		t.Fatalf("marshalling the params: %v; a nil body would pass every check below", err)
+	}
 	if strings.Contains(string(body), "Still reasoning") {
 		t.Error("the thinking block went out without the signature Anthropic requires with it")
 	}
@@ -245,5 +251,51 @@ func TestNewSatisfiesProvider(t *testing.T) {
 	var p llm.Provider = New(Config{APIKey: "test"})
 	if p.ID() != ProviderID {
 		t.Errorf("ID() = %q, want %q", p.ID(), ProviderID)
+	}
+}
+
+// TestReplayingATurnCutOnABlockBoundary walks the whole round trip, because the
+// hazard only exists across it: a stream cut between content_block_start and the
+// first delta commits a text block with no text, Anthropic rejects one, and the
+// block is in the transcript — so sending it would fail every later request in the
+// session, not just the one that carries it.
+func TestReplayingATurnCutOnABlockBoundary(t *testing.T) {
+	events, err := llm.CheckStream(replay(t, "empty_block.sse").Stream(context.Background(), ask()))
+	if err != nil {
+		t.Fatalf("CheckStream: %v", err)
+	}
+
+	committed := *last(t, events).Partial
+	if len(committed.Content) != 2 || committed.Content[1].Text != "" {
+		t.Fatalf("committed content = %+v, want a written block and an empty one", committed.Content)
+	}
+
+	// Now build the next turn from that transcript, the way the loop would.
+	next := ask()
+	next.Messages = append(next.Messages, committed,
+		llm.Message{Role: llm.RoleUser, Content: []llm.Block{{Type: llm.BlockText, Text: "go on"}}})
+
+	params, err := buildParams(next)
+	if err != nil {
+		t.Fatalf("buildParams: %v; every later request in this session would fail the same way", err)
+	}
+	body, err := json.Marshal(params)
+	if err != nil || len(body) == 0 {
+		t.Fatalf("marshalling the params: %v; a nil body would pass the check below", err)
+	}
+	if strings.Contains(string(body), `{"text":"","type":"text"}`) {
+		t.Errorf("an empty text block went out, which the API rejects: %s", body)
+	}
+	if !strings.Contains(string(body), "One moment.") {
+		t.Error("dropping the empty block took the written one with it")
+	}
+}
+
+func TestBuildParamsRejectsEmptySystemBlock(t *testing.T) {
+	req := ask()
+	req.System = []llm.SystemBlock{{Text: "You are rasp."}, {Text: "", Cache: true}}
+
+	if _, err := buildParams(req); err == nil || !strings.Contains(err.Error(), "system block 1") {
+		t.Errorf("error = %v, want one naming the empty system block", err)
 	}
 }
