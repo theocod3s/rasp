@@ -104,18 +104,19 @@ re-arguing reasoning already in the commits and the code — and a description n
 fails at its only job. If a decision needs a paragraph to defend, that paragraph belongs in the
 code, where the next reader is actually standing.
 
-Reference the work by milestone ID (`M0-02`), never the Linear key (`THE-6`) — the issue title
-carries the ID, and git history outlives the tracker.
-
 Don't merge your own PR unmarked. Run `/code-review`, and treat its findings as claims to check
 rather than facts — it has a real false-positive rate, and rejecting a wrong finding with
 reasoning is as valuable as fixing a right one.
 
-**Then remember the fixes are code nobody has reviewed**, and keep going until it converges.
-M0-05 took five passes for 17 findings, and pass 3's fix *caused* pass 4's worst bug:
-`cmd.WaitDelay` starts its timer when the child exits, so the fix for a helper that hung became a
-failure for every helper that worked. Stop when a pass reports its own findings already fixed,
-not when you are tired of the loop.
+**Then remember the fixes are code nobody has reviewed**, so any pass whose fixes changed
+behaviour earns another. M0-05 took five passes for 17 findings, and pass 3's fix *caused* pass
+4's worst bug: `cmd.WaitDelay` starts its timer when the child exits, so the fix for a helper that
+hung became a failure for every helper that worked.
+
+**Stop at the first pass that finds no defect in behaviour** — fix its wording findings, but don't
+re-run for them. Waiting instead for a pass that finds *nothing*, or that reports its own last
+findings already fixed, does not terminate: M0-06a ran nine passes and never got one, because
+naming and phrasing findings do not run out. Its substance stopped moving at pass three.
 
 ## 6. Merge and close out
 
