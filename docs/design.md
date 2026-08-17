@@ -2289,7 +2289,50 @@ pin, run the fake-MCP-server suite (§13) and the real-server smoke test, and co
 touches nothing outside `internal/mcp/`. That last check is the containment rule doing its job —
 if the diff escapes the package, the boundary needs fixing before the bump lands.
 
-Dependabot is configured to open MCP SDK bumps as PRs but never to auto-merge them.
+### Dependency updates
+
+Renovate, configured in `.github/renovate.json5`, running weekly, because the repo is private and
+every CI run bills. Managers are auto-detected rather than enumerated; the two that matter here are
+`gomod` and `github-actions`, the latter for the workflow's SHA pins — an action pin nobody updates
+is a stale pin, not a safe one. Minor, patch and **digest** group into one PR per manager; a major
+opens on its own. **Nothing auto-merges.**
+
+Digest is in the group rather than beside it because of how the pins are written. A pin whose
+comment is an exact version (`# v7.0.1`) produces ordinary minor and patch updates, since Renovate
+reads that comment as the current version and rewrites SHA and comment together. A pin whose comment
+is a floating tag (`# v4`) produces no minor or patch at all — the value never changes, so a
+repointed tag arrives as a digest update (a new major still opens on its own, as majors always do).
+Both forms are in `ci.yml`, so leaving either update type out splits the weekly PR into several.
+
+The SDK pin above is the reason Renovate rather than Dependabot. Dependabot can hold the SDK out of
+a group so it arrives as its own PR; Renovate can hold it behind `dependencyDashboardApproval`, so
+no PR opens at all until someone ticks a box on the Dependency Dashboard issue. The upgrade
+procedure is work a human starts, and a bot that waits to be asked models that better than one that
+opens a PR and hopes it gets read. Both gated rules carry `groupName: null`, and that is mechanism
+rather than tidiness: Renovate computes approval per *branch*, so a gated dependency sharing a
+branch with others would hold them all behind the same checkbox.
+
+The `go` directive gets the same gate, and what it can gate is narrower than it looks. `go 1.26` is
+read as `^1.26`, so Go patch and minor releases never violate it and no update is proposed — the
+`GOTOOLCHAIN` fetch keeps working and the line stays as written. What the gate catches is a Go
+major, and a `toolchain` directive if one is ever added, which *does* take routine patch updates.
+Widening it with `rangeStrategy` would make Renovate propose narrowing `go 1.26` to a specific patch
+release, which is the opposite of the pin's purpose.
+
+Version updates track releases, not vulnerabilities. Renovate's `vulnerabilityAlerts` is fed by
+GitHub's own Dependabot alert feed, so the dependency graph and Dependabot **alerts** are enabled in
+repo settings, and the Renovate app needs the *Dependabot alerts: read-only* permission granted —
+without it the feed is simply empty, which is indistinguishable from having no vulnerabilities.
+Dependabot **security updates** — the PR-opening half — stays off, because Renovate is doing that
+job. That handover is only complete with `security:gomodIndirectSecurityUpdates`: `gomod` disables
+every `// indirect` require, and this repo has thirteen of them, so without the preset a CVE in one
+would produce silence from both tools.
+
+The alert-driven path is the one exception to everything above, and deliberately so. Renovate forces
+its own settings onto a vulnerability fix — ungrouped, unscheduled, and **not** held behind dashboard
+approval, even for a dependency whose ordinary bumps are. So an advisory against the MCP SDK opens a
+PR immediately rather than on Monday, and without waiting to be asked. That is the right trade for a
+known-exploitable dependency, but it means the SDK gate governs *version* updates only.
 
 ---
 
