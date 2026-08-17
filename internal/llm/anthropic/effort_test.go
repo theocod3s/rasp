@@ -109,8 +109,8 @@ func TestThinkingAndEffortAreIndependent(t *testing.T) {
 			// leaving the depth to whatever the API does by default rather than to a
 			// rung this adapter picked.
 			config, _ := sent["output_config"].(map[string]any)
-			level, ok := config["effort"].(string)
-			if ok != (tc.wantEffort != "") || level != tc.wantEffort {
+			level, hasEffort := config["effort"].(string)
+			if hasEffort != (tc.wantEffort != "") || level != tc.wantEffort {
 				t.Errorf("output_config = %v, want effort %q", sent["output_config"], tc.wantEffort)
 			}
 		})
