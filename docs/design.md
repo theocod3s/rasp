@@ -2291,16 +2291,18 @@ if the diff escapes the package, the boundary needs fixing before the bump lands
 
 ### Dependency updates
 
-Renovate, configured in `.github/renovate.json5`, running weekly. Managers are auto-detected, and
-today that finds the two this repo has: `gomod`, and `github-actions` for the workflow's SHA pins —
-an action pin nobody updates is a stale pin, not a safe one. Minor, patch and **digest** group into
-one PR per manager; a major opens on its own. **Nothing auto-merges.**
+Renovate, configured in `.github/renovate.json5`, running weekly, because the repo is private and
+every CI run bills. Managers are auto-detected rather than enumerated; the two that matter here are
+`gomod` and `github-actions`, the latter for the workflow's SHA pins — an action pin nobody updates
+is a stale pin, not a safe one. Minor, patch and **digest** group into one PR per manager; a major
+opens on its own. **Nothing auto-merges.**
 
 Digest is in the group rather than beside it because of how the pins are written. A pin whose
 comment is an exact version (`# v7.0.1`) produces ordinary minor and patch updates, since Renovate
 reads that comment as the current version and rewrites SHA and comment together. A pin whose comment
-is a floating tag (`# v4`) produces **only** digest updates, because the value never changes. Both
-forms are in `ci.yml`, so leaving either update type out splits the weekly PR into several.
+is a floating tag (`# v4`) produces no minor or patch at all — the value never changes, so a
+repointed tag arrives as a digest update (a new major still opens on its own, as majors always do).
+Both forms are in `ci.yml`, so leaving either update type out splits the weekly PR into several.
 
 The SDK pin above is the reason Renovate rather than Dependabot. Dependabot can hold the SDK out of
 a group so it arrives as its own PR; Renovate can hold it behind `dependencyDashboardApproval`, so
@@ -2325,6 +2327,12 @@ Dependabot **security updates** — the PR-opening half — stays off, because R
 job. That handover is only complete with `security:gomodIndirectSecurityUpdates`: `gomod` disables
 every `// indirect` require, and this repo has thirteen of them, so without the preset a CVE in one
 would produce silence from both tools.
+
+The alert-driven path is the one exception to everything above, and deliberately so. Renovate forces
+its own settings onto a vulnerability fix — ungrouped, unscheduled, and **not** held behind dashboard
+approval, even for a dependency whose ordinary bumps are. So an advisory against the MCP SDK opens a
+PR immediately rather than on Monday, and without waiting to be asked. That is the right trade for a
+known-exploitable dependency, but it means the SDK gate governs *version* updates only.
 
 ---
 

@@ -12,10 +12,13 @@
   ],
 
   schedule: ["before 5am on monday"],
+  timezone: "Europe/Berlin",
   automerge: false,
 
-  // gomodUpdateImportPaths because a Go major renames the module path: without it
-  // the PR rewrites go.mod and leaves every import statement pointing at the old one.
+  // gomodTidy because `just tidy-check` runs on every PR and a raw bump does not
+  // tidy, so without it every dependency PR is red. gomodUpdateImportPaths
+  // because a Go major renames the module path: without it the PR rewrites
+  // go.mod and leaves every import statement pointing at the old one.
   postUpdateOptions: ["gomodTidy", "gomodUpdateImportPaths"],
 
   packageRules: [
@@ -43,6 +46,10 @@
       dependencyDashboardApproval: true,
     },
     {
+      // matchManagers keeps this to go.mod. Without it, a `go-version:` written
+      // into a workflow would be pulled out of the actions group and parked
+      // behind a checkbox nobody would think to look for.
+      matchManagers: ["gomod"],
       matchDatasources: ["golang-version"],
       groupName: null,
       dependencyDashboardApproval: true,
