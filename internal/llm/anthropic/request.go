@@ -98,20 +98,22 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 }
 
 func messageParam(msg llm.Message) (sdk.MessageParam, error) {
-	// One loop, two lists: the wire blocks, and the neutral blocks they came from,
-	// which is what llm can be asked about. Every arm below adds to both or to
-	// neither, so they stay the same length.
+	// Decide first, translate second. What llm can be asked about is neutral
+	// blocks, and the wire list is then derived from the surviving ones one for
+	// one — so "is there anything to send" is asked of the same list that goes
+	// out, rather than of a parallel one that has to be kept in step.
 	kept := msg
 	kept.Content = make([]llm.Block, 0, len(msg.Content))
-	content := make([]sdk.ContentBlockParamUnion, 0, len(msg.Content))
-
 	for _, block := range msg.Content {
 		switch block.Type {
 		case llm.BlockText:
+			// Anthropic rejects a text block with no text, and this one is already
+			// in the transcript: sent, it would 400 every later request in the
+			// session rather than only this one. Empty is llm's rule, not this
+			// adapter's, and IsEmpty is where it is written.
 			if block.IsEmpty() {
 				continue
 			}
-			content = append(content, sdk.NewTextBlock(block.Text))
 		case llm.BlockThinking:
 			// Dropped rather than replayed. Anthropic wants a thinking block back
 			// with the signature it arrived with, llm.Block has no field for one,
@@ -126,12 +128,19 @@ func messageParam(msg llm.Message) (sdk.MessageParam, error) {
 	if err := llm.CheckSendable(kept); err != nil {
 		return sdk.MessageParam{}, err
 	}
-	// The same question asked of the list that actually goes out. It can only
-	// disagree with the one above if an arm stops adding to both, and the cost of
-	// finding out on the wire is a 400 on every later request in the session.
-	if len(content) == 0 {
-		return sdk.MessageParam{}, fmt.Errorf("the %s message came out with no content blocks from %d neutral "+
-			"ones; a case in messageParam has stopped keeping the two lists in step", msg.Role, len(msg.Content))
+
+	// Appended rather than assigned by index: a length taken from the wrong list
+	// would leave holes, and the union's zero value encodes as a block with no
+	// type at all. Every iteration either appends or returns, so the wire list is
+	// as long as the list CheckSendable just passed.
+	content := make([]sdk.ContentBlockParamUnion, 0, len(kept.Content))
+	for _, block := range kept.Content {
+		switch block.Type {
+		case llm.BlockText:
+			content = append(content, sdk.NewTextBlock(block.Text))
+		default:
+			return sdk.MessageParam{}, fmt.Errorf("kept a %s block and has no wire shape for it", block.Type)
+		}
 	}
 
 	switch msg.Role {

@@ -1,12 +1,12 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -414,6 +414,12 @@ func assertSendsNoEmptyTextBlock(t *testing.T, params sdk.MessageNewParams, want
 			t.Errorf("message %d went out with no content blocks, which the API rejects", i)
 		}
 		for j, block := range msg.Content {
+			// A block with no type is what the SDK's block union encodes to when it
+			// is left at its zero value, and every check below skips it.
+			if block.Type == "" {
+				t.Errorf("message %d block %d went out with no type at all: %s", i, j, body)
+				continue
+			}
 			if block.Type != "text" {
 				continue
 			}
@@ -484,11 +490,21 @@ func TestBuildParamsLeavesTheTranscriptAlone(t *testing.T) {
 
 	// A deep copy compared field by field, not the two encodings: Block.MarshalJSON
 	// zeroes whatever a block's type does not own, so a comparison through JSON
-	// cannot see a write to one of those fields at all.
+	// cannot see a write to one of those fields at all. Copied by hand rather than
+	// with slices.Clone, which returns nil for an empty slice and would report a
+	// difference nobody made; Input is the one field that would otherwise still
+	// alias the original.
 	before := make([]llm.Message, len(req.Messages))
 	copy(before, req.Messages)
-	for i := range before {
-		before[i].Content = slices.Clone(req.Messages[i].Content)
+	for i, msg := range req.Messages {
+		if msg.Content == nil {
+			continue
+		}
+		before[i].Content = make([]llm.Block, len(msg.Content))
+		copy(before[i].Content, msg.Content)
+		for j, block := range msg.Content {
+			before[i].Content[j].Input = bytes.Clone(block.Input)
+		}
 	}
 
 	if _, err := buildParams(req); err != nil {

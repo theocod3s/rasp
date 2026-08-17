@@ -18,12 +18,11 @@ var ErrSkipMessage = errors.New("withheld from the request: nothing left to send
 //	if errors.Is(err, llm.ErrSkipMessage) { continue }
 //	if err != nil { return err }
 //
-// The role decides, and how the message came to be empty does not. Four routes
+// The role decides, and how the message came to be empty does not: four routes
 // leave an assistant turn with nothing in it — truncation mid-flight, a refusal
-// (a 200 with no blocks), cancellation, and a block cut on its boundary — so the
-// model put it there and it is a state, not a bug. Refusing one fails every later
-// request built from that transcript, which is on disk: the session is dead until
-// someone edits the file by hand. A user message is rasp's own, so an unsendable
+// (a 200 with no blocks), cancellation, and a block cut on its boundary. The
+// model put it there, and refusing it fails every later request built from that
+// transcript, not only the next. A user message is rasp's own, so an unsendable
 // one is a bug here, and skipping it would leave the model answering the previous
 // turn twice.
 //
