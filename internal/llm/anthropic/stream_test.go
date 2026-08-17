@@ -420,7 +420,15 @@ func TestStreamFinishedTurnCarriesAnEmptyBlock(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CheckStream: %v", err)
 			}
-			committed := *last(t, events).Partial
+			// The rule under test applies to a turn the model finished, and every
+			// other assertion here holds just as well for a stream that broke off —
+			// so the stop reason is checked rather than assumed.
+			end := last(t, events)
+			if end.Type != llm.EventDone || end.StopReason != llm.StopEndTurn {
+				t.Fatalf("terminal event = %s/%s, want %s/%s", end.Type, end.StopReason,
+					llm.EventDone, llm.StopEndTurn)
+			}
+			committed := *end.Partial
 			if !reflect.DeepEqual(committed.Content, tc.want) {
 				t.Fatalf("committed content = %+v, want %+v", committed.Content, tc.want)
 			}

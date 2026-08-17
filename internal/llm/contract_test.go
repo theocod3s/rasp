@@ -816,7 +816,9 @@ func TestCheckStreamRejects(t *testing.T) {
 				msg.StopReason = llm.StopEndTurn
 				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
 			},
-			want: "the text block at index 1 is gone",
+			// Named on the phrase only checkAccumulation uses: checkSettled's message
+			// for a block gone after the stream opens the same way.
+			want: "blocks are only ever added to",
 		},
 		"a finished turn with nothing in it": {
 			seq: stream(llm.Event{

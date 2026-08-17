@@ -298,13 +298,20 @@ a finished turn catches under the condition above, and misses under the same one
 if a real adapter makes the stricter rule safe.
 
 **Whether a block that finished is empty.** A block can open and close without ever receiving a
-delta, and a finished turn can carry it. The opposite rule shipped first and could not hold:
-holding the block back during the stream hands its index to the next block to receive text, and
-moves everything after it once the held-back block fills — the one bug this repo's adapter has
-shipped — while dropping it at the terminal event makes a block vanish from an index a consumer
-has already drawn. Both are what `checkAccumulation` exists to catch, and of the two rules that
-is the load-bearing one. Emptiness belongs to the send side instead, where a message is built
-for the wire with empty blocks skipped — so nothing empty reaches a provider either way.
+delta, and a finished turn can carry it. The opposite rule shipped first and could not hold. An
+adapter cannot tell a block that will never fill from one that has not filled yet, so holding
+one back hands its index to the next block to receive text and moves everything after it once
+the held-back block does fill — the one bug this repo's adapter has shipped — while dropping it
+at the terminal event makes a block vanish from an index a consumer has already drawn. Both are
+what `checkAccumulation` exists to catch, and it is the load-bearing rule of the two. Emptiness
+belongs to the send side instead, where a message is built for the wire with empty blocks
+skipped, so nothing empty reaches a provider either way.
+
+One shape of that drop does get through, and it is the reason the rule cannot merely be narrowed:
+a trailing block that never fills, filtered before it ever reaches `Partial`, is invisible here —
+nothing above the adapter can see a block that never appeared. It is only recognisable as
+trailing once the stream has ended, which is where the other half of the same filter is already
+rejected.
 
 **That usage is reported at all.** `Message.Usage` is authoritative for context estimation
 (§11), so an adapter that never maps it is a real bug. Requiring it here is still wrong: an

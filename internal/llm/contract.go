@@ -182,8 +182,9 @@ func (c *streamChecker) checkComplete() error {
 	// is the only place to catch an empty one while the blame is the adapter's.
 	//
 	// A message with blocks, one of them empty, is legal by contrast: a block that
-	// opens and closes without a delta is a real wire shape, and every way to drop
-	// one moves an index checkAccumulation is right to hold still (design §3.1a).
+	// opens and closes without a delta is a real wire shape, and nothing can tell one
+	// that will never fill from one that has not filled yet — so dropping it moves an
+	// index checkAccumulation is right to hold still (design §3.1a).
 	if len(c.partial.Content) == 0 {
 		return fmt.Errorf("the stream ended with StopReason %q and no content; a finished message with "+
 			"no blocks in it is refused by every provider the next time it is sent", c.stop)
