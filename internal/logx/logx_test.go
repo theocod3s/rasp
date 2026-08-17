@@ -1,6 +1,7 @@
 package logx_test
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -134,6 +135,33 @@ func TestNothingReachesStdout(t *testing.T) {
 		})
 		assertSilent(t, stdout, stderr)
 	})
+
+	// The negative control: a capture that sees nothing is indistinguishable
+	// from a package that writes nothing.
+	t.Run("the capture works", func(t *testing.T) {
+		stdout, stderr := capture(t, func() {
+			fmt.Fprint(os.Stdout, "out")
+			fmt.Fprint(os.Stderr, "err")
+		})
+		if stdout != "out" || stderr != "err" {
+			t.Errorf("captured %q and %q; the checks above cannot fail", stdout, stderr)
+		}
+	})
+}
+
+// TestInitReadsTheProcessEnvironment covers the documented nil getenv, which
+// every other test replaces — so the path the real caller takes is the one
+// nothing else exercises.
+func TestInitReadsTheProcessEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rasp.log")
+	t.Setenv("RASP_LOG_FILE", path)
+
+	lg := logx.Init(nil)
+	defer lg.Close()
+
+	if lg.Path != path {
+		t.Fatalf("log path is %s, want %s", lg.Path, path)
+	}
 }
 
 func TestUnwritableDirectoryWarnsOnceAndKeepsGoing(t *testing.T) {
@@ -213,6 +241,11 @@ func TestRotation(t *testing.T) {
 		}
 		if head := readHead(t, path, len(marker)); head != marker {
 			t.Errorf("the log starts with %q, want the existing contents kept", head)
+		}
+		// records() cannot read this file — it opens with the seeded hole — so
+		// the appended record is checked directly rather than not at all.
+		if !strings.Contains(read(t, path), `"msg":"appended"`) {
+			t.Error("the record logged after Init never reached the file")
 		}
 	})
 
