@@ -801,17 +801,24 @@ func TestCheckStreamRejects(t *testing.T) {
 			},
 			want: "the result the loop writes will name the first one",
 		},
-		"a finished turn holding an empty text block": {
-			seq: stream(llm.Event{
-				Type:       llm.EventDone,
-				StopReason: llm.StopEndTurn,
-				Partial: &llm.Message{
-					Role:       llm.RoleAssistant,
-					StopReason: llm.StopEndTurn,
-					Content:    []llm.Block{{Type: llm.BlockText}},
-				},
-			}),
-			want: "an empty text block at index 0",
+		// The tempting way to keep an empty block out of a finished turn, and the
+		// reason the contract accepts one instead: index 1 was drawn.
+		"a block that never filled, dropped at the terminal event": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+					{Type: llm.BlockText, Text: "Done."},
+					{Type: llm.BlockText},
+				}}
+				if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "Done.", Partial: msg}) {
+					return
+				}
+				msg.Content = msg.Content[:1]
+				msg.StopReason = llm.StopEndTurn
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+			},
+			// Named on the phrase only checkAccumulation uses: checkSettled's message
+			// for a block gone after the stream opens the same way.
+			want: "blocks are only ever added to",
 		},
 		"a finished turn with nothing in it": {
 			seq: stream(llm.Event{
@@ -1420,6 +1427,22 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 				ToolCall: &llm.ToolCall{ID: "toolu_01A9", Name: "read", Input: msg.Content[0].Input}}) {
 				return
 			}
+			msg.StopReason = llm.StopEndTurn
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+		},
+
+		// A block that opened and closed without a delta, arriving both ways: one
+		// there before the first event, one appearing between the last delta and the
+		// terminal event. Removing either moves an index (design §3.1a).
+		"a finished turn carrying a block that never filled": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+				{Type: llm.BlockThinking},
+				{Type: llm.BlockText, Text: "Done."},
+			}}
+			if !yield(llm.Event{Type: llm.EventTextDelta, Delta: "Done.", Partial: msg}) {
+				return
+			}
+			msg.Content = append(msg.Content, llm.Block{Type: llm.BlockText})
 			msg.StopReason = llm.StopEndTurn
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
 		},

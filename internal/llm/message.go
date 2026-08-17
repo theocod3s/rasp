@@ -113,12 +113,16 @@ func (b Block) MarshalJSON() ([]byte, error) {
 type Message struct {
 	Role Role `json:"role"`
 
-	// Content is required, and no value of it rescues an empty message: nil
-	// encodes as null, `[]` is refused by the same providers, and a text block
-	// whose text never arrived encodes as {"type":"text"} and is refused too.
-	// Both are reachable when a turn breaks off before anything streams, and
-	// refusing to commit them belongs to whoever commits — Block.MarshalJSON can
-	// correct a field's value, not a message's absence.
+	// Content is required, and no value of it rescues an empty message: nil encodes
+	// as null and `[]` is refused by the same providers. Both are reachable when a
+	// turn breaks off before anything streams, and refusing to commit them belongs
+	// to whoever commits — Block.MarshalJSON can correct a field's value, not a
+	// message's absence.
+	//
+	// A text block whose text never arrived goes the other way. It encodes as
+	// {"type":"text"} and is refused the same, and it is still committed where it
+	// arrived, because dropping a block moves an index (design §3.1a). The request
+	// is built without it instead.
 	Content    []Block    `json:"content"`
 	StopReason StopReason `json:"stop_reason,omitempty"`
 

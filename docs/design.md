@@ -263,7 +263,7 @@ truncated-tool-call guard, and getting that wrong silently corrupts files.
 ### 3.1a What the contract deliberately does not check
 
 `llm.CheckStream` is the contract above in executable form, and every adapter is run against
-it. Three of its gaps are deliberate, and all three were settled the same way: **a rule that
+it. Four of its gaps are deliberate, and all four were settled the same way: **a rule that
 rejects a wire format some provider actually sends costs more than the bug it would have
 caught**, because the adapter's author cannot tell which of the two they are looking at.
 
@@ -296,6 +296,22 @@ endpoint can carry two `tool_calls` entries, so "at most one block per completin
 reject a faithful adapter in order to catch a payload landing in a sibling's arguments — which
 a finished turn catches under the condition above, and misses under the same one. Revisit only
 if a real adapter makes the stricter rule safe.
+
+**Whether a block that finished is empty.** A block can open and close without ever receiving a
+delta, and a finished turn can carry it. The opposite rule shipped first and could not hold. An
+adapter cannot tell a block that will never fill from one that has not filled yet, so holding
+one back hands its index to the next block to receive text and moves everything after it once
+the held-back block does fill — the one bug this repo's adapter has shipped — while dropping it
+at the terminal event makes a block vanish from an index a consumer has already drawn. Both are
+what `checkAccumulation` exists to catch, and it is the load-bearing rule of the two. Emptiness
+belongs to the send side instead, where a message is built for the wire with empty blocks
+skipped, so nothing empty reaches a provider either way.
+
+One shape of the drop gets through, and it is the reason the rule cannot merely be narrowed to
+trailing blocks: a block that never fills at all, filtered before it ever reaches `Partial`, is
+invisible whatever index it sat at — nothing above the adapter can see a block that never
+appeared. What is caught is every block that *does* fill, which is the same thing as saying an
+adapter only learns which blocks those were once the stream has ended.
 
 **That usage is reported at all.** `Message.Usage` is authoritative for context estimation
 (§11), so an adapter that never maps it is a real bug. Requiring it here is still wrong: an
