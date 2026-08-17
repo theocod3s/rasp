@@ -15,12 +15,12 @@ const Redacted = "(redacted)"
 //
 // Keys are compared after lowercasing and dropping - and _, so api_key, apiKey
 // and API-KEY are one entry.
-var credentialKeys = map[string]bool{
-	"apikey":        true,
-	"authorization": true,
-	"xapikey":       true,
-	"token":         true,
-	"password":      true,
+var credentialKeys = []string{
+	"apikey",
+	"authorization",
+	"xapikey",
+	"token",
+	"password",
 }
 
 // redacting replaces credential values on their way through a handler. A
@@ -71,10 +71,18 @@ func redact(a slog.Attr) slog.Attr {
 	return a
 }
 
-// isCredential matches a whole key and never a substring: input_tokens is a
-// count, and a substring rule would hide the numbers we most want to read.
+// isCredential matches a key that ends in one of the names, so the qualified
+// spellings people actually type are covered: anthropic_api_key, access_token.
+// A key that merely contains one is not a match — input_tokens is a count, and
+// a substring rule would hide the numbers most worth reading.
 func isCredential(key string) bool {
-	return credentialKeys[keySeparators.Replace(strings.ToLower(key))]
+	normal := keySeparators.Replace(strings.ToLower(key))
+	for _, candidate := range credentialKeys {
+		if strings.HasSuffix(normal, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 var keySeparators = strings.NewReplacer("-", "", "_", "")

@@ -18,8 +18,9 @@ const (
 
 	dataHomeVar = "XDG_DATA_HOME"
 
-	// maxBytes is the size above which Init rotates. Two bounded files is the
-	// whole policy — the alternative is a 4 GB file discovered in six months.
+	// maxBytes is the size above which Init rotates — at startup only, so the
+	// bound holds across runs rather than within one. Two files is the whole
+	// policy; the alternative is a 4 GB file discovered in six months.
 	maxBytes = 10 << 20
 
 	rotatedSuffix = ".1"
@@ -65,7 +66,8 @@ func Init(getenv func(string) (string, bool)) *Log {
 	if err := rotate(path); err != nil {
 		lg.warn("%s could not be rotated and will keep growing: %v", path, err)
 	}
-	// 0o600 because a log record holds prompts, tool output and file contents.
+	// 0o600 at creation: a log record holds prompts, tool output and file
+	// contents.
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		lg.warn("logging is off: %v", err)

@@ -69,8 +69,8 @@ func TestAnUnwrappedHandlerShowsTheKey(t *testing.T) {
 }
 
 func TestKeySpellings(t *testing.T) {
-	hidden := []string{"api_key", "apiKey", "API-KEY", "authorization", "Authorization",
-		"x-api-key", "X-Api-Key", "token", "password"}
+	hidden := []string{"api_key", "apiKey", "API-KEY", "anthropic_api_key", "authorization",
+		"Authorization", "x-api-key", "X-Api-Key", "token", "access_token", "password"}
 	kept := []string{"input_tokens", "tokens", "user", "message", "api_key_path"}
 
 	lg, path := logTo(t, nil)
@@ -80,14 +80,22 @@ func TestKeySpellings(t *testing.T) {
 	for _, key := range kept {
 		lg.Logger.Info("not a credential", key, "visible-"+key)
 	}
-	written := read(t, path)
 
-	if strings.Contains(written, secret) {
-		t.Errorf("a credential spelling was missed:\n%s", written)
+	// Per key rather than "the secret is nowhere in the file": a spelling that
+	// stopped producing a record at all would satisfy absence.
+	got := records(t, path)
+	if len(got) != len(hidden)+len(kept) {
+		t.Fatalf("%d records for %d keys — one wrote nothing", len(got), len(hidden)+len(kept))
 	}
-	for _, key := range kept {
-		if !strings.Contains(written, "visible-"+key) {
-			t.Errorf("%s was redacted; only whole-key matches are credentials:\n%s", key, written)
+	for i, key := range hidden {
+		if got[i][key] != logx.Redacted {
+			t.Errorf("%s is %v, want %s", key, got[i][key], logx.Redacted)
+		}
+	}
+	for i, key := range kept {
+		if got[len(hidden)+i][key] != "visible-"+key {
+			t.Errorf("%s is %v, want it left alone — only a trailing match is a credential",
+				key, got[len(hidden)+i][key])
 		}
 	}
 }

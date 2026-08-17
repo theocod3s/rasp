@@ -66,16 +66,24 @@ func TestLevel(t *testing.T) {
 	cases := []struct {
 		name    string
 		level   string
+		set     bool
 		written []string
 	}{
-		{name: "default is info", written: []string{"info", "warn"}},
+		// The first case leaves the variable unset, which is how it reaches a
+		// user; an empty value is a different branch.
+		{name: "unset is info", written: []string{"info", "warn"}},
+		{name: "empty is info", level: "", set: true, written: []string{"info", "warn"}},
 		{name: "debug", level: "debug", written: []string{"debug", "info", "warn"}},
 		{name: "case insensitive", level: "DEBUG", written: []string{"debug", "info", "warn"}},
 		{name: "warn", level: "warn", written: []string{"warn"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			lg, path := logTo(t, env{"RASP_LOG_LEVEL": tc.level})
+			vars := env{}
+			if tc.level != "" || tc.set {
+				vars["RASP_LOG_LEVEL"] = tc.level
+			}
+			lg, path := logTo(t, vars)
 			lg.Logger.Debug("debug")
 			lg.Logger.Info("info")
 			lg.Logger.Warn("warn")
