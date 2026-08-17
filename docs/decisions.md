@@ -122,3 +122,57 @@ back.
 the per-request path has to exist regardless.
 
 *Settled while scoping M3-18.*
+
+## Depth is one effort ladder, and an adapter refuses a rung rather than clamping it
+
+`llm` carries a seven-rung ladder — `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` — the
+union of what Anthropic and OpenAI accept, so neither provider loses a level it supports. An adapter
+handed a rung it cannot put on the wire fails the request and names it. It never substitutes the
+nearest rung it *can* send.
+
+The union is what makes refusal affordable: only two rungs are unsendable anywhere (`none` and
+`minimal`, on Anthropic), so refusing is a rare path rather than a routine one. `Provider.Efforts()`
+publishes each adapter's list, and the picker and the refusal read that same list — two copies drift,
+and the drift is invisible, because a rung that stops being offered simply never appears in the menu.
+
+Clamping is the tempting version, and it is what pi does: `clampThinkingLevel` walks to the nearest
+supported rung, and `clampReasoning` folds `xhigh` and `max` down to `high`.
+
+**Reversing it looks like:** a turn that ran at a depth nobody asked for — costing what `high` costs
+while the status line says `max`. Nothing errors. The only symptom is answers slightly worse than the
+setting promises, which reads as the model having a bad day.
+
+*Settled while scoping M0-07a, after reading how Crush, opencode and pi each solve it. All three need
+a per-model catalog to decide what a model accepts; rasp has none and will not have one (scope.md,
+M3-12), so the list is per-protocol — which is also why `xhigh` can be offered and still rejected.*
+
+## The stream contract describes what a provider sends, not what would be tidy
+
+A content block that opens and closes without ever receiving a delta is legal. `CheckStream` does not
+reject it, and a finished turn may carry one. Emptiness is handled where a message is built for the
+wire — `messageParam` skips empty blocks, and `CheckSendable` makes that rule shared — not where a
+stream is validated.
+
+The contract shipped with the opposite rule and it could not hold. Every adapter-side way to satisfy
+it required removing a block from a position, which is exactly what the index rule forbids, and the
+index rule is the load-bearing one: a consumer has already drawn the block.
+
+**Reversing it looks like:** a re-added emptiness check that no adapter can pass, so the first
+provider to send an empty block fails a turn the API considered successful. Tempting because "a turn
+that finished had time to fill it" reads as obviously true.
+
+*Settled while scoping M0-07c.*
+
+## The standard loggers belong to rasp, not to whatever wrote to them
+
+`logx.Init` takes Go's standard `log` and the `slog` default and points both at the log file. Not
+because one SDK misbehaves, but because any dependency may write to either and rasp has no other
+defence. Silencing a specific SDK fixes the instance someone found and none of the ones nobody has
+hit yet.
+
+**Reversing it looks like:** a line of dependency output painted across a full-screen TUI mid-turn,
+with nothing on screen to say what wrote it. "It only writes to stderr" is not a mitigation — stderr
+is no safer than stdout once the alternate screen buffer is in use.
+
+*Settled while scoping M0-07d, where `anthropic-sdk-go` wrote two lines from inside the first
+request, one of them naming an environment variable that was not set.*
