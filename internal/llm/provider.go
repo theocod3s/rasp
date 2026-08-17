@@ -47,6 +47,10 @@ type Request struct {
 	// provider's cache syntax; nothing above it does.
 	System []SystemBlock
 
+	// Messages is the transcript, and not all of it is sendable: a turn can break
+	// off leaving a message with nothing left for an adapter to put on the wire.
+	// See CheckSendable, which takes the blocks an adapter kept rather than the
+	// message it started from.
 	Messages []Message
 
 	// Tools comes from one registry snapshot per turn, sorted by name. The list

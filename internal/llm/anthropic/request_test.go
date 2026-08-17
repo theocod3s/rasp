@@ -1,10 +1,13 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -128,7 +131,7 @@ func TestBuildParamsRejectsEmptyAndUnknown(t *testing.T) {
 			// A user message, so the skip that saves the assistant's does not apply.
 			"no content",
 			llm.Message{Role: llm.RoleUser},
-			"arrived with no blocks",
+			`a "user" message has nothing left to send`,
 		},
 		{
 			"unknown role",
@@ -412,6 +415,13 @@ func assertSendsNoEmptyTextBlock(t *testing.T, params sdk.MessageNewParams, want
 			t.Errorf("message %d went out with no content blocks, which the API rejects", i)
 		}
 		for j, block := range msg.Content {
+			// The SDK's block union marshals to a JSON null when it is left at its
+			// zero value, which decodes back into a block with no type — and every
+			// check below skips one of those.
+			if block.Type == "" {
+				t.Errorf("message %d block %d went out as a null rather than a block: %s", i, j, body)
+				continue
+			}
 			if block.Type != "text" {
 				continue
 			}
@@ -450,9 +460,58 @@ func TestBuildParamsSkipIsAssistantOnly(t *testing.T) {
 		Content: []llm.Block{{Type: llm.BlockText, Text: ""}},
 	})
 
-	if _, err := buildParams(req); err == nil {
+	_, err := buildParams(req)
+	if err == nil {
 		t.Fatal("no error; the user's turn vanished from the request while staying in the transcript")
 	}
+	// Named, not merely non-nil: this request is well-formed apart from that one
+	// message, so an error about anything else means the skip was applied and the
+	// failure came from somewhere later.
+	if !strings.Contains(err.Error(), `a "user" message has nothing left to send`) {
+		t.Errorf("error = %v, want one naming the empty user message", err)
+	}
+}
+
+// TestBuildParamsLeavesTheTranscriptAlone: an unsendable message is withheld
+// from the request, never deleted. The caller keeps this slice and rebuilds a
+// request from it every turn, so filtering it in place would take a refusal off
+// the screen and out of the session file as well as off the wire.
+func TestBuildParamsLeavesTheTranscriptAlone(t *testing.T) {
+	req := ask()
+	req.Messages = append(req.Messages,
+		llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopRefusal},
+		// Both kinds of block the send side leaves out, each in front of one it
+		// keeps: filtering in place would slide the survivor into the gap.
+		llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+			{Type: llm.BlockThinking, Text: "reasoning"},
+			{Type: llm.BlockText},
+			{Type: llm.BlockText, Text: "One moment."},
+		}},
+		llm.Message{Role: llm.RoleUser, Content: []llm.Block{{Type: llm.BlockText, Text: "go on"}}},
+	)
+
+	// A deep copy compared field by field, not the two encodings: Block.MarshalJSON
+	// zeroes whatever a block's type does not own, so a comparison through JSON
+	// cannot see a write to one of those fields at all. Input is cloned too, being
+	// the one field a shallower copy would leave aliasing the original.
+	before := slices.Clone(req.Messages)
+	for i, msg := range req.Messages {
+		before[i].Content = slices.Clone(msg.Content)
+		for j, block := range msg.Content {
+			before[i].Content[j].Input = bytes.Clone(block.Input)
+		}
+	}
+
+	params, err := buildParams(req)
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	if !reflect.DeepEqual(before, req.Messages) {
+		t.Errorf("building the request rewrote the transcript:\nbefore %+v\n after %+v", before, req.Messages)
+	}
+	// And the request it built: leaving the transcript alone while dropping the
+	// survivor from the request would pass everything above.
+	assertSendsNoEmptyTextBlock(t, params, "One moment.")
 }
 
 // TestBuildParamsRefusesAnEmptyMessageList is what the skip can reach on its own:
