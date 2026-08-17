@@ -98,19 +98,20 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 }
 
 func messageParam(msg llm.Message) (sdk.MessageParam, error) {
-	// Two lists: the blocks this adapter can express at all, and the ones that go
-	// on the wire. They differ only by what IsEmpty rejects, so CheckSendable's
-	// answer about the first is also whether the second came out empty.
-	expressible := msg
-	expressible.Content = nil
+	// One loop, two lists: the wire blocks, and the neutral blocks they came from,
+	// which is what llm can be asked about. Every arm below adds to both or to
+	// neither, so they stay the same length.
+	kept := msg
+	kept.Content = make([]llm.Block, 0, len(msg.Content))
+	content := make([]sdk.ContentBlockParamUnion, 0, len(msg.Content))
 
-	var content []sdk.ContentBlockParamUnion
 	for _, block := range msg.Content {
 		switch block.Type {
 		case llm.BlockText:
-			if !block.IsEmpty() {
-				content = append(content, sdk.NewTextBlock(block.Text))
+			if block.IsEmpty() {
+				continue
 			}
+			content = append(content, sdk.NewTextBlock(block.Text))
 		case llm.BlockThinking:
 			// Dropped rather than replayed. Anthropic wants a thinking block back
 			// with the signature it arrived with, llm.Block has no field for one,
@@ -120,10 +121,17 @@ func messageParam(msg llm.Message) (sdk.MessageParam, error) {
 		default:
 			return sdk.MessageParam{}, fmt.Errorf("cannot send a %s block: this adapter streams text only", block.Type)
 		}
-		expressible.Content = append(expressible.Content, block)
+		kept.Content = append(kept.Content, block)
 	}
-	if err := llm.CheckSendable(expressible); err != nil {
+	if err := llm.CheckSendable(kept); err != nil {
 		return sdk.MessageParam{}, err
+	}
+	// The same question asked of the list that actually goes out. It can only
+	// disagree with the one above if an arm stops adding to both, and the cost of
+	// finding out on the wire is a 400 on every later request in the session.
+	if len(content) == 0 {
+		return sdk.MessageParam{}, fmt.Errorf("the %s message came out with no content blocks from %d neutral "+
+			"ones; a case in messageParam has stopped keeping the two lists in step", msg.Role, len(msg.Content))
 	}
 
 	switch msg.Role {

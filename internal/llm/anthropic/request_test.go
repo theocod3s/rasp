@@ -1,11 +1,12 @@
 package anthropic
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -129,7 +130,7 @@ func TestBuildParamsRejectsEmptyAndUnknown(t *testing.T) {
 			// A user message, so the skip that saves the assistant's does not apply.
 			"no content",
 			llm.Message{Role: llm.RoleUser},
-			"a user message has nothing left to send",
+			`a "user" message has nothing left to send`,
 		},
 		{
 			"unknown role",
@@ -458,7 +459,7 @@ func TestBuildParamsSkipIsAssistantOnly(t *testing.T) {
 	// Named, not merely non-nil: this request is well-formed apart from that one
 	// message, so an error about anything else means the skip was applied and the
 	// failure came from somewhere later.
-	if !strings.Contains(err.Error(), "a user message has nothing left to send") {
+	if !strings.Contains(err.Error(), `a "user" message has nothing left to send`) {
 		t.Errorf("error = %v, want one naming the empty user message", err)
 	}
 }
@@ -481,19 +482,20 @@ func TestBuildParamsLeavesTheTranscriptAlone(t *testing.T) {
 		llm.Message{Role: llm.RoleUser, Content: []llm.Block{{Type: llm.BlockText, Text: "go on"}}},
 	)
 
-	before, err := json.Marshal(req.Messages)
-	if err != nil {
-		t.Fatalf("marshalling the transcript: %v", err)
+	// A deep copy compared field by field, not the two encodings: Block.MarshalJSON
+	// zeroes whatever a block's type does not own, so a comparison through JSON
+	// cannot see a write to one of those fields at all.
+	before := make([]llm.Message, len(req.Messages))
+	copy(before, req.Messages)
+	for i := range before {
+		before[i].Content = slices.Clone(req.Messages[i].Content)
 	}
+
 	if _, err := buildParams(req); err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
-	after, err := json.Marshal(req.Messages)
-	if err != nil {
-		t.Fatalf("marshalling the transcript: %v", err)
-	}
-	if !bytes.Equal(before, after) {
-		t.Errorf("building the request rewrote the transcript:\nbefore %s\n after %s", before, after)
+	if !reflect.DeepEqual(before, req.Messages) {
+		t.Errorf("building the request rewrote the transcript:\nbefore %+v\n after %+v", before, req.Messages)
 	}
 }
 

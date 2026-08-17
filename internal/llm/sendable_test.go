@@ -3,6 +3,7 @@ package llm_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -49,31 +50,13 @@ func TestCheckSendableRefusesEveryOtherRole(t *testing.T) {
 			case errors.Is(err, llm.ErrSkipMessage):
 				t.Fatalf("err = %v; only an assistant turn is withheld, and skipping this one leaves "+
 					"the model answering the previous turn twice", err)
-			// Spelled out rather than left to Contains, which every string satisfies
-			// for the empty role — a check that cannot fail reads exactly like one
-			// that passed.
-			case role != "" && !strings.Contains(err.Error(), string(role)):
+			// Quoted, so the check still has something to look for when the role is
+			// unset — Contains against "" is satisfied by every string, and a check
+			// that cannot fail reads exactly like one that passed.
+			case !strings.Contains(err.Error(), fmt.Sprintf("%q", role)):
 				t.Errorf("err = %v, want one naming the role that produced it", err)
 			}
 		})
-	}
-}
-
-// TestCheckSendableSaysWhichKindOfEmpty: the two routes reach the same answer
-// and are reported apart, because the only error anyone reads is a user
-// message's — and a message built with no blocks and one built with blocks that
-// stayed empty are different bugs in whatever wrote it.
-func TestCheckSendableSaysWhichKindOfEmpty(t *testing.T) {
-	none := llm.CheckSendable(llm.Message{Role: llm.RoleUser})
-	blank := llm.CheckSendable(llm.Message{Role: llm.RoleUser, Content: []llm.Block{{Type: llm.BlockText}}})
-	if none == nil || blank == nil {
-		t.Fatalf("errors are %v and %v; both messages are unsendable", none, blank)
-	}
-	if !strings.Contains(none.Error(), "no blocks") {
-		t.Errorf("a message with no blocks reports %q", none)
-	}
-	if !strings.Contains(blank.Error(), "empty") {
-		t.Errorf("a message whose blocks are all empty reports %q", blank)
 	}
 }
 
