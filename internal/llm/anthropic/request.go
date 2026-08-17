@@ -81,6 +81,15 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 		case err != nil:
 			return sdk.MessageNewParams{}, fmt.Errorf("anthropic: message %d: %w", i, err)
 		}
+		// Skipping an assistant turn leaves the user turns either side of it adjacent,
+		// and the API's two descriptions of that disagree: its error table lists
+		// consecutive same-role messages as a 400, its reference says they are
+		// combined. Combining them here costs nothing if the API would have, and is
+		// the difference between a working session and a wedged one if it would not.
+		if n := len(params.Messages); n > 0 && params.Messages[n-1].Role == converted.Role {
+			params.Messages[n-1].Content = append(params.Messages[n-1].Content, converted.Content...)
+			continue
+		}
 		params.Messages = append(params.Messages, converted)
 	}
 	// Reached by skipping every message there was. The API refuses an empty list,

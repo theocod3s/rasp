@@ -58,23 +58,19 @@ func project(msg *llm.Message, acc *sdk.Message) error {
 // all, which every provider refuses on replay. Anthropic adds block types
 // regularly, so the default has to be loud.
 //
-// A text or thinking block with nothing in it yet is held back, not surfaced.
-// Every such block starts empty and fills from deltas, so one still empty when the
-// stream ends is one whose content never arrived — and a finished message carrying
-// it fails the StreamResponse contract and is refused on replay, exactly like a
-// message with no blocks. Blocks arrive in order, so one held back never displaces
-// a later one, and holding back costs nothing while it is only a block start.
+// Drop on the block's TYPE and never on its contents. Projection is positional,
+// and the SDK documents that deltas and stops interleave across open blocks,
+// addressing them by index rather than by whichever started last. A type is fixed
+// the moment the block opens, so dropping on it shifts later blocks by the same
+// amount at every event and no index ever moves. Contents are not: hold an empty
+// block back and the next block to receive text takes its index, then the held-back
+// block fills and everything after it shifts. Partial reads as rewritten, which the
+// stream contract rejects — correctly, since a consumer already drew the old text.
 func projectBlock(block *sdk.ContentBlockUnion) (llm.Block, bool, error) {
 	switch block.Type {
 	case "text":
-		if block.Text == "" {
-			return llm.Block{}, false, nil
-		}
 		return llm.Block{Type: llm.BlockText, Text: block.Text}, true, nil
 	case "thinking":
-		if block.Thinking == "" {
-			return llm.Block{}, false, nil
-		}
 		return llm.Block{Type: llm.BlockThinking, Text: block.Thinking}, true, nil
 	case "redacted_thinking":
 		// Encrypted reasoning. Dropped rather than refused because it is known to

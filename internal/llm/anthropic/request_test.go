@@ -236,15 +236,27 @@ func TestBuildParamsSkipsAThinkingOnlyTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildParams: %v; the session is now unrecoverable without editing the file", err)
 	}
-	if len(params.Messages) != 2 {
-		t.Fatalf("sent %d messages, want the thinking-only turn omitted and the other two kept", len(params.Messages))
+	// The thinking-only turn is skipped, and the user turns either side of it are
+	// combined rather than left adjacent.
+	if len(params.Messages) != 1 {
+		t.Fatalf("sent %d messages, want the thinking-only turn omitted and the user turns merged",
+			len(params.Messages))
 	}
+	assertRolesAlternate(t, params)
+
 	body, err := json.Marshal(params)
 	if err != nil || len(body) == 0 {
 		t.Fatalf("marshalling the params: %v; a nil body would pass every check below", err)
 	}
 	if strings.Contains(string(body), "Still reasoning") {
 		t.Error("the thinking block went out without the signature Anthropic requires with it")
+	}
+	// Both surviving turns have to reach the wire: merging that dropped one would
+	// have the model answer a question nobody asked.
+	for _, want := range []string{"read auth.go", "carry on"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("merging lost %q: %s", want, body)
+		}
 	}
 }
 
@@ -268,11 +280,12 @@ func TestReplayingATurnCutOnABlockBoundary(t *testing.T) {
 		t.Fatalf("CheckStream: %v", err)
 	}
 
-	// The second block never got past its start frame, so the projection holds it
-	// back: what gets committed is the text that did arrive and nothing else.
+	// The second block never got past its start frame. Projection is positional, so
+	// it is committed as an empty block rather than dropped, and the send side is
+	// what has to keep it off the wire.
 	committed := *last(t, events).Partial
-	if len(committed.Content) != 1 || committed.Content[0].Text != "One moment." {
-		t.Fatalf("committed content = %+v, want only the block whose text arrived", committed.Content)
+	if len(committed.Content) != 2 || committed.Content[1].Text != "" {
+		t.Fatalf("committed content = %+v, want a written block and an empty one", committed.Content)
 	}
 
 	// Now build the next turn from that transcript, the way the loop would.
@@ -314,12 +327,31 @@ func TestReplayingARefusal(t *testing.T) {
 		t.Fatalf("buildParams: %v; the session is wedged from here on, with no way out but "+
 			"editing the transcript by hand", err)
 	}
-	// The refusal is skipped, so what is left is the original question and the
-	// follow-up — and skipping the wrong thing would leave one of those missing.
-	if got := len(params.Messages); got != 2 {
-		t.Fatalf("sent %d messages, want the two user turns with the refusal skipped", got)
+	// The refusal is skipped, and the two user turns it sat between are combined
+	// rather than sent back to back. Both have to survive that: dropping either
+	// would have the model answer a question nobody asked.
+	if got := len(params.Messages); got != 1 {
+		t.Fatalf("sent %d messages, want the two user turns merged into one", got)
 	}
 	assertSendsNoEmptyTextBlock(t, params, "why not?")
+	assertSendsNoEmptyTextBlock(t, params, "read auth.go")
+	assertRolesAlternate(t, params)
+}
+
+// assertRolesAlternate fails on two adjacent messages with the same role. The
+// skip above is what creates them, and the API's own error table and reference
+// disagree about whether it rejects them or combines them — so this does not
+// depend on finding out which.
+func assertRolesAlternate(t *testing.T, params sdk.MessageNewParams) {
+	t.Helper()
+	if len(params.Messages) == 0 {
+		t.Fatal("no messages, so nothing below was checked")
+	}
+	for i := 1; i < len(params.Messages); i++ {
+		if params.Messages[i].Role == params.Messages[i-1].Role {
+			t.Errorf("messages %d and %d are both %q", i-1, i, params.Messages[i].Role)
+		}
+	}
 }
 
 // TestSendingSkipsAnEmptyBlockAlreadyInATranscript: the projection stopped
