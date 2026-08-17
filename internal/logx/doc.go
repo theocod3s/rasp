@@ -1,6 +1,12 @@
-// Package logx configures log/slog to write to a file under the state
+// Package logx configures log/slog to write JSON to a file under the data
 // directory, at a level the environment can set.
 //
 // Does not contain: anything bound for stdout — stdout belongs to the UI, and a
-// stray log line corrupts the display. No secret may ever reach a log record.
+// stray log line corrupts the display. No secret may reach a log record, which
+// is why the credential key list lives here and not behind an import of
+// internal/config.
+//
+// That list is read against each attribute's own key, never its value and never
+// the group enclosing it: a credential inside a map, a struct, or an attribute
+// named only by the group above it is still the call site's to keep out.
 package logx
