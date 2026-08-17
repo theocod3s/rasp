@@ -414,11 +414,19 @@ func TestStreamFinishedTurnCarriesAnEmptyBlock(t *testing.T) {
 		}},
 	}
 
+	// The same for both: the block that never filled is in the message and produced
+	// no event of its own. An adapter that announced it would have a UI drawing a
+	// paragraph that is never written to.
+	wantEvents := []llm.EventType{llm.EventMessageStart, llm.EventTextDelta, llm.EventDone}
+
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			events, err := llm.CheckStream(replay(t, tc.fixture).Stream(context.Background(), ask()))
 			if err != nil {
 				t.Fatalf("CheckStream: %v", err)
+			}
+			if got := types(events); !slices.Equal(got, wantEvents) {
+				t.Errorf("event types = %v, want %v", got, wantEvents)
 			}
 			// The rule under test applies to a turn the model finished, and every
 			// other assertion here holds just as well for a stream that broke off —

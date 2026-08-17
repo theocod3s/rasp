@@ -357,8 +357,8 @@ func assertRolesAlternate(t *testing.T, params sdk.MessageNewParams) {
 // TestSendingSkipsAnEmptyBlockAlreadyInATranscript: projection is positional, so a
 // block that never filled is committed and stays committed — Load repairs pairing,
 // not block contents. The send-side skip is what keeps such a transcript usable,
-// and it is asserted against a message built by hand so that it holds for whatever
-// shape a session file turns out to be in, not only for one this adapter produces.
+// and it is asserted against a message built by hand so the rule is pinned on its
+// own, rather than through whatever a fixture happens to produce.
 func TestSendingSkipsAnEmptyBlockAlreadyInATranscript(t *testing.T) {
 	next := ask()
 	next.Messages = append(next.Messages,

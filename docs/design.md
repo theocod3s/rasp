@@ -305,13 +305,13 @@ the held-back block does fill — the one bug this repo's adapter has shipped �
 at the terminal event makes a block vanish from an index a consumer has already drawn. Both are
 what `checkAccumulation` exists to catch, and it is the load-bearing rule of the two. Emptiness
 belongs to the send side instead, where a message is built for the wire with empty blocks
-skipped, so nothing empty reaches a provider either way.
+skipped — each adapter's own rule to hold, since nothing here can see what it never sent.
 
-One shape of that drop does get through, and it is the reason the rule cannot merely be narrowed:
-a trailing block that never fills, filtered before it ever reaches `Partial`, is invisible here —
-nothing above the adapter can see a block that never appeared. It is only recognisable as
-trailing once the stream has ended, which is where the other half of the same filter is already
-rejected.
+One shape of the drop gets through, and it is the reason the rule cannot merely be narrowed to
+trailing blocks: a block that never fills at all, filtered before it ever reaches `Partial`, is
+invisible whatever index it sat at — nothing above the adapter can see a block that never
+appeared. What is caught is every block that *does* fill, which is the same thing as saying an
+adapter only learns which blocks those were once the stream has ended.
 
 **That usage is reported at all.** `Message.Usage` is authoritative for context estimation
 (§11), so an adapter that never maps it is a real bug. Requiring it here is still wrong: an
