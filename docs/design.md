@@ -305,7 +305,7 @@ the held-back block does fill — the one bug this repo's adapter has shipped �
 at the terminal event makes a block vanish from an index a consumer has already drawn. Both are
 what `checkAccumulation` exists to catch, and it is the load-bearing rule of the two. Emptiness
 belongs to the send side instead, where a message is built for the wire with empty blocks
-skipped — each adapter's own rule to hold, since nothing here can see what it never sent.
+skipped, so nothing empty reaches a provider either way.
 
 One shape of the drop gets through, and it is the reason the rule cannot merely be narrowed to
 trailing blocks: a block that never fills at all, filtered before it ever reaches `Partial`, is

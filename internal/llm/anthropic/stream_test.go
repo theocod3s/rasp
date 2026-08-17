@@ -396,7 +396,8 @@ func TestStreamSurvivesInterleavedDeltas(t *testing.T) {
 // block that opened and closed without a delta, and this adapter commits it where
 // it arrived — dropping it during the stream is the interleaving regression above,
 // and dropping it at the terminal makes a block vanish instead. Keeping it off the
-// wire is the send side's job, which is why the round trip is asserted here too.
+// wire is the send side's job, which is why the round trip is asserted here too —
+// on the text block, since a thinking block leaves the request by its type anyway.
 func TestStreamFinishedTurnCarriesAnEmptyBlock(t *testing.T) {
 	cases := map[string]struct {
 		fixture string
