@@ -2291,29 +2291,40 @@ if the diff escapes the package, the boundary needs fixing before the bump lands
 
 ### Dependency updates
 
-Renovate, configured in `.github/renovate.json5`, running weekly. Two managers, and `enabledManagers`
-holds it to those two rather than leaving it to what the repo happens to contain: `gomod`, and
-`github-actions` for the workflow's SHA pins — an action pin nobody updates is a stale pin, not a
-safe one. Minor, patch and **digest** group into one PR per manager; a major opens on its own.
-Digest belongs in that group rather than beside it, because an action pinned to a SHA with a
-floating tag comment produces nothing else — leaving it out means one PR per action every time
-upstream repoints a tag. **Nothing auto-merges.**
+Renovate, configured in `.github/renovate.json5`, running weekly. Managers are auto-detected, and
+today that finds the two this repo has: `gomod`, and `github-actions` for the workflow's SHA pins —
+an action pin nobody updates is a stale pin, not a safe one. Minor, patch and **digest** group into
+one PR per manager; a major opens on its own. **Nothing auto-merges.**
+
+Digest is in the group rather than beside it because of how the pins are written. A pin whose
+comment is an exact version (`# v7.0.1`) produces ordinary minor and patch updates, since Renovate
+reads that comment as the current version and rewrites SHA and comment together. A pin whose comment
+is a floating tag (`# v4`) produces **only** digest updates, because the value never changes. Both
+forms are in `ci.yml`, so leaving either update type out splits the weekly PR into several.
 
 The SDK pin above is the reason Renovate rather than Dependabot. Dependabot can hold the SDK out of
 a group so it arrives as its own PR; Renovate can hold it behind `dependencyDashboardApproval`, so
 no PR opens at all until someone ticks a box on the Dependency Dashboard issue. The upgrade
 procedure is work a human starts, and a bot that waits to be asked models that better than one that
-opens a PR and hopes it gets read. The `go` directive gets the same gate, for the same reason: it is
-the line every toolchain reads to decide what to fetch. Both gated rules carry `groupName: null`,
-which is load-bearing and not tidiness — Renovate computes approval per *branch*, so a gated
-dependency left inside a group holds every unrelated bump in that group behind the same checkbox.
+opens a PR and hopes it gets read. Both gated rules carry `groupName: null`, and that is mechanism
+rather than tidiness: Renovate computes approval per *branch*, so a gated dependency sharing a
+branch with others would hold them all behind the same checkbox.
+
+The `go` directive gets the same gate, and what it can gate is narrower than it looks. `go 1.26` is
+read as `^1.26`, so Go patch and minor releases never violate it and no update is proposed — the
+`GOTOOLCHAIN` fetch keeps working and the line stays as written. What the gate catches is a Go
+major, and a `toolchain` directive if one is ever added, which *does* take routine patch updates.
+Widening it with `rangeStrategy` would make Renovate propose narrowing `go 1.26` to a specific patch
+release, which is the opposite of the pin's purpose.
 
 Version updates track releases, not vulnerabilities. Renovate's `vulnerabilityAlerts` is fed by
 GitHub's own Dependabot alert feed, so the dependency graph and Dependabot **alerts** are enabled in
 repo settings, and the Renovate app needs the *Dependabot alerts: read-only* permission granted —
 without it the feed is simply empty, which is indistinguishable from having no vulnerabilities.
 Dependabot **security updates** — the PR-opening half — stays off, because Renovate is doing that
-job.
+job. That handover is only complete with `security:gomodIndirectSecurityUpdates`: `gomod` disables
+every `// indirect` require, and this repo has thirteen of them, so without the preset a CVE in one
+would produce silence from both tools.
 
 ---
 
