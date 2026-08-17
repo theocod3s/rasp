@@ -29,6 +29,10 @@ type scripted struct {
 
 func (s scripted) ID() string { return s.id }
 
+// Efforts: a double that refuses nothing, so a test asking for depth is testing
+// the thing it named rather than this list.
+func (s scripted) Efforts() []llm.Effort { return llm.EffortLadder() }
+
 // Stream plays the script. The message is allocated HERE, before the first yield,
 // so the tests check a producer built the way the contract asks.
 func (s scripted) Stream(ctx context.Context, _ llm.Request) llm.StreamResponse {

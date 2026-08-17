@@ -36,6 +36,14 @@ type Provider interface {
 	// Stream runs exactly one model call. Failures come back through the
 	// returned sequence — see the StreamResponse contract.
 	Stream(ctx context.Context, req Request) StreamResponse
+
+	// Efforts is the subset of the ladder this provider can put on the wire, in
+	// ladder order. Per protocol, never per model: no adapter recognises a model
+	// id (scope.md), so a rung can be offered here and still rejected by the API.
+	//
+	// Required rather than an optional interface someone type-asserts, because an
+	// adapter that had not implemented it would read as one allowing every rung.
+	Efforts() []Effort
 }
 
 // Request is one model call.
@@ -60,6 +68,11 @@ type Request struct {
 
 	MaxTokens int
 	Thinking  ThinkingConfig
+
+	// Effort is a sibling of Thinking rather than a field inside it: the two wire
+	// fields are independent, and "effort high, thinking off" is a request a
+	// provider will honour.
+	Effort Effort
 }
 
 // SystemBlock is one piece of the system prompt.
@@ -81,16 +94,8 @@ type ToolSpec struct {
 	Schema      map[string]any
 }
 
-// ThinkingConfig asks for extended thinking. The zero value asks for none.
+// ThinkingConfig asks for extended thinking. The zero value asks for none. Depth
+// is not a thinking field on either provider's wire — it is Request.Effort.
 type ThinkingConfig struct {
 	Enabled bool
-
-	// BudgetTokens caps the thinking tokens, and nothing can currently send one.
-	// The models that take Anthropic's adaptive shape reject a fixed budget and
-	// express depth as an effort level instead, which this struct has nowhere to
-	// carry; the models that do take a budget take only that. An adapter cannot
-	// tell which it faces, because a model id is never validated against a
-	// catalog (scope.md), so a non-zero value is refused rather than dropped
-	// until the field is either removed or replaced by an effort level.
-	BudgetTokens int
 }

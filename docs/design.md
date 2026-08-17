@@ -166,6 +166,11 @@ type Provider interface {
 
     // Stream runs exactly one model call. See the StreamResponse contract.
     Stream(ctx context.Context, req Request) StreamResponse
+
+    // Efforts is the subset of the effort ladder this provider can put on the
+    // wire, in ladder order. Required, never an optional interface someone
+    // type-asserts: an adapter without one would read as allowing every rung.
+    Efforts() []Effort
 }
 ```
 
@@ -179,8 +184,25 @@ type Request struct {
     Messages  []Message
     Tools     []ToolSpec    // from a per-turn snapshot; see §3.3
     MaxTokens int
-    Thinking  ThinkingConfig
+    Thinking  ThinkingConfig // Enabled only; depth is Effort
+    Effort    Effort         // zero value: send no depth field at all
 }
+
+// The ladder is the union of Anthropic's output_config.effort and OpenAI's
+// reasoning_effort, so neither loses a rung it accepts. Effort is a SIBLING of
+// Thinking, not a field inside it, because the wire fields are independent:
+// "effort high, thinking off" is a request a provider will honour.
+type Effort string
+
+const (
+    EffortNone    Effort = "none"
+    EffortMinimal Effort = "minimal"
+    EffortLow     Effort = "low"
+    EffortMedium  Effort = "medium"
+    EffortHigh    Effort = "high"
+    EffortXHigh   Effort = "xhigh"
+    EffortMax     Effort = "max"
+)
 
 type EventType string
 
@@ -207,6 +229,12 @@ type Event struct {
     Err        error      // EventError; informational, not a control path
 }
 ```
+
+An adapter handed a rung outside its own `Efforts()` fails the request and names the rung; it
+never substitutes the nearest one it could send ([decisions.md](decisions.md)). Anthropic takes
+five of the seven — `none` and `minimal` have no member in its enum — and an OpenAI-compatible
+endpoint takes all seven. The list is per protocol rather than per model, so `xhigh` is offered
+to every Anthropic model and the ones that will not take it answer with an API error.
 
 The neutral message model is Anthropic-shaped, because Anthropic's block model is the more
 expressive of the two and translating down to OpenAI is easier than the reverse — the same

@@ -3,6 +3,7 @@ package anthropic
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 
@@ -16,14 +17,6 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 	if req.Model == "" {
 		return sdk.MessageNewParams{}, errors.New("anthropic: no model; the API requires one, " +
 			"and sending this costs an authenticated round trip to be told so")
-	}
-	// Outside the Enabled branch: a budget set on a disabled config is still a
-	// caller who believes it is being honoured, and provider.go now promises it is
-	// refused rather than dropped.
-	if req.Thinking.BudgetTokens != 0 {
-		return sdk.MessageNewParams{}, fmt.Errorf("anthropic: Thinking.BudgetTokens is %d and cannot be sent; "+
-			"depth is an effort level on the models that take the shape used here, and ThinkingConfig has "+
-			"nowhere to carry one", req.Thinking.BudgetTokens)
 	}
 	if req.MaxTokens <= 0 {
 		return sdk.MessageNewParams{}, fmt.Errorf("anthropic: MaxTokens is %d; the API requires a positive cap, "+
@@ -88,13 +81,44 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 	}
 
 	if req.Thinking.Enabled {
-		// Adaptive is the shape current models take, and budget_tokens is the only
-		// one older models accept. Nothing here can tell which is which: rasp never
-		// validates a model id against a catalog, so that `openrouter/auto` and any
-		// future router keep working (scope.md).
+		// Adaptive rather than enabled: the enabled shape carries a token budget
+		// current models reject, and the SDK prints a deprecation warning for it
+		// straight to stderr, which belongs to the UI.
 		params.Thinking = sdk.ThinkingConfigParamUnion{OfAdaptive: &sdk.ThinkingConfigAdaptiveParam{}}
 	}
+	if req.Effort != "" {
+		level, ok := wireEffort[req.Effort]
+		if !ok {
+			return sdk.MessageNewParams{}, fmt.Errorf("anthropic: cannot send effort %q; this API takes %v, "+
+				"and a turn never runs at a depth other than the one asked for", req.Effort, efforts())
+		}
+		params.OutputConfig.Effort = level
+	}
 	return params, nil
+}
+
+// wireEffort is the single source for what this adapter can express: efforts
+// publishes its keys and buildParams refuses everything else, so a picker and a
+// refusal cannot come apart. A rung added to llm's ladder is refused until someone
+// maps it here — the safe direction, since the API rejects a value its own enum
+// has no member for.
+var wireEffort = map[llm.Effort]sdk.OutputConfigEffort{
+	llm.EffortLow:    sdk.OutputConfigEffortLow,
+	llm.EffortMedium: sdk.OutputConfigEffortMedium,
+	llm.EffortHigh:   sdk.OutputConfigEffortHigh,
+	llm.EffortXHigh:  sdk.OutputConfigEffortXhigh,
+	llm.EffortMax:    sdk.OutputConfigEffortMax,
+}
+
+// Efforts is every rung but none and minimal, which Anthropic's enum has no
+// member for.
+func (c *Client) Efforts() []llm.Effort { return efforts() }
+
+func efforts() []llm.Effort {
+	return slices.DeleteFunc(llm.EffortLadder(), func(e llm.Effort) bool {
+		_, ok := wireEffort[e]
+		return !ok
+	})
 }
 
 func messageParam(msg llm.Message) (sdk.MessageParam, error) {
