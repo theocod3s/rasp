@@ -32,6 +32,11 @@ func execute(args []string) int {
 		fmt.Fprintf(os.Stderr, "rasp: %s\n", warning)
 	}
 
+	// Cobra reads os.Args when handed a nil argument list, so a caller asking for
+	// no arguments at all would get this process's own — a test binary's flags.
+	if args == nil {
+		args = []string{}
+	}
 	cmd := newRootCmd()
 	cmd.SetArgs(args)
 	if err := cmd.Execute(); err != nil {

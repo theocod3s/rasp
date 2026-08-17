@@ -3,8 +3,18 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"go.uber.org/goleak"
 )
+
+// TestMain runs the leak detector over the package that assembles every other
+// one. execute() is the whole startup path, and the goroutines the loop, the
+// tools and the MCP servers spawn all end up under it (design §13).
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 // TestCommandsRunWithLoggingConfigured guards the wiring rather than the
 // logging: logx claims the process's standard sinks when it opens the file, so
@@ -25,16 +35,25 @@ func TestCommandsRunWithLoggingConfigured(t *testing.T) {
 	}
 	defer file.Close()
 
-	real := os.Stdout
-	os.Stdout = file
-	code := execute([]string{"config", "path"})
-	os.Stdout = real
+	code := func() int {
+		real := os.Stdout
+		os.Stdout = file
+		defer func() { os.Stdout = real }()
+		return execute([]string{"config", "path"})
+	}()
 
 	if code != 0 {
 		t.Fatalf("exit status %d", code)
 	}
-	if info, err := os.Stat(out); err != nil || info.Size() == 0 {
-		t.Fatalf("the command printed nothing, so it never ran: %v", err)
+	// The report `config path` prints, not merely some output: cobra falls back
+	// to os.Args when handed no argument list, so a root command that ran
+	// instead would also have printed something.
+	printed, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("reading %s: %v", out, err)
+	}
+	if !strings.Contains(string(printed), "global") || !strings.Contains(string(printed), "project") {
+		t.Fatalf("`config path` printed %q", printed)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("no log file at RASP_LOG_FILE, so logging was never initialised: %v", err)

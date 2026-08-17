@@ -44,30 +44,37 @@ type Log struct {
 //
 // It cannot fail: every problem degrades to a discarding logger and a warning
 // for the caller to show, because losing logs beats refusing to start
-// (design §12).
+// (design §12). The sinks go there too — a machine that could not be given a log
+// file is not one where a dependency should be handed the terminal instead.
 //
 // getenv may be nil, which reads the process environment.
 func Init(getenv func(string) (string, bool)) *Log {
-	lg := open(getenv)
-	adopt(lg.Logger)
+	lg, level := open(getenv)
+	adopt(lg.Logger, level)
 	return lg
 }
 
-// adopt points Go's standard log and the slog default at l, because a dependency
-// may write to either and either lands on the terminal — which the UI owns, and
-// which stderr is no part of once the alternate screen buffer is up. Setting the
-// slog default is what carries the standard log with it, so those lines reach the
-// file as records through the redacting handler rather than as raw text beside
-// the JSON.
-func adopt(l *slog.Logger) { slog.SetDefault(l) }
+// adopt points Go's standard log and the slog default at l: a dependency may
+// write to either, and either lands on the terminal, which stderr is no part of
+// once the alternate screen buffer is up. Setting the slog default carries the
+// standard log with it, so those lines arrive as records through the redacting
+// handler rather than as raw text beside the JSON.
+//
+// They arrive at level rather than the fixed info slog gives that bridge: a
+// standard-log line has no level of its own, so RASP_LOG_LEVEL=warn would
+// otherwise delete from the file what it had already taken off the terminal.
+func adopt(l *slog.Logger, level slog.Level) {
+	slog.SetLogLoggerLevel(level)
+	slog.SetDefault(l)
+}
 
 // The sinks are pointed at nothing from the moment this package is linked in.
 // Lines written before Init are dropped rather than buffered for replay: a
 // buffer only pays off if Init eventually runs, and costs memory when it never
 // does.
-func init() { adopt(slog.New(slog.DiscardHandler)) }
+func init() { adopt(slog.New(slog.DiscardHandler), slog.LevelInfo) }
 
-func open(getenv func(string) (string, bool)) *Log {
+func open(getenv func(string) (string, bool)) (*Log, slog.Level) {
 	if getenv == nil {
 		getenv = os.LookupEnv
 	}
@@ -78,11 +85,11 @@ func open(getenv func(string) (string, bool)) *Log {
 	path, err := logPath(getenv)
 	if err != nil {
 		lg.warn("logging is off: %v", err)
-		return lg
+		return lg, level
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		lg.warn("logging is off: %v", err)
-		return lg
+		return lg, level
 	}
 	if err := rotate(path); err != nil {
 		lg.warn("%s could not be rotated and will keep growing: %v", path, err)
@@ -92,13 +99,13 @@ func open(getenv func(string) (string, bool)) *Log {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		lg.warn("logging is off: %v", err)
-		return lg
+		return lg, level
 	}
 
 	lg.file = file
 	lg.Path = path
 	lg.Logger = slog.New(redacting{slog.NewJSONHandler(file, &slog.HandlerOptions{Level: level})})
-	return lg
+	return lg, level
 }
 
 // Close closes the log file, including when logging is disabled.

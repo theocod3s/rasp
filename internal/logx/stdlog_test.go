@@ -109,9 +109,12 @@ func TestSDKWritesFromInsideTheFirstRequest(t *testing.T) {
 	case modeBare:
 		// Nothing: importing logx has already pointed the sinks at nothing.
 	case modeStock:
-		// Restored by hand, because importing logx at all takes it away. This is
-		// the writer every Go process starts with.
+		// Restored by hand, because importing logx at all takes it away — the
+		// flags with it, which slog.SetDefault clears. Both halves, so the control
+		// is the standard logger every Go process starts with rather than an
+		// arrangement of this test's own.
 		log.SetOutput(os.Stderr)
+		log.SetFlags(log.LstdFlags)
 	default:
 		t.Fatalf("unknown mode %q", mode)
 	}
@@ -170,6 +173,23 @@ func TestRedirectedRecordsAreRedacted(t *testing.T) {
 	}
 }
 
+// TestAdoptedLinesSurviveAHigherLevel guards the level the standard log's bridge
+// records at. slog fixes it at info, so a raised RASP_LOG_LEVEL would drop these
+// lines from the file having already taken them off the terminal — output
+// destroyed rather than redirected.
+func TestAdoptedLinesSurviveAHigherLevel(t *testing.T) {
+	_, path := logTo(t, env{"RASP_LOG_LEVEL": "error"})
+	log.Print("a dependency's line")
+
+	got := records(t, path)
+	if len(got) != 1 || got[0]["msg"] != "a dependency's line" {
+		t.Fatalf("logged %v, want the standard log line", got)
+	}
+	if got[0]["level"] != "ERROR" {
+		t.Errorf("the line arrived at %v, want the file's own threshold", got[0]["level"])
+	}
+}
+
 // helperResult is what a child process left behind: what a terminal would have
 // shown, and what the log file holds.
 type helperResult struct{ stdout, stderr, logged string }
@@ -211,10 +231,19 @@ func runHelper(t *testing.T, mode string) helperResult {
 	}
 }
 
-// withoutVerdict drops the line a test binary prints about itself, which is the
-// harness talking rather than the process under test.
+// withoutVerdict drops the lines a test binary prints about itself — its result,
+// and its coverage under -cover — which are the harness talking rather than the
+// process under test. Dropped by line rather than trimmed as one known suffix,
+// which `go test -cover` alone was enough to defeat.
 func withoutVerdict(out string) string {
-	return strings.TrimSuffix(out, "PASS\n")
+	var kept []string
+	for line := range strings.SplitSeq(out, "\n") {
+		if line == "PASS" || strings.HasPrefix(line, "coverage:") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
 // childEnv is this process's environment without the variables either side of
@@ -264,16 +293,13 @@ func assertMarkers(t *testing.T, where, got string, want bool) {
 	}
 }
 
+// maybeRead is read for the modes that never open a log file at all.
 func maybeRead(t *testing.T, path string) string {
 	t.Helper()
-	contents, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return ""
 	}
-	if err != nil {
-		t.Fatalf("reading %s: %v", path, err)
-	}
-	return string(contents)
+	return read(t, path)
 }
 
 // turn is a complete, minimal streamed response. Its content is irrelevant: the
