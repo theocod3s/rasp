@@ -48,12 +48,6 @@ earns its place by recording what the code **cannot** say: why a rule exists, wh
 shape forced it, why it is deliberately *not* stricter. Cut what restates the identifier, and cut
 what the error string three lines below already says in full sentences.
 
-The half that only shows up across files is **say it once**. The biggest single source of bloat in
-that cleanup was good comments written four times: "a project config arrives with `git clone` and
-nobody reads it" appeared in two tests and two error strings. Put the reasoning where the reader
-stands when the rule matters — for a rule enforced in code, the code — and let the rest be a
-clause. A test opening with a paragraph copied from the file it exercises is the commonest case.
-
 ## 4. Verify every acceptance criterion, one at a time
 
 The criteria are the definition of done, written so someone who didn't do the work can check
@@ -75,6 +69,15 @@ And **assert the right failure, not just a failure.** M0-05's timeout test check
 error came back. A later fix broke working credential helpers by returning a different error a
 second sooner, and the test stayed green — passing precisely when the thing it guarded was being
 destroyed. `err != nil` is the assertion most likely to survive its own subject.
+
+**Mutate what a test rests on, not only what it asserts.** The check being weak is the failure
+you look for; the test being incapable of failing is the one you find. M0-07 shipped three at
+once — `defer stream.Close()` could be deleted with the whole suite green, a usage check read
+the same pointer before and after the drain, and a third pinned the SDK's JSON key order, which
+would go quiet the day that order changed. All three read fine, and all three surfaced only when
+something they silently rested on was broken. So mutate the setup line, the helper and the
+literal nothing asserts on — and make a helper that finds nothing to examine say so, because
+examining nothing is the quietest pass there is.
 
 Once there is more than a handful, script it: apply one mutation, run the tests, restore, print
 caught/not-caught per case. M0-04 ran twenty-four that way in under a minute, which is the
