@@ -1,5 +1,7 @@
 // Package logx configures log/slog to write JSON to a file under the data
-// directory, at a level the environment can set.
+// directory, at a level the environment can set. Init also takes over the
+// process's standard sinks — Go's log package and the slog default — so a
+// dependency writing to either lands in the file.
 //
 // Does not contain: anything bound for stdout — stdout belongs to the UI, and a
 // stray log line corrupts the display. No secret may reach a log record, which

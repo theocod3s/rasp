@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/theocod3s/rasp/internal/config"
+	"github.com/theocod3s/rasp/internal/logx"
 )
 
 // version is injected at build time via -ldflags "-X main.version=...".
@@ -15,10 +16,29 @@ import (
 var version = "dev"
 
 func main() {
-	if err := newRootCmd().Execute(); err != nil {
-		// Cobra has already written the error to stderr.
-		os.Exit(1)
+	os.Exit(execute(os.Args[1:]))
+}
+
+// execute runs the command tree with logging configured around it and returns
+// the exit status. Separate from main because os.Exit skips deferred calls, and
+// the log file has to be closed on the failing path too.
+func execute(args []string) int {
+	lg := logx.Init(nil)
+	defer lg.Close()
+
+	// Shown once, here, because a logger that quietly went nowhere is a
+	// debugging session spent reading an empty file.
+	for _, warning := range lg.Warnings {
+		fmt.Fprintf(os.Stderr, "rasp: %s\n", warning)
 	}
+
+	cmd := newRootCmd()
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		// Cobra has already written the error to stderr.
+		return 1
+	}
+	return 0
 }
 
 // newRootCmd builds the command tree. The TUI, `run` and the session and mcp

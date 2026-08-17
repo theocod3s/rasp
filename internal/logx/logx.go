@@ -39,7 +39,8 @@ type Log struct {
 	file *os.File
 }
 
-// Init opens the log file and returns a logger writing JSON to it.
+// Init opens the log file, returns a logger writing JSON to it, and hands the
+// process's standard sinks to that logger.
 //
 // It cannot fail: every problem degrades to a discarding logger and a warning
 // for the caller to show, because losing logs beats refusing to start
@@ -47,6 +48,26 @@ type Log struct {
 //
 // getenv may be nil, which reads the process environment.
 func Init(getenv func(string) (string, bool)) *Log {
+	lg := open(getenv)
+	adopt(lg.Logger)
+	return lg
+}
+
+// adopt points Go's standard log and the slog default at l, because a dependency
+// may write to either and either lands on the terminal — which the UI owns, and
+// which stderr is no part of once the alternate screen buffer is up. Setting the
+// slog default is what carries the standard log with it, so those lines reach the
+// file as records through the redacting handler rather than as raw text beside
+// the JSON.
+func adopt(l *slog.Logger) { slog.SetDefault(l) }
+
+// The sinks are pointed at nothing from the moment this package is linked in.
+// Lines written before Init are dropped rather than buffered for replay: a
+// buffer only pays off if Init eventually runs, and costs memory when it never
+// does.
+func init() { adopt(slog.New(slog.DiscardHandler)) }
+
+func open(getenv func(string) (string, bool)) *Log {
 	if getenv == nil {
 		getenv = os.LookupEnv
 	}
