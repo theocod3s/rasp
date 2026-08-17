@@ -83,7 +83,7 @@ var (
 	errorReasons = []StopReason{StopError, StopAborted}
 
 	// finished are the reasons claiming every tool call was announced; they gate
-	// the emptiness rules below too. Truncation and cancellation stop mid-flight,
+	// the empty-message rule below too. Truncation and cancellation stop mid-flight,
 	// leaving what design §4 invariant 2's guard exists to fail.
 	//
 	// Refusal's absence reads oddly and is load-bearing both ways: a model can
@@ -180,16 +180,13 @@ func (c *streamChecker) checkComplete() error {
 
 	// Design §4 step 6 commits whatever the turn produced without asking, so this
 	// is the only place to catch an empty one while the blame is the adapter's.
+	//
+	// A message with blocks, one of them empty, is legal by contrast: a block that
+	// opens and closes without a delta is a real wire shape, and every way to drop
+	// one moves an index checkAccumulation is right to hold still (design §3.1a).
 	if len(c.partial.Content) == 0 {
 		return fmt.Errorf("the stream ended with StopReason %q and no content; a finished message with "+
 			"no blocks in it is refused by every provider the next time it is sent", c.stop)
-	}
-	for index, block := range c.partial.Content {
-		if (block.Type == BlockText || block.Type == BlockThinking) && block.Text == "" {
-			return fmt.Errorf("the stream ended with StopReason %q and an empty %s block at index %d; "+
-				"a block with nothing in it is refused on replay exactly like a message with no blocks, "+
-				"and a turn that finished had time to fill it", c.stop, block.Type, index)
-		}
 	}
 	return nil
 }

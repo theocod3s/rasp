@@ -93,7 +93,8 @@ the only bug the adapter has shipped, and the comment justifying it asserted the
 the dependency documents — so the tempting version of this reads as obviously safe.
 
 *Settled in M0-07, by shipping it wrong. `TestStreamSurvivesInterleavedDeltas` and a mutation keep
-it settled. What the drop was for is unresolved and tracked as M0-07c.*
+it settled. What the drop was for is settled in M0-07c: the empty block is legal, and emptiness
+belongs to the send side.*
 
 ## An unrecognised stop reason is an error, never a finished turn
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -370,11 +371,6 @@ func TestConfiguredKeyClearsAnAmbientBearer(t *testing.T) {
 	}
 }
 
-// TestStreamFinishedTurnHasNoEmptyBlock: a turn that ends normally can still carry
-// a block that opened and closed without a delta. Surfaced, it breaks the contract
-// this package is meant to be the reference implementation of, and it is refused
-// on replay exactly like a message with no blocks — so the projection holds it
-// back and the finished message is the text that actually arrived.
 // TestStreamSurvivesInterleavedDeltas is the regression test for the one bug this
 // package has shipped. The SDK documents that deltas interleave across open blocks
 // and address them by index, so a later block can receive its text first. An
@@ -396,28 +392,47 @@ func TestStreamSurvivesInterleavedDeltas(t *testing.T) {
 	}
 }
 
-// TestStreamFinishedTurnCarriesAnEmptyBlock pins a known gap, not a behaviour
-// anyone wants. A turn that ends normally can carry a block that opened and closed
-// without a delta, and this adapter surfaces it, which CheckStream rejects.
-//
-// Removing it here is not available. Projection is positional, and dropping a
-// block on its contents is precisely the interleaving regression above; dropping it
-// at the terminal instead makes a block vanish, which the same contract rejects for
-// the same reason. So the contract's "no empty block on a finished turn" rule and
-// its index-stability rule cannot both hold for an adapter, and which one gives is
-// a question for internal/llm rather than for one adapter — M0-07c.
-//
-// This test goes red the moment that is settled, which is the point of it.
+// TestStreamFinishedTurnCarriesAnEmptyBlock: a turn that ends normally can carry a
+// block that opened and closed without a delta, and this adapter commits it where
+// it arrived — dropping it during the stream is the interleaving regression above,
+// and dropping it at the terminal makes a block vanish instead. Keeping it off the
+// wire is the send side's job, which is why the round trip is asserted here too.
 func TestStreamFinishedTurnCarriesAnEmptyBlock(t *testing.T) {
-	for _, fixture := range []string{"finished_empty_block.sse", "finished_empty_thinking.sse"} {
-		t.Run(fixture, func(t *testing.T) {
-			_, err := llm.CheckStream(replay(t, fixture).Stream(context.Background(), ask()))
-			if err == nil {
-				t.Fatal("CheckStream passed; the gap M0-07c tracks is closed and this test should go")
+	cases := map[string]struct {
+		fixture string
+		want    []llm.Block
+	}{
+		"a text block": {"finished_empty_block.sse", []llm.Block{
+			{Type: llm.BlockText, Text: "Done."},
+			{Type: llm.BlockText},
+		}},
+		// Opened with a signature and nothing else, so it is the FIRST block that
+		// never filled: the empty one is not always the trailing one.
+		"a thinking block": {"finished_empty_thinking.sse", []llm.Block{
+			{Type: llm.BlockThinking},
+			{Type: llm.BlockText, Text: "Done."},
+		}},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			events, err := llm.CheckStream(replay(t, tc.fixture).Stream(context.Background(), ask()))
+			if err != nil {
+				t.Fatalf("CheckStream: %v", err)
 			}
-			if !strings.Contains(err.Error(), "empty") {
-				t.Fatalf("CheckStream failed for an unrelated reason: %v", err)
+			committed := *last(t, events).Partial
+			if !reflect.DeepEqual(committed.Content, tc.want) {
+				t.Fatalf("committed content = %+v, want %+v", committed.Content, tc.want)
 			}
+
+			next := ask()
+			next.Messages = append(next.Messages, committed,
+				llm.Message{Role: llm.RoleUser, Content: []llm.Block{{Type: llm.BlockText, Text: "go on"}}})
+			params, err := buildParams(next)
+			if err != nil {
+				t.Fatalf("buildParams: %v; every later request in this session would fail the same way", err)
+			}
+			assertSendsNoEmptyTextBlock(t, params, "Done.")
 		})
 	}
 }
