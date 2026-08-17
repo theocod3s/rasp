@@ -40,7 +40,13 @@ func New(cfg Config) *Client {
 		// Applied unconditionally, an empty key would send an empty X-Api-Key and
 		// suppress the SDK's credential chain, so "nothing configured" would reach
 		// the user as an opaque 401 with an ambient token left unconsulted.
-		opts = append(opts, option.WithAPIKey(cfg.APIKey))
+		//
+		// The header delete is the other half. NewClient reads ANTHROPIC_AUTH_TOKEN
+		// into an Authorization header of its own, and WithAPIKey only adds X-Api-Key
+		// beside it; the server rejects a request carrying both. Anyone using a
+		// gateway exports that variable, so without this a configured key fails every
+		// turn with an error naming neither credential.
+		opts = append(opts, option.WithAPIKey(cfg.APIKey), option.WithHeaderDel("Authorization"))
 	}
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(cfg.BaseURL))

@@ -9,9 +9,9 @@ import (
 	"github.com/theocod3s/rasp/internal/llm"
 )
 
-// errNothingLeftToSend marks a message whose every block this adapter drops, as
-// against one that arrived with no blocks at all.
-var errNothingLeftToSend = errors.New("every block was dropped")
+// errNothingLeftToSend marks a message with no block this adapter can put on the
+// wire, by either route: it arrived with none, or every one it had was dropped.
+var errNothingLeftToSend = errors.New("nothing left to send")
 
 // buildParams translates a neutral request onto the wire. It fails rather than
 // dropping anything it cannot express: a tool_result quietly left out of a
@@ -66,12 +66,17 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 		converted, err := messageParam(msg)
 		switch {
 		case errors.Is(err, errNothingLeftToSend) && msg.Role == llm.RoleAssistant:
-			// A turn truncated mid-flight commits an assistant message holding only
-			// blocks this adapter drops. Failing here would fail every later request
-			// built from that transcript too, wedging the session with no way out but
-			// editing the file. Assistant only: a user message is written by rasp, so
-			// an unsendable one is a bug here, and dropping it silently would have the
-			// model answer the previous turn again.
+			// An assistant message with nothing sendable in it is a state the model
+			// puts there, not a bug: a turn truncated mid-flight holds only blocks this
+			// adapter drops, and a refusal or a cancelled turn arrives as a 200 with no
+			// blocks at all — which is why contract.go exempts StopRefusal from its
+			// emptiness rule. Failing here would fail every later request built from
+			// that transcript, wedging the session with no way out but editing the file.
+			//
+			// The role is the whole test, and how the message came to be empty is not.
+			// rasp writes user messages, so an unsendable one is a bug in this process,
+			// and skipping it silently would have the model answer the previous turn
+			// twice.
 			continue
 		case err != nil:
 			return sdk.MessageNewParams{}, fmt.Errorf("anthropic: message %d: %w", i, err)
@@ -120,13 +125,13 @@ func messageParam(msg llm.Message) (sdk.MessageParam, error) {
 		}
 	}
 	if len(content) == 0 {
-		// Two different failures. A message that arrived empty is a caller's bug and
-		// says so; one emptied by the drop above is a state the transcript can
-		// legitimately hold, and buildParams skips it rather than refusing forever.
-		if len(msg.Content) > 0 {
-			return sdk.MessageParam{}, errNothingLeftToSend
+		// Both routes are the same answer to messageParam and a different one to
+		// buildParams, which decides by role. Reported apart only so the error a user
+		// message produces names what actually happened.
+		if len(msg.Content) == 0 {
+			return sdk.MessageParam{}, fmt.Errorf("%w: it arrived with no blocks", errNothingLeftToSend)
 		}
-		return sdk.MessageParam{}, errors.New("no content to send; providers reject an empty message")
+		return sdk.MessageParam{}, fmt.Errorf("%w: every block it had was dropped", errNothingLeftToSend)
 	}
 
 	switch msg.Role {

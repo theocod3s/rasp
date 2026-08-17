@@ -342,6 +342,59 @@ func TestNoAPIKeyLeavesCredentialResolutionAlone(t *testing.T) {
 	}
 }
 
+// TestConfiguredKeyClearsAnAmbientBearer: the two credentials are resolved by
+// different mechanisms and neither knows about the other. NewClient turns
+// ANTHROPIC_AUTH_TOKEN into an Authorization header, WithAPIKey adds X-Api-Key
+// beside it, and the server rejects a request holding both — so a gateway user who
+// also configures a key would fail every turn, not just an unusual one.
+func TestConfiguredKeyClearsAnAmbientBearer(t *testing.T) {
+	noAmbientCredentials(t)
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "ambient-token")
+
+	client := replayAs(t, "text.sse", Config{APIKey: "sk-configured"})
+	for range client.Stream(context.Background(), ask()) {
+	}
+
+	headers := client.maybeHeaders()
+	if headers == nil {
+		t.Fatal("the adapter sent no request, so neither credential was ever put on one")
+	}
+	// Asserted first: without it a client that sent no credential at all would
+	// satisfy the check below and read as a pass.
+	if got := headers.Get("X-Api-Key"); got != "sk-configured" {
+		t.Fatalf("X-Api-Key = %q, want the configured key", got)
+	}
+	if got := headers.Get("Authorization"); got != "" {
+		t.Errorf("Authorization = %q; it went out alongside the configured key, and the API "+
+			"rejects a request carrying both", got)
+	}
+}
+
+// TestStreamFinishedTurnHasNoEmptyBlock: a turn that ends normally can still carry
+// a block that opened and closed without a delta. Surfaced, it breaks the contract
+// this package is meant to be the reference implementation of, and it is refused
+// on replay exactly like a message with no blocks — so the projection holds it
+// back and the finished message is the text that actually arrived.
+func TestStreamFinishedTurnHasNoEmptyBlock(t *testing.T) {
+	// A thinking block that received only its signature_delta is the same shape
+	// arriving down a different channel, and it has its own guard to break.
+	for _, fixture := range []string{"finished_empty_block.sse", "finished_empty_thinking.sse"} {
+		t.Run(fixture, func(t *testing.T) {
+			events, err := llm.CheckStream(replay(t, fixture).Stream(context.Background(), ask()))
+			if err != nil {
+				t.Fatalf("CheckStream: %v", err)
+			}
+			end := last(t, events)
+			if end.Type != llm.EventDone || end.StopReason != llm.StopEndTurn {
+				t.Fatalf("terminal event = %s/%s, want a normally finished turn", end.Type, end.StopReason)
+			}
+			if len(end.Partial.Content) != 1 || end.Partial.Content[0].Text != "Done." {
+				t.Fatalf("content = %+v, want only the block whose text arrived", end.Partial.Content)
+			}
+		})
+	}
+}
+
 // TestStreamContextWindowExceeded: §12 wants this one fatal with a fix hint, and
 // the retry classifier is a pure function over the message — so it has to be
 // distinguishable from a stop reason nobody has taught the adapter yet.

@@ -57,11 +57,24 @@ func project(msg *llm.Message, acc *sdk.Message) error {
 // hole in it, and a turn whose only block was unknown commits with no content at
 // all, which every provider refuses on replay. Anthropic adds block types
 // regularly, so the default has to be loud.
+//
+// A text or thinking block with nothing in it yet is held back, not surfaced.
+// Every such block starts empty and fills from deltas, so one still empty when the
+// stream ends is one whose content never arrived — and a finished message carrying
+// it fails the StreamResponse contract and is refused on replay, exactly like a
+// message with no blocks. Blocks arrive in order, so one held back never displaces
+// a later one, and holding back costs nothing while it is only a block start.
 func projectBlock(block *sdk.ContentBlockUnion) (llm.Block, bool, error) {
 	switch block.Type {
 	case "text":
+		if block.Text == "" {
+			return llm.Block{}, false, nil
+		}
 		return llm.Block{Type: llm.BlockText, Text: block.Text}, true, nil
 	case "thinking":
+		if block.Thinking == "" {
+			return llm.Block{}, false, nil
+		}
 		return llm.Block{Type: llm.BlockThinking, Text: block.Thinking}, true, nil
 	case "redacted_thinking":
 		// Encrypted reasoning. Dropped rather than refused because it is known to
