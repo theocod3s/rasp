@@ -121,6 +121,17 @@ re-run for them. Waiting instead for a pass that finds *nothing*, or that report
 findings already fixed, does not terminate: M0-06a ran nine passes and never got one, because
 naming and phrasing findings do not run out. Its substance stopped moving at pass three.
 
+**Record anything the work settled that outlives it.** If the ticket fixed a rule new code could
+quietly reverse — one every adapter must follow, a format nobody may change, a tempting fix that
+is wrong — add it to `docs/decisions.md` in this PR, while the reasoning is still in your head.
+
+The bar is high on purpose, and it is not "what did I choose". It is: would someone who never saw
+this work re-derive it, or undo it believing they were fixing something? Three things fail that
+bar. What is **still open** belongs in the Linear issue that will settle it, not here. What shapes
+**one file** belongs in that file, where the reader is standing. What a **document already says**
+stays there — `design.md` is the primary reference and this does not restate it. Most tickets add
+nothing, and that is the expected outcome.
+
 ## 6. Merge and close out
 
 Squash-merge, with a message you wrote rather than the one GitHub concatenates — see the rule
