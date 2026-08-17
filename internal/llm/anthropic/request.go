@@ -102,8 +102,7 @@ func messageParam(msg llm.Message) (sdk.MessageParam, error) {
 	// blocks, and the wire list is then derived from the surviving ones one for
 	// one — so "is there anything to send" is asked of the same list that goes
 	// out, rather than of a parallel one that has to be kept in step.
-	kept := msg
-	kept.Content = make([]llm.Block, 0, len(msg.Content))
+	kept := make([]llm.Block, 0, len(msg.Content))
 	for _, block := range msg.Content {
 		switch block.Type {
 		case llm.BlockText:
@@ -123,18 +122,18 @@ func messageParam(msg llm.Message) (sdk.MessageParam, error) {
 		default:
 			return sdk.MessageParam{}, fmt.Errorf("cannot send a %s block: this adapter streams text only", block.Type)
 		}
-		kept.Content = append(kept.Content, block)
+		kept = append(kept, block)
 	}
-	if err := llm.CheckSendable(kept); err != nil {
+	if err := llm.CheckSendable(msg.Role, kept); err != nil {
 		return sdk.MessageParam{}, err
 	}
 
 	// Appended rather than assigned by index: a length taken from the wrong list
-	// would leave holes, and the union's zero value encodes as a block with no
-	// type at all. Every iteration either appends or returns, so the wire list is
-	// as long as the list CheckSendable just passed.
-	content := make([]sdk.ContentBlockParamUnion, 0, len(kept.Content))
-	for _, block := range kept.Content {
+	// would leave holes, and the block union's zero value marshals to a JSON null
+	// the API has nothing to do with. Every iteration either appends or returns,
+	// so the wire list is as long as the one CheckSendable just passed.
+	content := make([]sdk.ContentBlockParamUnion, 0, len(kept))
+	for _, block := range kept {
 		switch block.Type {
 		case llm.BlockText:
 			content = append(content, sdk.NewTextBlock(block.Text))

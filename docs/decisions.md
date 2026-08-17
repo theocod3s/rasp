@@ -74,8 +74,9 @@ sessions, miss live ones, and read as though it had fixed both.
 disk, so every later request in that session fails the same way, and the only way out is editing
 the file by hand.
 
-*Settled in M0-07, and lifted in M0-07b into `llm.CheckSendable`, which every adapter asks once it
-has dropped the blocks it alone cannot express.*
+*Settled in M0-07, and lifted in M0-07b into `llm.CheckSendable`, which takes the blocks an adapter
+kept rather than the message it started from — so asking it about a raw transcript message, the one
+way to get a wrong answer, does not typecheck.*
 
 ## An adapter drops a block on its type, never on its contents
 

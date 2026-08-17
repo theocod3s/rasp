@@ -10,11 +10,14 @@ import (
 // something the user should be able to see happened.
 var ErrSkipMessage = errors.New("withheld from the request: nothing left to send")
 
-// CheckSendable answers whether a message still holds anything to send. Ask it
-// about what survived the adapter's own dropping, never about the transcript:
+// CheckSendable answers whether a message still holds anything to send. It takes
+// the blocks that survived the adapter's own dropping rather than a Message,
+// because the natural call on a transcript message is the wrong one: a
+// thinking-only assistant turn passes it, and the adapter then drops the
+// thinking block and sends a message with no content at all.
 //
-//	kept := m // m without the blocks only this adapter cannot express
-//	err := llm.CheckSendable(kept)
+//	kept := blocks this adapter can express, from msg.Content
+//	err := llm.CheckSendable(msg.Role, kept)
 //	if errors.Is(err, llm.ErrSkipMessage) { continue }
 //	if err != nil { return err }
 //
@@ -28,18 +31,18 @@ var ErrSkipMessage = errors.New("withheld from the request: nothing left to send
 //
 // An error rather than a bool, so the role rule can live here rather than in
 // every adapter, where the next author would have to know it exists to write it.
-func CheckSendable(m Message) error {
-	for _, block := range m.Content {
+func CheckSendable(role Role, kept []Block) error {
+	for _, block := range kept {
 		if !block.IsEmpty() {
 			return nil
 		}
 	}
-	if m.Role == RoleAssistant {
+	if role == RoleAssistant {
 		return ErrSkipMessage
 	}
 	// Quoted because the unset role a zero-value Message carries is the likeliest
 	// one to reach this.
-	return fmt.Errorf("a %q message has nothing left to send", m.Role)
+	return fmt.Errorf("a %q message has nothing left to send", role)
 }
 
 // IsEmpty reports whether a block carries nothing to put on the wire — a

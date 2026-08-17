@@ -26,7 +26,7 @@ func TestCheckSendableSkipsAnEmptyAssistantTurn(t *testing.T) {
 		{"nothing but empty blocks", []llm.Block{{Type: llm.BlockText}, {Type: llm.BlockThinking}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := llm.CheckSendable(llm.Message{Role: llm.RoleAssistant, Content: tc.content})
+			err := llm.CheckSendable(llm.RoleAssistant, tc.content)
 			if !errors.Is(err, llm.ErrSkipMessage) {
 				t.Fatalf("err = %v, want one wrapping ErrSkipMessage; refusing it fails every later "+
 					"request built from this transcript, not just the next one", err)
@@ -43,7 +43,7 @@ func TestCheckSendableSkipsAnEmptyAssistantTurn(t *testing.T) {
 func TestCheckSendableRefusesEveryOtherRole(t *testing.T) {
 	for _, role := range []llm.Role{llm.RoleUser, "system", ""} {
 		t.Run(string(role), func(t *testing.T) {
-			err := llm.CheckSendable(llm.Message{Role: role})
+			err := llm.CheckSendable(role, nil)
 			switch {
 			case err == nil:
 				t.Fatalf("no error; a %q message with nothing in it went out as sendable", role)
@@ -82,7 +82,7 @@ func TestCheckSendablePassesAnythingWithContent(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, role := range []llm.Role{llm.RoleAssistant, llm.RoleUser} {
-				if err := llm.CheckSendable(llm.Message{Role: role, Content: tc.content}); err != nil {
+				if err := llm.CheckSendable(role, tc.content); err != nil {
 					t.Errorf("%s: err = %v, want nil", role, err)
 				}
 			}
@@ -108,6 +108,10 @@ func TestIsEmptyReadsTheFieldItsTypeOwns(t *testing.T) {
 		{"tool_use, whatever else it carries", llm.Block{
 			Type: llm.BlockToolUse, Text: "left over", Input: json.RawMessage(`{}`),
 		}, false},
+		// The case that separates this from `return b.Text == ""`, which the whole
+		// table above passes: the tempting simplification drops the type switch,
+		// and dropping a bare tool_use is design §4 invariant 1 broken.
+		{"a tool_use with nothing in it at all", llm.Block{Type: llm.BlockToolUse}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.block.IsEmpty(); got != tc.want {
