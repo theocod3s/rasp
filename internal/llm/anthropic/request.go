@@ -9,10 +9,6 @@ import (
 	"github.com/theocod3s/rasp/internal/llm"
 )
 
-// errNothingLeftToSend marks a message with no block this adapter can put on the
-// wire, by either route: it arrived with none, or every one it had was dropped.
-var errNothingLeftToSend = errors.New("nothing left to send")
-
 // buildParams translates a neutral request onto the wire. It fails rather than
 // dropping anything it cannot express: a tool_result quietly left out of a
 // request is design §4 invariant 1 broken at the last layer that can still see it.
@@ -65,18 +61,10 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 	for i, msg := range req.Messages {
 		converted, err := messageParam(msg)
 		switch {
-		case errors.Is(err, errNothingLeftToSend) && msg.Role == llm.RoleAssistant:
-			// An assistant message with nothing sendable in it is a state the model
-			// puts there, not a bug: a turn truncated mid-flight holds only blocks this
-			// adapter drops, and a refusal or a cancelled turn arrives as a 200 with no
-			// blocks at all — which is why contract.go exempts StopRefusal from its
-			// emptiness rule. Failing here would fail every later request built from
-			// that transcript, wedging the session with no way out but editing the file.
-			//
-			// The role is the whole test, and how the message came to be empty is not.
-			// rasp writes user messages, so an unsendable one is a bug in this process,
-			// and skipping it silently would have the model answer the previous turn
-			// twice.
+		case errors.Is(err, llm.ErrSkipMessage):
+			// Withheld from this request, never dropped from the transcript. Which
+			// messages that covers, and why the role is the whole test, is
+			// llm.CheckSendable.
 			continue
 		case err != nil:
 			return sdk.MessageNewParams{}, fmt.Errorf("anthropic: message %d: %w", i, err)
@@ -110,19 +98,19 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 }
 
 func messageParam(msg llm.Message) (sdk.MessageParam, error) {
+	// Two lists: the blocks this adapter can express at all, and the ones that go
+	// on the wire. They differ only by what IsEmpty rejects, so CheckSendable's
+	// answer about the first is also whether the second came out empty.
+	expressible := msg
+	expressible.Content = nil
+
 	var content []sdk.ContentBlockParamUnion
 	for _, block := range msg.Content {
 		switch block.Type {
 		case llm.BlockText:
-			// A block whose text never arrived: the connection died between
-			// content_block_start and the first delta, or the output cap landed on a
-			// block boundary. Anthropic rejects a text block with no text, and this
-			// one is in the transcript — sent, it would 400 every later request in
-			// the session, not just this one.
-			if block.Text == "" {
-				continue
+			if !block.IsEmpty() {
+				content = append(content, sdk.NewTextBlock(block.Text))
 			}
-			content = append(content, sdk.NewTextBlock(block.Text))
 		case llm.BlockThinking:
 			// Dropped rather than replayed. Anthropic wants a thinking block back
 			// with the signature it arrived with, llm.Block has no field for one,
@@ -132,15 +120,10 @@ func messageParam(msg llm.Message) (sdk.MessageParam, error) {
 		default:
 			return sdk.MessageParam{}, fmt.Errorf("cannot send a %s block: this adapter streams text only", block.Type)
 		}
+		expressible.Content = append(expressible.Content, block)
 	}
-	if len(content) == 0 {
-		// Both routes are the same answer to messageParam and a different one to
-		// buildParams, which decides by role. Reported apart only so the error a user
-		// message produces names what actually happened.
-		if len(msg.Content) == 0 {
-			return sdk.MessageParam{}, fmt.Errorf("%w: it arrived with no blocks", errNothingLeftToSend)
-		}
-		return sdk.MessageParam{}, fmt.Errorf("%w: every block it had was dropped", errNothingLeftToSend)
+	if err := llm.CheckSendable(expressible); err != nil {
+		return sdk.MessageParam{}, err
 	}
 
 	switch msg.Role {

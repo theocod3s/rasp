@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -128,7 +129,7 @@ func TestBuildParamsRejectsEmptyAndUnknown(t *testing.T) {
 			// A user message, so the skip that saves the assistant's does not apply.
 			"no content",
 			llm.Message{Role: llm.RoleUser},
-			"arrived with no blocks",
+			"a user message has nothing left to send",
 		},
 		{
 			"unknown role",
@@ -450,8 +451,49 @@ func TestBuildParamsSkipIsAssistantOnly(t *testing.T) {
 		Content: []llm.Block{{Type: llm.BlockText, Text: ""}},
 	})
 
-	if _, err := buildParams(req); err == nil {
+	_, err := buildParams(req)
+	if err == nil {
 		t.Fatal("no error; the user's turn vanished from the request while staying in the transcript")
+	}
+	// Named, not merely non-nil: this request is well-formed apart from that one
+	// message, so an error about anything else means the skip was applied and the
+	// failure came from somewhere later.
+	if !strings.Contains(err.Error(), "a user message has nothing left to send") {
+		t.Errorf("error = %v, want one naming the empty user message", err)
+	}
+}
+
+// TestBuildParamsLeavesTheTranscriptAlone: an unsendable message is withheld
+// from the request, never deleted. The caller keeps this slice and rebuilds a
+// request from it every turn, so filtering it in place would take a refusal off
+// the screen and out of the session file as well as off the wire.
+func TestBuildParamsLeavesTheTranscriptAlone(t *testing.T) {
+	req := ask()
+	req.Messages = append(req.Messages,
+		llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopRefusal},
+		// Both kinds of block the send side leaves out, each in front of one it
+		// keeps: filtering in place would slide the survivor into the gap.
+		llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+			{Type: llm.BlockThinking, Text: "reasoning"},
+			{Type: llm.BlockText},
+			{Type: llm.BlockText, Text: "One moment."},
+		}},
+		llm.Message{Role: llm.RoleUser, Content: []llm.Block{{Type: llm.BlockText, Text: "go on"}}},
+	)
+
+	before, err := json.Marshal(req.Messages)
+	if err != nil {
+		t.Fatalf("marshalling the transcript: %v", err)
+	}
+	if _, err := buildParams(req); err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	after, err := json.Marshal(req.Messages)
+	if err != nil {
+		t.Fatalf("marshalling the transcript: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("building the request rewrote the transcript:\nbefore %s\n after %s", before, after)
 	}
 }
 

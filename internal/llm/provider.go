@@ -47,6 +47,10 @@ type Request struct {
 	// provider's cache syntax; nothing above it does.
 	System []SystemBlock
 
+	// Messages is the transcript, and not all of it is sendable: a turn can break
+	// off leaving a message with nothing in it. Drop the blocks this adapter
+	// cannot express, then ask CheckSendable what is left — refusing one of those
+	// messages wedges the session for good.
 	Messages []Message
 
 	// Tools comes from one registry snapshot per turn, sorted by name. The list

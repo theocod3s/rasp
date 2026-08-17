@@ -74,8 +74,8 @@ sessions, miss live ones, and read as though it had fixed both.
 disk, so every later request in that session fails the same way, and the only way out is editing
 the file by hand.
 
-*Settled in M0-07. Lifting the rule into one shared predicate is M0-07b; the rule itself is not
-open.*
+*Settled in M0-07, and lifted in M0-07b into `llm.CheckSendable`, which every adapter asks once it
+has dropped the blocks it alone cannot express.*
 
 ## An adapter drops a block on its type, never on its contents
 
