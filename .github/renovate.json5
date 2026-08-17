@@ -2,35 +2,59 @@
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
   extends: ["config:recommended"],
 
+  // Two managers is a decision, not an observation. Left to auto-detection, the
+  // first Dockerfile or package.json added here would start opening PRs that
+  // match no rule below.
+  enabledManagers: ["gomod", "github-actions"],
+
   // The repo is private, so every CI run bills. Weekly, grouped, and nothing
   // lands without someone reading it.
   schedule: ["before 5am on monday"],
   automerge: false,
-  postUpdateOptions: ["gomodTidy"],
+
+  // gomodTidy so a bump arrives with go.mod already tidy; gomodUpdateImportPaths
+  // because a Go major bump renames the module path, and without it the PR
+  // rewrites go.mod and leaves every import statement pointing at the old one.
+  postUpdateOptions: ["gomodTidy", "gomodUpdateImportPaths"],
 
   packageRules: [
     {
       matchManagers: ["gomod"],
-      matchUpdateTypes: ["minor", "patch"],
+      matchUpdateTypes: ["minor", "patch", "digest"],
       groupName: "go minor and patch",
     },
     {
+      // digest is not an extra here, it is the main event: an action pinned to a
+      // SHA with a floating tag comment never produces minor or patch, only
+      // digest. Without it every repointed tag opens its own PR.
       matchManagers: ["github-actions"],
-      matchUpdateTypes: ["minor", "patch"],
+      matchUpdateTypes: ["minor", "patch", "digest"],
       groupName: "actions minor and patch",
     },
     {
       // The MCP spec has had two breaking revisions in eight months and the SDK
       // tracks the spec, so a bump can change wire behaviour. This one waits to
       // be asked. Must stay after the gomod group rule so groupName: null wins.
-      matchPackageNames: ["github.com/modelcontextprotocol/go-sdk"],
+      // The /** entry catches the v2 path: Go semantic import versioning puts
+      // the major in the module path, so the exact string stops matching at the
+      // one bump this rule exists for.
+      matchPackageNames: [
+        "github.com/modelcontextprotocol/go-sdk",
+        "github.com/modelcontextprotocol/go-sdk/**",
+      ],
       groupName: null,
       dependencyDashboardApproval: true,
     },
     {
       // The go directive is a deliberate pin: every toolchain reads it and
-      // fetches accordingly.
+      // fetches accordingly. rangeStrategy is what makes this gate able to fire
+      // at all — go-mod-directive treats the line as a minimum, so a newer
+      // release never violates it and no update is ever proposed. groupName is
+      // null for the same reason as the SDK: approval is computed per branch, so
+      // a gated dep inside the group would hold every routine bump behind it.
       matchDatasources: ["golang-version"],
+      rangeStrategy: "bump",
+      groupName: null,
       dependencyDashboardApproval: true,
     },
   ],
