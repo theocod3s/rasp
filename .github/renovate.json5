@@ -1,0 +1,37 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended"],
+
+  // The repo is private, so every CI run bills. Weekly, grouped, and nothing
+  // lands without someone reading it.
+  schedule: ["before 5am on monday"],
+  automerge: false,
+  postUpdateOptions: ["gomodTidy"],
+
+  packageRules: [
+    {
+      matchManagers: ["gomod"],
+      matchUpdateTypes: ["minor", "patch"],
+      groupName: "go minor and patch",
+    },
+    {
+      matchManagers: ["github-actions"],
+      matchUpdateTypes: ["minor", "patch"],
+      groupName: "actions minor and patch",
+    },
+    {
+      // The MCP spec has had two breaking revisions in eight months and the SDK
+      // tracks the spec, so a bump can change wire behaviour. This one waits to
+      // be asked. Must stay after the gomod group rule so groupName: null wins.
+      matchPackageNames: ["github.com/modelcontextprotocol/go-sdk"],
+      groupName: null,
+      dependencyDashboardApproval: true,
+    },
+    {
+      // The go directive is a deliberate pin: every toolchain reads it and
+      // fetches accordingly.
+      matchDatasources: ["golang-version"],
+      dependencyDashboardApproval: true,
+    },
+  ],
+}

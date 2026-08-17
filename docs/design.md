@@ -2289,7 +2289,24 @@ pin, run the fake-MCP-server suite (§13) and the real-server smoke test, and co
 touches nothing outside `internal/mcp/`. That last check is the containment rule doing its job —
 if the diff escapes the package, the boundary needs fixing before the bump lands.
 
-Dependabot is configured to open MCP SDK bumps as PRs but never to auto-merge them.
+### Dependency updates
+
+Renovate, configured in `.github/renovate.json5`, running weekly. Two managers, which is all this
+repo has: `gomod`, and `github-actions` for the workflow's SHA pins — an action pin nobody updates
+is a stale pin, not a safe one. Minor and patch group into one PR per manager; a major opens on its
+own. **Nothing auto-merges.**
+
+The SDK pin above is the reason Renovate rather than Dependabot. Dependabot can hold the SDK out of
+a group so it arrives as its own PR; Renovate can hold it behind `dependencyDashboardApproval`, so
+no PR opens at all until someone ticks a box on the Dependency Dashboard issue. The upgrade
+procedure is work a human starts, and a bot that waits to be asked models that better than one that
+opens a PR and hopes it gets read. The `go` directive gets the same gate, for the same reason: it is
+the line every toolchain reads to decide what to fetch.
+
+Version updates track releases, not vulnerabilities. Renovate's `vulnerabilityAlerts` is fed by
+GitHub's own Dependabot alert feed, so the dependency graph and Dependabot **alerts** are enabled in
+repo settings. Dependabot **security updates** — the PR-opening half — stays off, because Renovate
+is doing that job.
 
 ---
 
