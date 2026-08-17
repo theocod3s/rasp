@@ -49,7 +49,10 @@ func TestCheckSendableRefusesEveryOtherRole(t *testing.T) {
 			case errors.Is(err, llm.ErrSkipMessage):
 				t.Fatalf("err = %v; only an assistant turn is withheld, and skipping this one leaves "+
 					"the model answering the previous turn twice", err)
-			case !strings.Contains(err.Error(), string(role)):
+			// Spelled out rather than left to Contains, which every string satisfies
+			// for the empty role — a check that cannot fail reads exactly like one
+			// that passed.
+			case role != "" && !strings.Contains(err.Error(), string(role)):
 				t.Errorf("err = %v, want one naming the role that produced it", err)
 			}
 		})
