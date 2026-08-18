@@ -20,8 +20,46 @@ func TestRunPrintsTheReplyOnce(t *testing.T) {
 	}
 	// Exactly, not merely containing: Partial is the whole message every time, so
 	// a runner printing it rather than the new tail writes "HelHello, world".
-	if got := out.String(); got != "Hello, world" {
-		t.Errorf("stdout = %q, want %q", got, "Hello, world")
+	if got := out.String(); got != "Hello, world\n" {
+		t.Errorf("stdout = %q, want %q", got, "Hello, world\n")
+	}
+}
+
+// TestRunFinishesTheLastLine: a model rarely ends on a newline, and without one
+// the shell prompt lands on top of the reply. The cases either side of it are
+// the ones a bare append gets wrong.
+func TestRunFinishesTheLastLine(t *testing.T) {
+	tests := []struct {
+		name  string
+		steps []step
+		want  string
+	}{
+		{
+			name:  "a reply that does not end on one",
+			steps: []step{text("a haiku"), done(llm.StopEndTurn)},
+			want:  "a haiku\n",
+		},
+		{
+			name:  "a reply that already does",
+			steps: []step{text("a haiku\n"), done(llm.StopEndTurn)},
+			want:  "a haiku\n",
+		},
+		{
+			name:  "a reply with no text at all",
+			steps: []step{done(llm.StopEndTurn)},
+			want:  "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := run(t, &out, tc.steps...); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if got := out.String(); got != tc.want {
+				t.Errorf("stdout = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -38,8 +76,8 @@ func TestRunPrintsTextAddedToAnEarlierBlock(t *testing.T) {
 	}
 	// The late fragment lands where it arrived — stdout cannot be rewritten — but
 	// every byte is printed once.
-	if got := out.String(); got != "HelloWorld!" {
-		t.Errorf("stdout = %q, want %q", got, "HelloWorld!")
+	if got := out.String(); got != "HelloWorld!\n" {
+		t.Errorf("stdout = %q, want %q", got, "HelloWorld!\n")
 	}
 }
 
@@ -67,6 +105,11 @@ func TestRunWritesBeforeTheStreamEnds(t *testing.T) {
 	if got := writes.take(t); got != "two" {
 		t.Fatalf("second write = %q, want %q", got, "two")
 	}
+	// The line terminator is its own write, after the stream is done rather than
+	// with the chunk it follows.
+	if got := writes.take(t); got != "\n" {
+		t.Fatalf("last write = %q, want a newline", got)
+	}
 
 	select {
 	case err := <-returned:
@@ -86,8 +129,8 @@ func TestOutputComesFromPartialNotDelta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := out.String(); got != "answer" {
-		t.Errorf("stdout = %q, want %q — deltas were reassembled instead of read off Partial", got, "answer")
+	if got := out.String(); got != "answer\n" {
+		t.Errorf("stdout = %q, want %q — deltas were reassembled instead of read off Partial", got, "answer\n")
 	}
 }
 
@@ -99,8 +142,8 @@ func TestThinkingStaysOutOfTheReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := out.String(); got != "42" {
-		t.Errorf("stdout = %q, want %q", got, "42")
+	if got := out.String(); got != "42\n" {
+		t.Errorf("stdout = %q, want %q", got, "42\n")
 	}
 }
 
@@ -178,13 +221,24 @@ func TestRunSucceedsOnACompletedTurn(t *testing.T) {
 
 func TestRunReportsAFailedWrite(t *testing.T) {
 	broken := errors.New("broken pipe")
+
+	var attempts int
 	runner := headless.Runner{
 		Provider: &scripted{steps: []step{text("hello"), done(llm.StopEndTurn)}},
 		Model:    "m",
-		Out:      writerFunc(func([]byte) (int, error) { return 0, broken }),
+		Out: writerFunc(func([]byte) (int, error) {
+			attempts++
+			return 0, broken
+		}),
 	}
 	if err := runner.Run(context.Background(), "hi"); !errors.Is(err, broken) {
 		t.Fatalf("Run returned %v, want %v", err, broken)
+	}
+	// Counted, because the line terminator is a second write whose error is
+	// checked too: without this the reply's own write could stop being checked
+	// and the terminator's failure would answer for it.
+	if attempts != 1 {
+		t.Errorf("the runner attempted %d writes after the first one failed, want 1", attempts)
 	}
 }
 

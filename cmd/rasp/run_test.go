@@ -177,7 +177,7 @@ func TestRunStreamsTheReplyToStdout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v (stderr %q)", err, stderr)
 	}
-	if stdout != "Rayleigh scattering." {
+	if stdout != "Rayleigh scattering.\n" {
 		t.Errorf("stdout = %q, want the reply and nothing else", stdout)
 	}
 
@@ -213,7 +213,7 @@ func TestRunReportsConfigWarningsOnStderr(t *testing.T) {
 		t.Errorf("stderr = %q, want the ignored setting named", stderr)
 	}
 	// And the warning did not land in what a script reads.
-	if stdout != "Rayleigh scattering." {
+	if stdout != "Rayleigh scattering.\n" {
 		t.Errorf("stdout = %q, want the reply and nothing else", stdout)
 	}
 }

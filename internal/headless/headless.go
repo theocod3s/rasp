@@ -54,8 +54,10 @@ func (r Runner) Run(ctx context.Context, prompt string) error {
 	}
 
 	var (
-		printed  written
-		finished bool
+		printed       written
+		finished      bool
+		wrote         bool
+		endsInNewline bool
 	)
 	for ev := range r.Provider.Stream(ctx, req) {
 		// Ahead of the type switch, so the answer that did arrive is printed even
@@ -65,6 +67,7 @@ func (r Runner) Run(ctx context.Context, prompt string) error {
 				if _, err := io.WriteString(r.Out, text); err != nil {
 					return fmt.Errorf("writing the reply: %w", err)
 				}
+				wrote, endsInNewline = true, strings.HasSuffix(text, "\n")
 			}
 		}
 
@@ -96,6 +99,16 @@ func (r Runner) Run(ctx context.Context, prompt string) error {
 			return err
 		}
 		return errors.New("the stream ended without a terminal event, so the reply may be incomplete")
+	}
+
+	// A model rarely ends on one, and without it the shell prompt lands on top of
+	// the reply's last line. Nothing downstream gains a byte: `$(…)` strips
+	// trailing newlines. Only on the way out with a whole reply — a run that
+	// failed has said so on stderr, and there is no line to finish.
+	if wrote && !endsInNewline {
+		if _, err := io.WriteString(r.Out, "\n"); err != nil {
+			return fmt.Errorf("writing the reply: %w", err)
+		}
 	}
 	return nil
 }
