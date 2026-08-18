@@ -39,11 +39,11 @@ var osAllowed = []string{
 	// Types that cross the workspace boundary rather than reach past it.
 	"DirEntry", "File", "FileInfo", "LinkError", "PathError",
 
-	// The bash tool builds a child's environment and signals it. Neither is a
-	// path os.Root could confine, and bash is gated by permission instead
-	// (design §7.3a).
+	// The bash tool builds a child's environment, signals it, and says when a
+	// cancel arrived too late to signal anything. None of it is a path os.Root
+	// could confine, and bash is gated by permission instead (design §7.3a).
 	"Environ", "Getenv", "LookupEnv",
-	"Interrupt", "Kill", "Process", "ProcessState", "Signal",
+	"ErrProcessDone", "Interrupt", "Kill", "Process", "ProcessState", "Signal",
 }
 
 // filepathForbidden is the part of path/filepath that consults the filesystem, or
