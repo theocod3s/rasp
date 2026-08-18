@@ -802,20 +802,32 @@ take the windowed version because it also catches A-B-A-B oscillation.
 
 ### Invariant 4 — panic recovery per tool
 
+Lives in `tool` as `RunSafely`, so the dispatcher and anything else that calls a tool guard it the
+same way.
+
 ```go
-func runSafely(ctx context.Context, t Tool, raw json.RawMessage) (res Result, err error) {
+func RunSafely(ctx context.Context, t Tool, raw json.RawMessage) (res Result, err error) {
+    var name string
+    returned := false
     defer func() {
-        if r := recover(); r != nil {
-            res = Result{
-                Content: fmt.Sprintf("tool panicked: %v\n\n%s", r, debug.Stack()),
-                IsError: true,
-            }
-            err = nil // the model sees it and adapts; the process survives
+        r := recover()
+        if returned {
+            return // not `if r != nil`: recover answers nil for panic(nil) under panicnil=1
         }
+        slog.ErrorContext(ctx, "tool panicked", "tool", name,
+            "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
+        res = Result{Content: fmt.Sprintf("tool panicked: %v", r), IsError: true}
+        err = nil // the model sees it and adapts; the process survives
     }()
-    return t.Run(ctx, raw)
+    name = t.Name() // read under the guard: a tool whose Name panics is contained too
+    res, err = t.Run(ctx, raw)
+    returned = true
+    return res, err
 }
 ```
+
+The stack goes to the log, never into `Content`: it is tokens the model cannot act on, and it is
+the one artefact a person debugging the crash needs.
 
 This matters more with MCP in scope: a third-party server is code we did not write.
 
