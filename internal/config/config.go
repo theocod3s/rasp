@@ -12,6 +12,11 @@ type Config struct {
 	SmallModel string `json:"small_model,omitempty"`
 	Mode       string `json:"mode,omitempty"`
 
+	// MaxOutputTokens caps one reply, and is sent as written: a cap above what the
+	// model accepts is the API's to refuse. Not the compaction reserve, which is
+	// derived from it — see Context.ReserveTokens.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+
 	Providers map[string]Provider `json:"providers,omitempty"`
 
 	// Modes overrides a built-in permission preset, deep-merged onto it, so a
@@ -64,8 +69,13 @@ type MCPServer struct {
 
 // Context configures the system prompt and the room held back for the reply.
 type Context struct {
-	Files         []string `json:"files,omitempty"`
-	ReserveTokens int      `json:"reserve_tokens,omitempty"`
+	Files []string `json:"files,omitempty"`
+
+	// ReserveTokens is the room compaction keeps free for the reply: design §11's
+	// `max(maxOutput, 4096) + 12_000`, so it is derived from MaxOutputTokens and
+	// larger than it. Reading either for the other would cap replies at the
+	// reserve, or compact against the cap alone.
+	ReserveTokens int `json:"reserve_tokens,omitempty"`
 }
 
 // UI is the one section with no effect on what the model is sent.
@@ -95,11 +105,16 @@ var modeNames = []string{ModePlan, ModeManual, ModeAuto, ModeYolo}
 // small_model is set here rather than left to §11's fall back to model: shipping
 // it unset would summarize 100k tokens on a flagship model, repeatedly, on
 // exactly the long sessions where compaction fires.
+//
+// max_output_tokens is 16384 rather than the 8192 it was because hitting the cap
+// fails a run instead of shortening a reply (decisions.md), so the wall belongs
+// where truncating a text answer takes deliberate effort (design §10).
 func Defaults() map[string]any {
 	return map[string]any{
-		"model":       "anthropic/claude-opus-5",
-		"small_model": "anthropic/claude-haiku-4-5",
-		"mode":        ModeManual,
+		"model":             "anthropic/claude-opus-5",
+		"small_model":       "anthropic/claude-haiku-4-5",
+		"mode":              ModeManual,
+		"max_output_tokens": jsonNumber(16384),
 		"mcp": map[string]any{
 			"max_total_tools": jsonNumber(60),
 		},

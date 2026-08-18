@@ -10,12 +10,6 @@ import (
 	"github.com/theocod3s/rasp/internal/llm"
 )
 
-// DefaultMaxTokens caps the reply. Configuration has no key for it yet, and
-// reaching this cap is a failed run with no way for a user to raise it, so the
-// number is set where truncating a text answer takes deliberate effort rather
-// than where it saves tokens.
-const DefaultMaxTokens = 16384
-
 // Runner answers one prompt with one model call. There is no loop and no tools
 // yet, so a turn is a single Stream.
 type Runner struct {
@@ -25,7 +19,9 @@ type Runner struct {
 	// prefix chooses the adapter and is not a name any API knows.
 	Model string
 
-	// Zero takes DefaultMaxTokens.
+	// MaxTokens caps the reply. No default of its own: reaching the cap fails the
+	// run, so the number has to be one the user can raise, and it arrives from
+	// `max_output_tokens` — which the resolver always answers.
 	MaxTokens int
 
 	// Out takes model text and nothing else. At the other end of it is a pipe.
@@ -40,13 +36,13 @@ type Runner struct {
 // caller reading stdout is never handed a half answer with nothing to say so
 // (decisions.md, which also covers why truncation counts and a refusal does not).
 func (r Runner) Run(ctx context.Context, prompt string) error {
-	maxTokens := r.MaxTokens
-	if maxTokens == 0 {
-		maxTokens = DefaultMaxTokens
+	if r.MaxTokens <= 0 {
+		return fmt.Errorf("the reply cap is %d, so there is nothing to ask for; "+
+			"it comes from max_output_tokens in the configuration", r.MaxTokens)
 	}
 	req := llm.Request{
 		Model:     r.Model,
-		MaxTokens: maxTokens,
+		MaxTokens: r.MaxTokens,
 		Messages: []llm.Message{{
 			Role:    llm.RoleUser,
 			Content: []llm.Block{{Type: llm.BlockText, Text: prompt}},
@@ -83,7 +79,8 @@ func (r Runner) Run(ctx context.Context, prompt string) error {
 			case llm.StopEndTurn, llm.StopRefusal:
 				// The model finished, or declined; both are whole turns.
 			case llm.StopMaxTokens:
-				return fmt.Errorf("the reply was cut off at the %d-token limit", maxTokens)
+				return fmt.Errorf("the reply was cut off at the %d-token limit; "+
+					"raise max_output_tokens to give it more room", r.MaxTokens)
 			default:
 				// Closed on purpose: an untaught stop reason is a reply that stopped
 				// for one, and StopToolUse — a model breaking off to call a tool

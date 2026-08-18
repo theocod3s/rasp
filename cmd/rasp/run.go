@@ -42,7 +42,12 @@ func newRunCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			runner := headless.Runner{Provider: provider, Model: model, Out: cmd.OutOrStdout()}
+			runner := headless.Runner{
+				Provider:  provider,
+				Model:     model,
+				MaxTokens: res.Config.MaxOutputTokens,
+				Out:       cmd.OutOrStdout(),
+			}
 			return runner.Run(cmd.Context(), prompt)
 		},
 	}

@@ -90,7 +90,7 @@ func TestRunWritesBeforeTheStreamEnds(t *testing.T) {
 	provider := &scripted{steps: []step{text("one", "two"), done(llm.StopEndTurn)}}
 
 	go func() {
-		returned <- headless.Runner{Provider: provider, Model: "m", Out: writes}.
+		returned <- headless.Runner{Provider: provider, Model: "m", MaxTokens: testCap, Out: writes}.
 			Run(context.Background(), "hi")
 	}()
 
@@ -186,9 +186,43 @@ func TestRunFailsWhenTheReplyWasCutOff(t *testing.T) {
 	if !strings.Contains(err.Error(), "cut off") {
 		t.Errorf("error %q does not say the reply was cut off", err)
 	}
+	// And names the setting that raises the cap. This is the one failure here the
+	// user can fix outright, and the number on its own does not say how.
+	if !strings.Contains(err.Error(), "max_output_tokens") {
+		t.Errorf("error %q does not name the setting that raises the cap", err)
+	}
 	// The truncated text is still the model's answer, so it still goes out.
 	if got := out.String(); got != "as far as it g" {
 		t.Errorf("stdout = %q", got)
+	}
+}
+
+// TestRunRefusesACapItWasNotGiven. The package holds no default of its own, so a
+// zero here is a caller that resolved no configuration — and a request sent with
+// it is an authenticated round trip spent being told the cap is invalid.
+func TestRunRefusesACapItWasNotGiven(t *testing.T) {
+	for _, tokens := range []int{0, -1} {
+		provider := &scripted{steps: []step{text("ok"), done(llm.StopEndTurn)}}
+		runner := headless.Runner{
+			Provider:  provider,
+			Model:     "m",
+			MaxTokens: tokens,
+			Out:       &bytes.Buffer{},
+		}
+
+		err := runner.Run(context.Background(), "hi")
+		if err == nil {
+			t.Fatalf("Run with MaxTokens %d succeeded", tokens)
+		}
+		// Naming the setting, because every other failure in this test file also
+		// returns a non-nil error.
+		if !strings.Contains(err.Error(), "max_output_tokens") {
+			t.Errorf("error %q does not name where the cap comes from", err)
+		}
+		// And nothing was sent: the model never saw a request it would refuse.
+		if provider.req.Model != "" {
+			t.Errorf("the provider was asked for %+v", provider.req)
+		}
 	}
 }
 
@@ -224,8 +258,9 @@ func TestRunReportsAFailedWrite(t *testing.T) {
 
 	var attempts int
 	runner := headless.Runner{
-		Provider: &scripted{steps: []step{text("hello"), done(llm.StopEndTurn)}},
-		Model:    "m",
+		Provider:  &scripted{steps: []step{text("hello"), done(llm.StopEndTurn)}},
+		Model:     "m",
+		MaxTokens: testCap,
 		Out: writerFunc(func([]byte) (int, error) {
 			attempts++
 			return 0, broken
@@ -247,7 +282,12 @@ func TestRunReportsAFailedWrite(t *testing.T) {
 // into a block is a round trip spent being told so.
 func TestRunAsksForOneUserMessage(t *testing.T) {
 	provider := &scripted{steps: []step{text("ok"), done(llm.StopEndTurn)}}
-	runner := headless.Runner{Provider: provider, Model: "claude-opus-5", Out: &bytes.Buffer{}}
+	runner := headless.Runner{
+		Provider:  provider,
+		Model:     "claude-opus-5",
+		MaxTokens: testCap,
+		Out:       &bytes.Buffer{},
+	}
 	if err := runner.Run(context.Background(), "why is the sky blue?"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -256,8 +296,10 @@ func TestRunAsksForOneUserMessage(t *testing.T) {
 	if req.Model != "claude-opus-5" {
 		t.Errorf("request model = %q", req.Model)
 	}
-	if req.MaxTokens != headless.DefaultMaxTokens {
-		t.Errorf("request MaxTokens = %d, want %d", req.MaxTokens, headless.DefaultMaxTokens)
+	// The cap it was given, not one of its own: the package has no default, so a
+	// number appearing here that nobody passed is a cap the user cannot raise.
+	if req.MaxTokens != testCap {
+		t.Errorf("request MaxTokens = %d, want %d", req.MaxTokens, testCap)
 	}
 	if len(req.Messages) != 1 || req.Messages[0].Role != llm.RoleUser {
 		t.Fatalf("request messages = %+v, want one user message", req.Messages)
@@ -283,10 +325,19 @@ func TestScriptedProviderMeetsTheStreamContract(t *testing.T) {
 	}
 }
 
+// testCap is a reply cap resembling no default anywhere: a runner that supplied
+// one of its own would not send this number.
+const testCap = 1234
+
 // run drives the runner to completion with a scripted provider.
 func run(t *testing.T, out *bytes.Buffer, steps ...step) error {
 	t.Helper()
-	runner := headless.Runner{Provider: &scripted{steps: steps}, Model: "m", Out: out}
+	runner := headless.Runner{
+		Provider:  &scripted{steps: steps},
+		Model:     "m",
+		MaxTokens: testCap,
+		Out:       out,
+	}
 	return runner.Run(context.Background(), "hi")
 }
 

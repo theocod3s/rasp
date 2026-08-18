@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -48,6 +49,48 @@ func validate(t tree, origin Origin) ([]Warning, error) {
 	}
 
 	return warnings, nil
+}
+
+const keyMaxOutputTokens = "max_output_tokens"
+
+// checkResolved applies the rules that are about a value rather than about the
+// layer that wrote it. Once, on the merged tree, so a cap a higher layer has
+// already replaced is not refused on behalf of a run that never uses it.
+//
+// Nothing here checks a cap against the model's own ceiling: no model id is
+// resolved against a catalog, so a cap the model will not take is sent as written
+// and the API refuses it — the same answer the effort ladder gives.
+func checkResolved(t tree, origins Origins) error {
+	val, ok := lookupPath(t, keyMaxOutputTokens)
+	if !ok {
+		// Not reachable from a config file, where a null leaves the default
+		// standing: this is the default itself gone missing, whose quiet
+		// alternative is a zero cap refused once per run by an adapter.
+		return &InvalidError{
+			Origin: Origin{Layer: LayerDefault},
+			Key:    keyMaxOutputTokens,
+			Reason: "no reply cap resolved, and the built-in defaults are where one always comes from",
+		}
+	}
+
+	// A value of the wrong sort, or one too large for an int, is inspect's to
+	// report and it has already run.
+	num, ok := val.(json.Number)
+	if !ok {
+		return nil
+	}
+	tokens, err := num.Int64()
+	if err != nil || tokens > 0 {
+		return nil
+	}
+
+	origin, _ := origins.At(keyMaxOutputTokens)
+	return &InvalidError{
+		Origin: origin,
+		Key:    keyMaxOutputTokens,
+		Reason: fmt.Sprintf("%d leaves no room for a reply; the cap is a number of tokens, "+
+			"and a request asking for none is refused by the API", tokens),
+	}
 }
 
 // checkMode applies both of design §10's rules about `mode`: the name has to

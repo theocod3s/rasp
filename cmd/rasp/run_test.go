@@ -194,6 +194,64 @@ func TestRunStreamsTheReplyToStdout(t *testing.T) {
 	}
 }
 
+// TestRunSendsTheConfiguredOutputCap is the whole point of the setting: hitting
+// the cap fails the run, so the number the user wrote has to be the number on the
+// wire. Read off the request body rather than the runner, because every layer
+// between the two — resolver, adapter, SDK — is somewhere it could be replaced by
+// a default nobody chose.
+func TestRunSendsTheConfiguredOutputCap(t *testing.T) {
+	tests := []struct {
+		name    string
+		setting string
+		want    int64
+	}{
+		// 4321 is neither a default anything in the tree uses nor a round number an
+		// SDK might supply on its own. The 16384 below is design §10's documented
+		// default, written out rather than read back from the resolver, so raising
+		// it stays a deliberate edit rather than something a test agrees to.
+		{name: "configured", setting: `"max_output_tokens": 4321,`, want: 4321},
+		{name: "unset", setting: "", want: 16384},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sent := make(chan []byte, 1)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("reading the request body: %v", err)
+				}
+				sent <- body
+
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprint(w, replyStream)
+			}))
+			defer srv.Close()
+
+			projectConfig(t, fmt.Sprintf(`{
+			  "model": "anthropic/claude-opus-5",
+			  %s
+			  "providers": {"anthropic": {"api_key": "test-key", "base_url": %q}}
+			}`, tc.setting, srv.URL))
+
+			if _, stderr, err := run(t, "run", "-p", "hi"); err != nil {
+				t.Fatalf("run: %v (stderr %q)", err, stderr)
+			}
+
+			var request struct {
+				MaxTokens int64 `json:"max_tokens"`
+			}
+			if err := json.Unmarshal(<-sent, &request); err != nil {
+				t.Fatalf("decoding the request: %v", err)
+			}
+			if request.MaxTokens != tc.want {
+				t.Errorf("request max_tokens = %d, want %d", request.MaxTokens, tc.want)
+			}
+		})
+	}
+}
+
 // TestRunReportsConfigWarningsOnStderr: a misspelt setting is dropped silently
 // by the resolver, and `rasp run` is the command where the user would otherwise
 // meet that as an answer produced under settings they thought they had changed.

@@ -1743,6 +1743,7 @@ and is not.
   "model": "anthropic/claude-opus-5",
   "small_model": "anthropic/claude-haiku-4-5",   // compaction and session titles; see §11
   "mode": "manual",
+  "max_output_tokens": 16384,                    // the reply cap; §11's maxOutput
 
   "providers": {
     "anthropic": { "api_key": "$(op read op://vault/anthropic/key)" },
@@ -1788,6 +1789,17 @@ and is not.
 
 `modes.<name>` deep-merges onto the built-in preset, so a user adds `"go test*": "allow"` to
 manual mode without restating the whole map.
+
+**`max_output_tokens` is the reply cap, and 16384 is a chosen number rather than a round one.**
+A reply the output limit cut short is a failed run and not a short answer
+([decisions.md](decisions.md)), so the wall belongs where truncating a text reply takes
+deliberate effort rather than where it saves tokens — it was 8192 while the cap merely shortened
+a reply. Two things it is not. It is **not** `context.reserve_tokens`: §11's compaction reserve
+is `max(maxOutput, 4096) + 12_000`, so it is derived from this number and larger than it, and a
+config that fed either from the other would either cap replies at the reserve or compact against
+the cap alone. And it is **not** per-model — that waits for §10.2's catalog, which is what would
+know each model's own ceiling. Until then a cap a model will not accept is sent as written and
+refused by the API, exactly as §3.1's ladder answers for an effort rung a model lacks.
 
 **Two constraints on `mode`, both about the same hazard.** A project config is a file in a
 repository — it arrives from `git clone`, and nobody reads it.

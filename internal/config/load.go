@@ -30,6 +30,11 @@ type EnvBinding struct {
 // EnvBindings is the environment layer, in full. A fixed table rather than a
 // naming convention, because no mechanical rule produces both
 // `ANTHROPIC_API_KEY` and `providers.anthropic.api_key`.
+//
+// This layer and the flag layer both contribute strings, so a binding onto a key
+// that holds a number refuses to start — `RASP_MAX_OUTPUT_TOKENS=8192` arrives as
+// "a string where a whole number belongs". One needs the layer to coerce first,
+// which nothing does yet.
 func EnvBindings() []EnvBinding {
 	return []EnvBinding{
 		{Var: "RASP_MODEL", Key: "model"},
@@ -193,6 +198,11 @@ func Load(src Sources) (*Result, error) {
 			Message: "unknown setting, ignored",
 		})
 		discard(merged, res.Origins, splitPath(key)...)
+	}
+
+	// After inspect, which is what makes every value here the sort it claims to be.
+	if err := checkResolved(merged, res.Origins); err != nil {
+		return nil, err
 	}
 
 	// Dropped rather than handed on: leaving it in Config would let a consumer
