@@ -231,10 +231,12 @@ type Event struct {
 ```
 
 An adapter handed a rung outside its own `Efforts()` fails the request and names the rung; it
-never substitutes the nearest one it could send ([decisions.md](decisions.md)). Anthropic takes
-five of the seven — `none` and `minimal` have no member in its enum — and an OpenAI-compatible
-endpoint takes all seven. The list is per protocol rather than per model, so `xhigh` is offered
-to every Anthropic model and the ones that will not take it answer with an API error.
+never substitutes the nearest one it could send ([decisions.md](decisions.md)). The ladder is the
+union of what the protocols accept, so each adapter publishes the subset it can actually send and
+no adapter is expected to publish all seven: Anthropic takes five — `none` and `minimal` have no
+member in its enum — and the OpenAI-compatible subset gets established against that API when the
+adapter is written. The list is per protocol rather than per model, so `xhigh` is offered to
+every Anthropic model and the ones that will not take it answer with an API error.
 
 The neutral message model is Anthropic-shaped, because Anthropic's block model is the more
 expressive of the two and translating down to OpenAI is easier than the reverse — the same

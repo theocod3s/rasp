@@ -32,10 +32,12 @@ func TestProviderRequiresEfforts(t *testing.T) {
 	}
 }
 
-// TestEffortLadder pins the rungs and their order against the literal strings,
-// not against the constants: the strings are what an adapter puts on the wire,
-// and the order is what "ladder order" means to every Provider.Efforts and every
-// picker reading one.
+// TestEffortLadder pins the rungs and their order against the literal strings
+// rather than the constants: these are the neutral spellings, the ones a config
+// key and a saved session will carry, so renaming one is a migration and not a
+// refactor. What goes on the wire is the adapter's own mapping and need not
+// match. The order is what "ladder order" means to every Provider.Efforts and
+// every picker reading one.
 func TestEffortLadder(t *testing.T) {
 	want := []llm.Effort{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 

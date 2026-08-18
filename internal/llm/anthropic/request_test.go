@@ -58,8 +58,8 @@ func TestRequestOnTheWire(t *testing.T) {
 		t.Error("an unflagged system block went out with a cache breakpoint")
 	}
 
-	// Adaptive, never budget_tokens: current models reject the budget shape, and a
-	// caller who asks for one is refused rather than silently sent this instead.
+	// Adaptive, never budget_tokens: current models reject the budget shape, and
+	// ThinkingConfig has no field that could ask for one.
 	thinking, _ := json.Marshal(sent["thinking"])
 	if got := string(thinking); !strings.Contains(got, `"adaptive"`) || strings.Contains(got, "budget_tokens") {
 		t.Errorf("thinking = %s", got)

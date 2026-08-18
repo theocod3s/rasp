@@ -41,6 +41,10 @@ type Provider interface {
 	// ladder order. Per protocol, never per model: no adapter recognises a model
 	// id (scope.md), so a rung can be offered here and still rejected by the API.
 	//
+	// The result is the caller's to modify: every implementation returns a fresh
+	// slice, or a picker sorting one in place destroys the list the adapter
+	// refuses rungs against.
+	//
 	// Required rather than an optional interface someone type-asserts, because an
 	// adapter that had not implemented it would read as one allowing every rung.
 	Efforts() []Effort

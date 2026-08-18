@@ -35,6 +35,25 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 		MaxTokens: int64(req.MaxTokens),
 	}
 
+	if req.Thinking.Enabled {
+		// Adaptive unconditionally: a model id is never checked against a catalog
+		// (scope.md), so nothing here can tell whether the model takes this shape or
+		// only the older enabled/budget_tokens one. Adaptive is what current models
+		// take, and the shape the SDK does not warn about on stderr.
+		params.Thinking = sdk.ThinkingConfigParamUnion{OfAdaptive: &sdk.ThinkingConfigAdaptiveParam{}}
+	}
+	// Up here with the other guards rather than beside the translation below: an
+	// unsendable rung is the caller's to fix, and reporting it only after some
+	// unrelated message failed costs them a second round of the same refusal.
+	if req.Effort != "" {
+		level, ok := wireEffort[req.Effort]
+		if !ok {
+			return sdk.MessageNewParams{}, fmt.Errorf("anthropic: cannot send effort %q; this API takes %v, "+
+				"and a turn never runs at a depth other than the one asked for", req.Effort, supported)
+		}
+		params.OutputConfig.Effort = level
+	}
+
 	for i, block := range req.System {
 		// Refused rather than skipped, unlike an empty text block in a message: the
 		// system prompt is assembled here rather than replayed from a transcript, so
@@ -80,25 +99,11 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 			"the API requires at least one")
 	}
 
-	if req.Thinking.Enabled {
-		// Adaptive rather than enabled: the enabled shape carries a token budget
-		// current models reject, and the SDK prints a deprecation warning for it
-		// straight to stderr, which belongs to the UI.
-		params.Thinking = sdk.ThinkingConfigParamUnion{OfAdaptive: &sdk.ThinkingConfigAdaptiveParam{}}
-	}
-	if req.Effort != "" {
-		level, ok := wireEffort[req.Effort]
-		if !ok {
-			return sdk.MessageNewParams{}, fmt.Errorf("anthropic: cannot send effort %q; this API takes %v, "+
-				"and a turn never runs at a depth other than the one asked for", req.Effort, efforts())
-		}
-		params.OutputConfig.Effort = level
-	}
 	return params, nil
 }
 
-// wireEffort is the single source for what this adapter can express: efforts
-// publishes its keys and buildParams refuses everything else, so a picker and a
+// wireEffort is the single source for what this adapter can express: supported is
+// derived from its keys and buildParams refuses everything else, so a picker and a
 // refusal cannot come apart. A rung added to llm's ladder is refused until someone
 // maps it here — the safe direction, since the API rejects a value its own enum
 // has no member for.
@@ -110,16 +115,18 @@ var wireEffort = map[llm.Effort]sdk.OutputConfigEffort{
 	llm.EffortMax:    sdk.OutputConfigEffortMax,
 }
 
-// Efforts is every rung but none and minimal, which Anthropic's enum has no
-// member for.
-func (c *Client) Efforts() []llm.Effort { return efforts() }
+// supported is the ladder minus the rungs wireEffort has no entry for, derived
+// once at init: the filter is destructive, so running it per call would depend on
+// EffortLadder returning a fresh slice every time — a promise made in another
+// package that nothing here would notice being withdrawn.
+var supported = slices.DeleteFunc(llm.EffortLadder(), func(e llm.Effort) bool {
+	_, ok := wireEffort[e]
+	return !ok
+})
 
-func efforts() []llm.Effort {
-	return slices.DeleteFunc(llm.EffortLadder(), func(e llm.Effort) bool {
-		_, ok := wireEffort[e]
-		return !ok
-	})
-}
+// Efforts is every rung but none and minimal, which Anthropic's enum has no
+// member for. Cloned: supported is also what buildParams refuses against.
+func (c *Client) Efforts() []llm.Effort { return slices.Clone(supported) }
 
 func messageParam(msg llm.Message) (sdk.MessageParam, error) {
 	// Decide first, translate second. What llm can be asked about is neutral

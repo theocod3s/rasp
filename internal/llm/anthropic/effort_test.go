@@ -1,13 +1,15 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
-	"fmt"
-	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 
@@ -42,7 +44,7 @@ func TestEveryRungIsSentOrNamed(t *testing.T) {
 		req.Effort = rung
 
 		params, err := buildParams(req)
-		if slices.Contains(efforts(), rung) {
+		if slices.Contains(supported, rung) {
 			sent++
 			if err != nil {
 				t.Errorf("effort %q: %v, but it is offered", rung, err)
@@ -66,6 +68,23 @@ func TestEveryRungIsSentOrNamed(t *testing.T) {
 	if sent == 0 || refused == 0 {
 		t.Fatalf("%d rungs sent and %d refused; one branch never ran, so half of this test "+
 			"asserted nothing", sent, refused)
+	}
+}
+
+// TestARefusedRungIsNamedBeforeAnythingElseFails pins where the guard sits. Both
+// faults below are real; reporting the other one first sends the caller back for
+// a second round of a refusal that was already true the first time.
+func TestARefusedRungIsNamedBeforeAnythingElseFails(t *testing.T) {
+	req := ask()
+	req.Effort = llm.EffortNone
+	req.System = []llm.SystemBlock{{Text: ""}}
+
+	_, err := buildParams(req)
+	if err == nil {
+		t.Fatal("no error, though the request carries two things this adapter refuses")
+	}
+	if !strings.Contains(err.Error(), string(llm.EffortNone)) || strings.Contains(err.Error(), "system block") {
+		t.Errorf("error = %v, want the one naming the level it could not send", err)
 	}
 }
 
@@ -140,88 +159,152 @@ func TestEffortDoesNotVaryByModel(t *testing.T) {
 	}
 }
 
+// The child process is told which thinking shape to send and where to record
+// that it ran; the presence of the first is what tells it that it is a child.
+const (
+	shapeVar  = "RASP_TEST_THINKING_SHAPE"
+	ranVar    = "RASP_TEST_HELPER_RAN"
+	childTest = "TestOneTurnAtAThinkingShape"
+)
+
+const (
+	shapeAdaptive = "adaptive"
+
+	// shapeEnabled has to be forced onto the params by hand, because buildParams
+	// never sends it. It is the control: without a run that does reach the
+	// terminal, one wired to nothing reads exactly like an adapter staying quiet.
+	shapeEnabled = "enabled"
+)
+
 // TestTheSDKIsKeptOffTheTerminal: stdout belongs to the UI, and stderr is no
-// safer once a full-screen UI owns the screen.
+// safer once a full-screen UI owns the screen. The witness is the SDK's
+// deprecation warning, which the thinking shape alone decides.
+//
+// Each turn runs in a child process. Capturing in-process means assigning to the
+// os.Stdout and os.Stderr variables, which every other goroutine still alive in
+// this suite reads unsynchronised — under -race, a data race rather than a check.
+// The boundary also catches a write to the file descriptor itself, which
+// swapping the variable would not see.
 func TestTheSDKIsKeptOffTheTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		shape    string
+		wantWarn bool
+	}{
+		{name: "the shape the adapter sends", shape: shapeAdaptive},
+		{name: "the shape it avoids", shape: shapeEnabled, wantWarn: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr := runTurn(t, tc.shape)
+
+			if stdout != "" {
+				t.Errorf("the child wrote to stdout, which belongs to the UI: %q", stdout)
+			}
+			switch {
+			case tc.wantWarn && !strings.Contains(stderr, "deprecated"):
+				t.Errorf("the SDK warned nowhere this could see it (stderr %q); if it has stopped "+
+					"warning at all, the case above needs a new witness rather than a passing grade", stderr)
+			case !tc.wantWarn && stderr != "":
+				t.Errorf("the adapter wrote to stderr: %q", stderr)
+			}
+		})
+	}
+}
+
+// TestOneTurnAtAThinkingShape is the child half of the test above, and skips
+// unless that test launched it.
+func TestOneTurnAtAThinkingShape(t *testing.T) {
+	shape, ok := os.LookupEnv(shapeVar)
+	if !ok {
+		t.Skipf("child process of TestTheSDKIsKeptOffTheTerminal, which sets %s", shapeVar)
+	}
 	client := replay(t, "text.sse")
 
 	req := ask()
 	// One of the two models the SDK's deprecation warning fires for. ask() names a
-	// model it says nothing about, so this would pass on any thinking shape.
+	// model it says nothing about, so both shapes would be silent on that one.
 	req.Model = "claude-opus-4-6"
 	req.Thinking = llm.ThinkingConfig{Enabled: true}
 	req.Effort = llm.EffortHigh
 
-	stdout, stderr := terminal(t, func() {
+	switch shape {
+	case shapeAdaptive:
 		for range client.Stream(context.Background(), req) {
 		}
-	})
-	if stdout != "" || stderr != "" {
-		t.Errorf("the adapter wrote to the terminal: stdout %q, stderr %q", stdout, stderr)
-	}
-
-	// The same request through the thinking shape this adapter avoids, plus a
-	// marker on stdout. Without it, a capture wired to nothing reads exactly like
-	// an adapter that stayed quiet.
-	params, err := buildParams(req)
-	if err != nil {
-		t.Fatalf("buildParams: %v", err)
-	}
-	params.Thinking = sdk.ThinkingConfigParamUnion{OfEnabled: &sdk.ThinkingConfigEnabledParam{BudgetTokens: 1024}}
-
-	stdout, stderr = terminal(t, func() {
-		fmt.Fprint(os.Stdout, "control")
+	case shapeEnabled:
+		params, err := buildParams(req)
+		if err != nil {
+			t.Fatalf("buildParams: %v", err)
+		}
+		params.Thinking = sdk.ThinkingConfigParamUnion{OfEnabled: &sdk.ThinkingConfigEnabledParam{BudgetTokens: 1024}}
 		stream := client.api.Messages.NewStreaming(context.Background(), params)
 		defer stream.Close()
 		for stream.Next() {
 		}
-	})
-	if stdout != "control" {
-		t.Errorf("the stdout capture returned %q, so the check above could not have failed", stdout)
+	default:
+		t.Fatalf("unknown shape %q", shape)
 	}
-	if !strings.Contains(stderr, "deprecated") {
-		t.Errorf("the SDK warned nowhere the capture could see it (%q), so the check above "+
-			"could not have failed", stderr)
+
+	path := os.Getenv(ranVar)
+	if err := os.WriteFile(path, []byte(shape), 0o600); err != nil {
+		t.Fatalf("marking the run at %s: %v", path, err)
 	}
 }
 
-// terminal runs fn with the process's stdout and stderr replaced by pipes, and
-// returns what was written to each.
-func terminal(t *testing.T, fn func()) (stdout, stderr string) {
+// runTurn re-executes this test binary to take one turn at the given thinking
+// shape, and returns what a terminal would have shown.
+func runTurn(t *testing.T, shape string) (stdout, stderr string) {
 	t.Helper()
 
-	outR, outW := osPipe(t)
-	errR, errW := osPipe(t)
-	prevOut, prevErr := os.Stdout, os.Stderr
-	restore := func() { os.Stdout, os.Stderr = prevOut, prevErr }
-	os.Stdout, os.Stderr = outW, errW
-	defer restore()
-
-	fn()
-
-	restore()
-	// Closed before the read: io.ReadAll on a pipe whose writer is still open
-	// blocks until it is, which would hang the test rather than fail it.
-	outW.Close()
-	errW.Close()
-	return readAll(t, outR), readAll(t, errR)
-}
-
-func osPipe(t *testing.T) (r, w *os.File) {
-	t.Helper()
-	r, w, err := os.Pipe()
+	exe, err := os.Executable()
 	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
+		t.Fatalf("locating this test binary: %v", err)
 	}
-	return r, w
+	ranPath := filepath.Join(t.TempDir(), "ran")
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, exe, "-test.run", "^"+childTest+"$")
+	cmd.Env = append(childEnv(), shapeVar+"="+shape, ranVar+"="+ranPath)
+	var out, errs bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errs
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("child process: %v\nstdout:\n%s\nstderr:\n%s", err, out.String(), errs.String())
+	}
+	// A -test.run pattern matching nothing exits 0 having run nothing, which is
+	// indistinguishable from a turn that stayed off the terminal.
+	if _, err := os.Stat(ranPath); err != nil {
+		t.Fatalf("%s never ran, so a silent terminal proves nothing: %v", childTest, err)
+	}
+	return withoutVerdict(out.String()), errs.String()
 }
 
-func readAll(t *testing.T, f *os.File) string {
-	t.Helper()
-	defer f.Close()
-	captured, err := io.ReadAll(f)
-	if err != nil {
-		t.Fatalf("reading a captured stream: %v", err)
+// childEnv is this process's environment without the variables the SDK resolves
+// credentials from. A developer's own ANTHROPIC_API_KEY or profile would draw
+// warnings of its own onto the child's stderr, which is the stream under test.
+func childEnv() []string {
+	var kept []string
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "ANTHROPIC_") || strings.HasPrefix(key, "RASP_") {
+			continue
+		}
+		kept = append(kept, entry)
 	}
-	return string(captured)
+	return kept
+}
+
+// withoutVerdict drops the lines a test binary prints about itself — its result,
+// and its coverage under -cover — which are the harness talking rather than the
+// turn under test.
+func withoutVerdict(out string) string {
+	var kept []string
+	for line := range strings.SplitSeq(out, "\n") {
+		if line == "PASS" || strings.HasPrefix(line, "coverage:") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
