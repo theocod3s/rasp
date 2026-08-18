@@ -82,9 +82,9 @@ func unreachableModel(t *testing.T) {
 func TestRunExitsOneWithNothingOnStdout(t *testing.T) {
 	t.Setenv("RASP_LOG_FILE", filepath.Join(t.TempDir(), "rasp.log"))
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	// A model with no credential behind it — projectConfig clears the environment
-	// layer, so the file is the only place one could come from. The failure
-	// happens before any request, so the test needs no server to fail against.
+	// A model with no credential anywhere — projectConfig clears the environment
+	// layer, and the file names none. The SDK's chain refuses before any request,
+	// so the test needs no server to fail against.
 	projectConfig(t, `{"model": "anthropic/claude-opus-5"}`)
 
 	stdout, readStdout := captureFile(t, "stdout")
@@ -104,8 +104,7 @@ func TestRunExitsOneWithNothingOnStdout(t *testing.T) {
 		t.Errorf("stdout = %q; a failure belongs on stderr", printed)
 	}
 	// The diagnosis, not merely something: a run that failed silently leaves the
-	// user with an exit status and no idea which of the two places a key comes
-	// from was empty.
+	// user with an exit status and nowhere to look.
 	if reported := readStderr(); !strings.Contains(reported, "ANTHROPIC_API_KEY") {
 		t.Errorf("stderr = %q, want the reason the run failed", reported)
 	}
@@ -249,11 +248,6 @@ func TestBuildProviderRejectsWhatItCannotServe(t *testing.T) {
 			name:   "no adapter",
 			cfg:    config.Config{Model: "openrouter/auto"},
 			errHas: "openrouter",
-		},
-		{
-			name:   "no credential",
-			cfg:    config.Config{Model: "anthropic/claude-opus-5"},
-			errHas: "ANTHROPIC_API_KEY",
 		},
 	}
 	for _, tc := range tests {

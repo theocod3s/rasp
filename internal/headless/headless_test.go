@@ -47,7 +47,7 @@ func TestRunPrintsTextAddedToAnEarlierBlock(t *testing.T) {
 // The handoff writer is unbuffered, so the first receive can only succeed while
 // the provider is still mid-script.
 func TestRunWritesBeforeTheStreamEnds(t *testing.T) {
-	writes := make(handoff)
+	writes := newHandoff(t)
 	returned := make(chan error, 1)
 	provider := &scripted{steps: []step{text("one", "two"), done(llm.StopEndTurn)}}
 
@@ -149,6 +149,31 @@ func TestRunFailsWhenTheReplyWasCutOff(t *testing.T) {
 	}
 }
 
+// TestRunFailsWhenTheModelStoppedForATool is the same rule reached by the other
+// door: a turn that broke off to call a tool is a half answer here, because
+// there is no loop to run one and no step after this.
+func TestRunFailsWhenTheModelStoppedForATool(t *testing.T) {
+	var out bytes.Buffer
+	err := run(t, &out, text("Let me check "), done(llm.StopToolUse))
+	if err == nil {
+		t.Fatal("Run succeeded on a turn that stopped to call a tool")
+	}
+	if !strings.Contains(err.Error(), string(llm.StopToolUse)) {
+		t.Errorf("error %q does not name the reason the model stopped", err)
+	}
+}
+
+// TestRunSucceedsOnACompletedTurn: the reasons design §4 calls complete stay
+// complete, so the rule above cannot creep into a refusal a user asked for.
+func TestRunSucceedsOnACompletedTurn(t *testing.T) {
+	for _, reason := range []llm.StopReason{llm.StopEndTurn, llm.StopRefusal, llm.StopAborted} {
+		var out bytes.Buffer
+		if err := run(t, &out, text("no"), done(reason)); err != nil {
+			t.Errorf("Run on %q: %v", reason, err)
+		}
+	}
+}
+
 func TestRunReportsAFailedWrite(t *testing.T) {
 	broken := errors.New("broken pipe")
 	runner := headless.Runner{
@@ -191,8 +216,11 @@ func TestRunAsksForOneUserMessage(t *testing.T) {
 // provider a real one resembles. Without it they could all pass against a double
 // no adapter is allowed to be.
 func TestScriptedProviderMeetsTheStreamContract(t *testing.T) {
+	// grow is in the script because the per-block bookkeeping exists for it: if
+	// growing a block that is not the last were against the contract, the test
+	// that drives it would be describing a stream no adapter may send.
 	provider := &scripted{steps: []step{
-		thinking("first"), text("Hel", "lo"), text(", world"), done(llm.StopEndTurn),
+		thinking("first"), text("Hel", "lo"), text(", world"), grow(1, "!"), done(llm.StopEndTurn),
 	}}
 	if _, err := llm.CheckStream(provider.Stream(context.Background(), llm.Request{Model: "m"})); err != nil {
 		t.Fatalf("CheckStream: %v", err)

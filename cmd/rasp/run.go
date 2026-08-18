@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -71,30 +70,35 @@ func buildProvider(ctx context.Context, res *config.Result) (llm.Provider, strin
 			name, anthropic.ProviderID)
 	}
 
-	provider := cfg.Providers[name]
-	if provider.APIKey == "" {
-		// Checked here rather than left to a 401, whose answer names neither of the
-		// two places a key comes from.
-		return nil, "", errors.New("no API key for anthropic; set ANTHROPIC_API_KEY or " +
-			`providers.anthropic.api_key in the config file`)
-	}
 	// What the file holds is a recipe — `$(op read …)`, `${VAR}` — and the resolver
 	// is what turns it into a value. It also decides what NOT to expand: anything
 	// that came from the environment or a flag has already been through a shell
 	// (design §10). Sending the recipe is a 401 on every run.
+	provider := cfg.Providers[name]
 	expander := config.NewExpander(res, config.ExpanderOptions{})
-	key, err := expander.Expand(ctx, "providers."+name+".api_key")
-	if err != nil {
-		return nil, "", err
+
+	// No check that a credential exists: an empty key is left to the SDK's own
+	// chain on purpose (decisions.md), and that chain has four sources a check
+	// here could only enumerate incompletely — locking out whoever used the one it
+	// forgot, in place of a refusal that names every source it tried.
+	var key string
+	if provider.APIKey != "" {
+		var err error
+		if key, err = expander.Expand(ctx, "providers."+name+".api_key"); err != nil {
+			return nil, "", err
+		}
 	}
+
 	baseURL := provider.BaseURL
 	if baseURL != "" {
 		// The grammar is per value, not per key: someone who writes `${GATEWAY}` in
 		// one field has the same expectation in the other, and an unexpanded one
 		// fails naming a URL they never wrote.
-		if baseURL, err = expander.Expand(ctx, "providers."+name+".base_url"); err != nil {
+		expanded, err := expander.Expand(ctx, "providers."+name+".base_url")
+		if err != nil {
 			return nil, "", err
 		}
+		baseURL = expanded
 	}
 	return anthropic.New(anthropic.Config{APIKey: key, BaseURL: baseURL}), model, nil
 }

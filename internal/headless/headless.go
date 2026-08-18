@@ -76,8 +76,17 @@ func (r Runner) Run(ctx context.Context, prompt string) error {
 			return ev.Err
 		case llm.EventDone:
 			finished = true
-			if ev.StopReason == llm.StopMaxTokens {
+			switch ev.StopReason {
+			case llm.StopEndTurn, llm.StopRefusal, llm.StopAborted:
+				// Finished, declined, or stopped by the person who asked.
+			case llm.StopMaxTokens:
 				return fmt.Errorf("the reply was cut off at the %d-token limit", maxTokens)
+			default:
+				// Closed on purpose: an untaught stop reason is a reply that stopped
+				// for one, and StopToolUse — a model breaking off to call a tool
+				// nothing here can run — is the case that makes it real.
+				return fmt.Errorf("the reply is incomplete: the model stopped for %q, "+
+					"and there is nothing here to take the next step", ev.StopReason)
 			}
 		}
 	}

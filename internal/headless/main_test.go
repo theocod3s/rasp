@@ -2,6 +2,7 @@ package headless_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -125,17 +126,34 @@ func failed(err error, arrived string) step {
 // handoff is a writer with no buffer of its own: every Write blocks until the
 // test takes the bytes. A runner holding output back until the stream ended
 // could not deliver a first chunk on its own.
-type handoff chan string
+type handoff struct {
+	writes chan string
+
+	// over releases a writer nobody is going to read. Without it a failed
+	// assertion leaves the runner blocked on the channel forever, and goleak
+	// reports that leak on top of the real failure — two verdicts for one bug.
+	over chan struct{}
+}
+
+func newHandoff(t *testing.T) handoff {
+	h := handoff{writes: make(chan string), over: make(chan struct{})}
+	t.Cleanup(func() { close(h.over) })
+	return h
+}
 
 func (h handoff) Write(p []byte) (int, error) {
-	h <- string(p)
-	return len(p), nil
+	select {
+	case h.writes <- string(p):
+		return len(p), nil
+	case <-h.over:
+		return 0, errors.New("the test that was reading this has finished")
+	}
 }
 
 func (h handoff) take(t *testing.T) string {
 	t.Helper()
 	select {
-	case written := <-h:
+	case written := <-h.writes:
 		return written
 	case <-time.After(5 * time.Second):
 		t.Fatal("nothing was written within 5s")
