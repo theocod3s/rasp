@@ -103,10 +103,13 @@ func New(cfg Config) (*Agent, error) {
 // Send drives one turn: the user's message goes in, and the loop steps until the
 // model stops asking for tools.
 //
-// nil means the model finished. Everything else ended the turn early —
-// ErrInterrupted for a cancelled one, ErrMaxSteps for the fuse, and the
-// provider's own error for a stream that failed. The transcript is left valid
-// whichever way it ends, so the next Send can carry on from it.
+// nil means the turn is complete. A reply the output limit cut short counts as
+// complete here and says so in its stop reason — whether a process reports that
+// to a shell is a different question, and a different answer (decisions.md).
+// Everything else ended the turn early: ErrInterrupted for a cancelled one,
+// ErrMaxSteps for the fuse, and the provider's own error for a stream that
+// failed. The transcript is left valid whichever way it ends, so the next Send
+// can carry on from it.
 func (a *Agent) Send(ctx context.Context, text string) error {
 	if text == "" {
 		// An assistant message with nothing sendable is a state; a user message
