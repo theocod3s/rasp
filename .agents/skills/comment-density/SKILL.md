@@ -5,15 +5,21 @@ description: Decide which comments to write, keep, compress or cut in rasp's Go 
 
 # Comments in rasp
 
-Code documents itself through naming and structure. A comment earns its lines by
-recording something the code **cannot** say. Everything else is cost: it is read
-on every visit, it drifts out of date silently, and a file that is a third
-prose is a file nobody finishes.
+Code documents itself through naming and structure. **The default is bare
+code**: an exported identifier owes `go doc` one sentence, an unexported one
+owes nothing, and no function gets a comment for merely existing. Past that, a
+comment earns its lines by recording something the code **cannot** say — in a
+sentence or two, not a paragraph. Everything else is cost: it is read on every
+visit, it drifts out of date silently, and a file that is a third prose is a
+file nobody finishes.
 
-The failure mode this exists for is not laziness. It is a review loop: each
-round asks "why?", the answer gets appended to the comment, and nothing is ever
-taken back out. `internal/llm` shipped at 45% of its non-test lines that way,
-one file at 57%. Every paragraph was true. Most of them were arguing.
+Two habits produce the overflow, and neither is laziness. One is eager: a
+comment above every function and a play-by-play inside it, written as ceremony
+alongside the code, each one reasonable and the sum a file that is half prose.
+The other is the review loop: each round asks "why?", the answer gets appended
+to the comment, and nothing is ever taken back out. `internal/llm` shipped at
+45% of its non-test lines that way, one file at 57%. Every paragraph was true.
+Most of them were arguing.
 
 ## The test
 
@@ -39,8 +45,12 @@ error strings in it, be worse off without this?**
 
 - Anything that restates the identifier. `// EnvBinding maps an environment
   variable onto a config key` above `type EnvBinding struct{ Var, Key string }`.
-- Anything that narrates the obvious, or re-argues a decision the code makes
-  plain.
+- **A doc comment on an unexported identifier that only says what it is.**
+  Dressing every function the same feels like diligence, but unexported names
+  owe `go doc` nothing — and a reader who needs the comment to know what
+  `parseHeader` does has a naming problem the comment is hiding.
+- Anything that narrates the obvious — `// now merge the trees` above the merge
+  call — or re-argues a decision the code makes plain.
 - **Anything the error string below already says.** Well-written errors in this
   repo are full sentences with reasoning; a comment repeating one is a second
   copy to keep in step.
@@ -62,10 +72,10 @@ carries no position" and kept "digs the byte offset out of an encoding/json erro
 or -1" — above a function whose body ends in `return -1`.
 
 **A restatement compressed is still a restatement.** Settle Keep-or-Cut first,
-then ask how long. The forcing question is whether the identifier is exported: an
-exported one owes `go doc` a sentence whatever else is true, an unexported one
-owes nothing and has to survive on content alone. That is where restatements
-hide, and shortening one only makes it cheaper to keep.
+then ask how long. The forcing question is the default from the top of this
+file: exported owes its `go doc` sentence whatever else is true; unexported has
+to survive on content alone. That is where restatements hide, and shortening
+one only makes it cheaper to keep.
 
 ## Say it once
 
