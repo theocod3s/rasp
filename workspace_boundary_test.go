@@ -44,6 +44,16 @@ var osAllowed = []string{
 	// could confine, and bash is gated by permission instead (design §7.3a).
 	"Environ", "Getenv", "LookupEnv",
 	"ErrProcessDone", "Interrupt", "Kill", "Process", "ProcessState", "Signal",
+
+	// CreateTemp is bash spilling output too long to return, and it is the one
+	// entry here that does open a path. It belongs outside the workspace: the
+	// spill is rasp's own file, in the OS temp directory, under a name rasp
+	// generates and the model never supplies — so the question os.Root answers,
+	// "did this path escape the root", is not one that arises. Writing it inside
+	// the workspace would be the bug, dropping build logs into the user's repo.
+	// Nothing else in os grows this exemption: os.Remove, os.Rename and the rest
+	// take a caller's path and stay refused.
+	"CreateTemp",
 }
 
 // filepathForbidden is the part of path/filepath that consults the filesystem, or

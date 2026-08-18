@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -22,6 +23,12 @@ const (
 	// pipe open. Without it the second one waits for that process instead, and
 	// `npm run dev &` never lets go of the turn.
 	bashWaitDelay = 2 * time.Second
+
+	// bashMaxOutput caps the whole of what a shell call puts in front of the
+	// model — output, omission marker and closing note together. 50 KiB is around
+	// 13k tokens: survivable for one turn, and the point past which `cat`-ing a
+	// file is a mistake rather than an answer.
+	bashMaxOutput = 50 << 10
 )
 
 const bashDescription = `Run a command with bash, in the directory rasp was started in.
@@ -30,6 +37,9 @@ Output is stdout and stderr together, in the order the command wrote them. A non
 reported back rather than hidden: read the output and decide what it means. On a timeout or an
 interrupted turn the command is killed along with everything it started, so anything meant to
 outlive the call has to detach itself.
+
+Long output comes back with its middle dropped, keeping both ends, and the whole of it is saved
+to a file this tool names — narrow the command, or read that file, rather than running it again.
 
 Prefer the dedicated tools for reading, searching and editing files — their output is structured
 and far cheaper.`
@@ -42,9 +52,11 @@ type BashInput struct {
 
 // BashDetails is what the UI draws a shell call from; the model sees none of it.
 type BashDetails struct {
-	Command  string
-	ExitCode int
-	Duration time.Duration
+	Command   string
+	ExitCode  int
+	Duration  time.Duration
+	Truncated bool
+	SpillPath string // the whole output, when Truncated and it could be saved
 }
 
 // Bash runs shell commands. It does not implement Sequential: built-in tools are
@@ -107,7 +119,7 @@ func runBash(ctx context.Context, in BashInput) (tool.Result, error) {
 		note = "The command exited, but something it started still held its output open, so rasp stopped reading there."
 	}
 
-	result.Content = bashContent(out.String(), note)
+	result.Content, details.Truncated, details.SpillPath = bashOutput(out.String(), note)
 	return result, nil
 }
 
@@ -122,6 +134,97 @@ func bashTimeout(ms int) time.Duration {
 		return bashMaxTimeout
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+// bashOutput is everything the model is shown, bounded to bashMaxOutput bytes
+// with the note counted in — so nothing appended after the output can push the
+// result past the cap.
+func bashOutput(output, note string) (content string, truncated bool, spill string) {
+	if len(output)+noteCost(note) <= bashMaxOutput {
+		return bashContent(output, note), false, ""
+	}
+
+	spill, err := spillOutput(output)
+	if err != nil {
+		note = joinNotes(note, fmt.Sprintf("The output was too long to return whole, and rasp could not save the rest: %v", err))
+		spill = ""
+	} else {
+		note = joinNotes(note, fmt.Sprintf("The output was too long to return whole. All %d bytes of it are in %s, which a shell command can read.", len(output), spill))
+	}
+	return bashContent(headAndTail(output, bashMaxOutput-noteCost(note), bashOmitted), note), true, spill
+}
+
+// headAndTail bounds s to limit bytes by dropping its middle, marker(dropped)
+// standing in for what went. Both ends survive because the head carries the
+// command echo and the tail the error; keeping either alone loses the diagnosis
+// (internals §3.5).
+//
+// The marker's own length depends on the count it reports, which depends on how
+// much room the marker left — and sizing it for the largest count it could ever
+// carry, every byte of s, breaks that circle in the safe direction. Measuring
+// the marker after choosing the split instead is the off-by-one that returns
+// limit+1 bytes.
+func headAndTail(s string, limit int, marker func(dropped int) string) string {
+	switch {
+	case limit <= 0:
+		return ""
+	case len(s) <= limit:
+		return s
+	}
+
+	keep := limit - len(marker(len(s)))
+	if keep <= 0 {
+		// The marker alone does not fit, and the cap outranks saying anything.
+		return s[:limit]
+	}
+
+	head, tail := s[:keep/2], s[len(s)-(keep-keep/2):]
+	return head + marker(len(s)-len(head)-len(tail)) + tail
+}
+
+func bashOmitted(dropped int) string {
+	return fmt.Sprintf("\n\n[%d bytes omitted from the middle of the output]\n\n", dropped)
+}
+
+// spillOutput writes the whole of an output too long to return to the OS temp
+// directory, at the 0600 os.CreateTemp gives it — a command prints whatever it
+// prints, secrets included.
+//
+// Nothing deletes it: no part of rasp owns temp-file lifetime yet, and the temp
+// directory is the one place a file is reaped without an owner. A write that
+// fails part-way leaves its file behind for the same reason — removing it would
+// put an os.Remove in a package whose filesystem access is confined to
+// workspace, and that exemption is worth more than the stray file.
+func spillOutput(output string) (string, error) {
+	f, err := os.CreateTemp("", "rasp-bash-*.log")
+	if err != nil {
+		return "", err
+	}
+
+	_, err = f.WriteString(output)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+func joinNotes(a, b string) string {
+	if a == "" {
+		return b
+	}
+	return a + " " + b
+}
+
+// noteCost is what appending note to the output costs, separator included. It
+// rounds up where bashContent trims, so a budget built on it is never short.
+func noteCost(note string) int {
+	if note == "" {
+		return 0
+	}
+	return len(note) + 2
 }
 
 func bashContent(output, note string) string {

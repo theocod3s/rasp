@@ -244,6 +244,219 @@ func TestBashCancelKillsTheWholeProcessGroup(t *testing.T) {
 	waitUntilGone(t, -group, "the command's process group")
 }
 
+// A 2MB log costs more context than every other message in the turn put
+// together, and the two ends are where the diagnosis is: the command echo at the
+// top, the error at the bottom (internals §3.5).
+func TestBashKeepsBothEndsOfOutputTooLongToReturn(t *testing.T) {
+	// ~109KB, more than twice the cap, with a line the middle must swallow.
+	res := callBash(t, t.Context(), BashInput{Command: "echo HEAD-MARKER; seq 1 20000; echo TAIL-MARKER"})
+
+	if res.IsError {
+		t.Fatalf("a command that succeeded came back as an error: %s", excerpt(res.Content))
+	}
+	if len(res.Content) > bashMaxOutput {
+		t.Errorf("bash returned %d bytes, past its own %d-byte cap", len(res.Content), bashMaxOutput)
+	}
+
+	head, dropped, tail, note := splitAtOmission(t, res.Content)
+	if !strings.HasPrefix(head, "HEAD-MARKER\n") {
+		t.Errorf("what bash kept from the start does not begin with the command's first line: %s", excerpt(head))
+	}
+	if !strings.HasSuffix(tail, "TAIL-MARKER") {
+		t.Errorf("what bash kept from the end does not reach the command's last line: %s", excerpt(tail))
+	}
+	if strings.Contains(res.Content, "\n10000\n") {
+		t.Error("bash returned a line from the middle of the output, so nothing was actually dropped there")
+	}
+	if dropped <= 0 {
+		t.Errorf("bash marked the output truncated but says %d bytes went", dropped)
+	}
+
+	details := bashDetails(t, res)
+	if !details.Truncated {
+		t.Error("bash dropped the middle of the output without recording it in the details the UI draws from")
+	}
+	if details.SpillPath == "" {
+		t.Fatal("bash truncated the output and saved none of it")
+	}
+	if !strings.Contains(note, details.SpillPath) {
+		t.Errorf("the closing note does not name the file holding the rest of the output: %q", note)
+	}
+
+	full := readSpill(t, details.SpillPath)
+	if len(full) <= bashMaxOutput {
+		t.Errorf("the saved output is %d bytes, which would have fit in the %d-byte cap unaltered", len(full), bashMaxOutput)
+	}
+	if !strings.HasPrefix(full, head) {
+		t.Error("the head bash returned is not how the saved output starts")
+	}
+	if !strings.HasSuffix(strings.TrimRight(full, "\n"), tail) {
+		t.Error("the tail bash returned is not how the saved output ends")
+	}
+	if !strings.Contains(full, "\n10000\n") {
+		t.Error("the saved output is missing the middle, which is the only reason to save it")
+	}
+}
+
+func TestBashDoesNotSaveOutputThatFits(t *testing.T) {
+	res := callBash(t, t.Context(), BashInput{Command: "echo small"})
+
+	details := bashDetails(t, res)
+	if details.Truncated || details.SpillPath != "" {
+		t.Errorf("bash truncated %q and saved it to %q; it is six bytes long", res.Content, details.SpillPath)
+	}
+}
+
+// The cap covers the closing note as well as the marker, so a command that both
+// floods and fails cannot come back over it.
+func TestBashOutputCapCoversEverythingAppendedToIt(t *testing.T) {
+	cases := []struct {
+		name          string
+		size          int
+		note          string
+		wantTruncated bool
+	}{
+		{"exactly the cap, nothing appended", bashMaxOutput, "", false},
+		{"one byte past the cap", bashMaxOutput + 1, "", true},
+		{"room for the note", bashMaxOutput - 64, "exit status 3", false},
+		{"under the cap until the note is added", bashMaxOutput - 4, "exit status 3", true},
+		{"far past the cap", 4 * bashMaxOutput, "exit status 3", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			output := strings.Repeat("x", c.size)
+
+			content, truncated, spill := bashOutput(output, c.note)
+			if spill != "" {
+				t.Cleanup(func() { _ = os.Remove(spill) })
+			}
+
+			if len(content) > bashMaxOutput {
+				t.Errorf("bash returned %d bytes for a %d-byte output and a %d-byte note, past its own %d-byte cap",
+					len(content), c.size, len(c.note), bashMaxOutput)
+			}
+			if truncated != c.wantTruncated {
+				t.Errorf("bash reports truncated=%t for a %d-byte output and a %d-byte note, want %t",
+					truncated, c.size, len(c.note), c.wantTruncated)
+			}
+			if c.note != "" && !strings.Contains(content, c.note) {
+				t.Errorf("bounding the output dropped the note %q that goes after it", c.note)
+			}
+			if !c.wantTruncated {
+				if spill != "" {
+					t.Errorf("bash saved an output it returned whole, to %s", spill)
+				}
+				return
+			}
+			if spill == "" {
+				t.Fatal("bash truncated the output and saved none of it")
+			}
+			if got := readSpill(t, spill); got != output {
+				t.Errorf("the saved output is %d bytes, want the %d that were produced", len(got), len(output))
+			}
+		})
+	}
+}
+
+// The property the marker itself threatens: it is inserted to report an overflow
+// and is capable of causing one. Exhaustive over every limit around the two
+// interesting sizes — the marker's own length, and the input's.
+func TestHeadAndTailNeverExceedsItsLimit(t *testing.T) {
+	const input = 2000
+	s := strings.Repeat("abcdefghij", input/10)
+
+	markers := map[string]func(int) string{
+		"the one bash uses":             bashOmitted,
+		"one that grows with the count": func(dropped int) string { return fmt.Sprintf("<%d>", dropped) },
+		"one longer than small limits":  func(dropped int) string { return strings.Repeat("x", 300) + strconv.Itoa(dropped) },
+	}
+	for name, marker := range markers {
+		t.Run(name, func(t *testing.T) {
+			for limit := -4; limit <= len(s)+16; limit++ {
+				got := headAndTail(s, limit, marker)
+				if limit >= 0 && len(got) > limit {
+					t.Fatalf("bounding %d bytes to %d returned %d of them", len(s), limit, len(got))
+				}
+				if limit >= len(s) && got != s {
+					t.Fatalf("bounding %d bytes to %d altered them; nothing had to go", len(s), limit)
+				}
+			}
+		})
+	}
+}
+
+func TestHeadAndTailKeepsBothEndsAndSaysWhatWent(t *testing.T) {
+	s := strings.Repeat("abcdefghij", 200)
+	marker := func(dropped int) string { return fmt.Sprintf("[%d]", dropped) }
+
+	for _, limit := range []int{64, 100, 512, 1000, 1999} {
+		t.Run(strconv.Itoa(limit), func(t *testing.T) {
+			got := headAndTail(s, limit, marker)
+
+			head, after, found := strings.Cut(got, "[")
+			if !found {
+				t.Fatalf("bounding %d bytes to %d dropped %d of them without saying so", len(s), limit, len(s)-len(got))
+			}
+			count, tail, _ := strings.Cut(after, "]")
+			dropped := atoi(t, count)
+
+			if head == "" || tail == "" {
+				t.Errorf("bounding to %d kept %d bytes of head and %d of tail; both ends have to survive", limit, len(head), len(tail))
+			}
+			if !strings.HasPrefix(s, head) {
+				t.Errorf("what came back as the head is not how the input starts: %s", excerpt(head))
+			}
+			if !strings.HasSuffix(s, tail) {
+				t.Errorf("what came back as the tail is not how the input ends: %s", excerpt(tail))
+			}
+			if want := len(s) - len(head) - len(tail); dropped != want {
+				t.Errorf("the marker says %d bytes went, but %d of the %d shown up as head or tail", dropped, want, len(s))
+			}
+		})
+	}
+}
+
+// splitAtOmission takes bash's content apart at the marker: what it kept from
+// the start, the count the marker reports, what it kept from the end, and the
+// note appended after all of it.
+func splitAtOmission(t *testing.T, content string) (head string, dropped int, tail, note string) {
+	t.Helper()
+
+	head, after, found := strings.Cut(content, "\n\n[")
+	if !found {
+		t.Fatalf("bash returned %d bytes with no omission marker among them: %s", len(content), excerpt(content))
+	}
+	count, rest, found := strings.Cut(after, " bytes omitted from the middle of the output]\n\n")
+	if !found {
+		t.Fatalf("bash's omission marker does not read as one: %s", excerpt("["+after))
+	}
+	tail, note, found = strings.Cut(rest, "\n\n")
+	if !found {
+		t.Fatalf("bash truncated the output and appended no note saying where the rest went: %s", excerpt(rest))
+	}
+	return head, atoi(t, count), tail, note
+}
+
+func readSpill(t *testing.T, path string) string {
+	t.Helper()
+	t.Cleanup(func() { _ = os.Remove(path) })
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the output bash saved to %s: %v", path, err)
+	}
+	return string(data)
+}
+
+// excerpt keeps a failure message readable when its subject is 50KB of output.
+func excerpt(s string) string {
+	const keep = 120
+	if len(s) <= keep {
+		return strconv.Quote(s)
+	}
+	return strconv.Quote(s[:keep]) + fmt.Sprintf(" (%d bytes in all)", len(s))
+}
+
 func callBash(t *testing.T, ctx context.Context, in BashInput) tool.Result {
 	t.Helper()
 	res, err := Bash.Run(ctx, bashArgs(t, in))
