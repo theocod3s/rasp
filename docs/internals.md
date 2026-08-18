@@ -201,7 +201,7 @@ type EditParams struct {
 }
 
 var EditTool = NewTool[EditParams]("edit", editDescription, func(
-    ctx context.Context, p EditParams, tc ToolContext) (Result, error) {
+    ctx context.Context, p EditParams) (Result, error) {
     // p is already unmarshalled and validated
 })
 ```
@@ -218,7 +218,7 @@ type Tool interface {
     Name() string
     Description() string
     Schema() map[string]any                              // reflection OR opaque passthrough
-    Run(ctx context.Context, raw json.RawMessage, tc ToolContext) (Result, error)
+    Run(ctx context.Context, raw json.RawMessage) (Result, error)
 }
 ```
 
