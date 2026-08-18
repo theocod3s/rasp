@@ -178,3 +178,19 @@ is no safer than stdout once the alternate screen buffer is in use.
 
 *Settled while scoping M0-07d, where `anthropic-sdk-go` wrote two lines from inside the first
 request, one of them naming an environment variable that was not set.*
+
+## A half answer never exits 0
+
+Anything short of a complete reply is a non-zero exit, and that includes a reply the output limit
+cut short. Design §4's termination table calls `StopMaxTokens` with no tool calls "Complete; warn
+the reply was cut off" — that is the loop's decision about whether to take another step, which is
+a different question from what a process reports to a shell. A caller reading stdout has no way of
+its own to tell a half answer from a whole one, so producing one and reporting success is the only
+failure it cannot detect.
+
+**Reversing it looks like:** nothing at all interactively, because a person reads the reply and can
+see where it stops. In a pipeline it looks like a commit message cut mid-sentence or a generated
+file missing its last function, discovered wherever that output is finally read, with a green exit
+status behind it. Tempting because design §4 appears to say the opposite in as many words.
+
+*Settled in M0-08, the first non-interactive consumer.*
