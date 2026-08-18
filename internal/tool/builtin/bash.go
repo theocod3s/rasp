@@ -98,8 +98,12 @@ func runBash(ctx context.Context, in BashInput) (tool.Result, error) {
 	case details.ExitCode != 0:
 		note, result.IsError = fmt.Sprintf("exit status %d", details.ExitCode), true
 	case errors.Is(err, exec.ErrWaitDelay):
-		// The command itself succeeded, so this is not a failure — but the output
-		// stops early, and the model should know why rather than guess.
+		// Not a failure — the command exited 0 — but its output stops early and the
+		// model should be told rather than left to infer. Only the clean path can
+		// be told: Wait prefers the exit status over the pipe's error, so a command
+		// that both fails and leaves something holding its output reports the
+		// status and nothing about the truncation. Reordering this switch does not
+		// recover it; the error never arrives.
 		note = "The command exited, but something it started still held its output open, so rasp stopped reading there."
 	}
 
