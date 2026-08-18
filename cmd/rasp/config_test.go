@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/theocod3s/rasp/internal/config"
 )
 
 func run(t *testing.T, args ...string) (stdout, stderr string, err error) {
@@ -37,6 +39,13 @@ func projectConfig(t *testing.T, contents string) {
 	}
 
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	// The environment layer outranks the project file, so a developer with
+	// RASP_MODEL or a real ANTHROPIC_API_KEY exported would be running a
+	// different test than CI does. Cleared from the binding table rather than by
+	// name, so a binding added later is covered without anyone remembering.
+	for _, b := range config.EnvBindings() {
+		t.Setenv(b.Var, "")
+	}
 	t.Chdir(dir)
 }
 

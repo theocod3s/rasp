@@ -1,7 +1,12 @@
-// Package headless consumes agent events for `rasp run -p`, printing tokens as
-// they arrive and exiting with a status that reflects the outcome. It also
-// drops ANSI when stdout is not a TTY, so piped output stays clean.
+// Package headless answers one prompt with one model call, writing the reply to
+// a plain io.Writer as it streams. It renders llm.Event.Partial and remembers how
+// much of each block has already gone out, so no provider wire format reaches the
+// output. Anything short of a complete reply comes back as an ordinary error for
+// the command to report, because a script reading the output cannot tell a half
+// answer from a whole one.
 //
-// Does not contain: the loop (agent), and no Bubble Tea. It is the second
-// consumer that proves the event stream is genuinely UI-agnostic.
+// Does not contain: the loop (agent), any styling, any flag parsing, and no
+// Bubble Tea. It is the second consumer of the event stream, which is what
+// proves the stream carries no assumption that a terminal is reading it
+// (design §2).
 package headless
