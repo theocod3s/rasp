@@ -166,6 +166,18 @@ func TestScriptedTurnsHoldTheStreamContract(t *testing.T) {
 			want:   []llm.EventType{llm.EventTextDelta, llm.EventDone},
 		},
 		{
+			// The turn an adapter is left with when it drops every block on the
+			// block's type — Anthropic's redacted_thinking and nothing else.
+			name:   "a finished turn may carry no blocks at all",
+			script: []fake.Step{fake.Done(llm.StopEndTurn)},
+			want:   []llm.EventType{llm.EventDone},
+			check: func(t *testing.T, events []llm.Event) {
+				if content := message(t, events).Content; len(content) != 0 {
+					t.Errorf("final content is %+v, want none", content)
+				}
+			},
+		},
+		{
 			name:   "a failure is a terminal event, not a returned error",
 			script: []fake.Step{fake.Text("Calling the API."), fake.Fail(upstream)},
 			want:   []llm.EventType{llm.EventTextDelta, llm.EventError},
@@ -292,11 +304,6 @@ func TestNewRefusesAScriptThatWouldBreakTheContract(t *testing.T) {
 			want:   "that reason says the model stopped to use one",
 		},
 		{
-			name:   "finished with no content at all",
-			script: []fake.Step{fake.Done(llm.StopEndTurn)},
-			want:   "no blocks in it is refused by every provider",
-		},
-		{
 			name:   "finished on a call nothing announced",
 			script: []fake.Step{fake.UnfinishedToolCall("write", `{"pa`), fake.Done(llm.StopEndTurn)},
 			want:   "that no EventToolCall announced",
@@ -413,8 +420,8 @@ func TestEveryAbortPointHoldsTheContract(t *testing.T) {
 		}
 
 		// Every block in this script has content, so an empty one is a block the
-		// turn opened and never streamed — committed, and refused by the provider
-		// the next time the transcript is sent.
+		// turn opened and never streamed: content in the committed transcript that
+		// no event announced, and that a consumer keyed on events never drew.
 		for i, block := range message(t, events).Content {
 			if block.Type != llm.BlockToolUse && block.Text == "" {
 				t.Errorf("cancelled after event %d and the message holds an empty %s block at index %d",
