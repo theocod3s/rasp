@@ -29,3 +29,17 @@ type Result struct {
 	// adapter to wrap what it is required to pass through untouched.
 	Details any
 }
+
+// DiffDetails is what a tool that changed a file puts in Details, and what the
+// diff renderer draws (design §3.4).
+type DiffDetails struct {
+	Path                 string // relative to the workspace root
+	Unified              string
+	Additions, Deletions int
+
+	// Fuzzy records that the text was found by a whitespace-normalized rung of
+	// the edit ladder rather than byte for byte, so the UI can say so: the model
+	// asked for one thing and got a match on another, and prd §6.2 requires it be
+	// told rather than left to assume the file now reads as it wrote it.
+	Fuzzy bool
+}
