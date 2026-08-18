@@ -24,7 +24,7 @@ type Runner struct {
 	// prefix chooses the adapter and is not a name any API knows.
 	Model string
 
-	// MaxTokens is zero for DefaultMaxTokens.
+	// Zero takes DefaultMaxTokens.
 	MaxTokens int
 
 	// Out takes model text and nothing else. At the other end of it is a pipe.
@@ -36,8 +36,8 @@ type Runner struct {
 }
 
 // Run makes the call and returns once the stream has finished. Text reaches Out
-// as it arrives; everything else — including the text that did arrive before a
-// failure — is left to the caller to report.
+// as it arrives, including whatever arrived before a failure; the failure comes
+// back as an error, for the caller to put wherever errors belong.
 func (r Runner) Run(ctx context.Context, prompt string) error {
 	maxTokens := r.MaxTokens
 	if maxTokens == 0 {

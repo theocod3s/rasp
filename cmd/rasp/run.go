@@ -70,9 +70,8 @@ func buildProvider(cfg config.Config) (llm.Provider, string, error) {
 
 	provider := cfg.Providers[name]
 	if provider.APIKey == "" {
-		// Checked here rather than left to a 401: the round trip costs a second and
-		// answers with the API's vocabulary rather than the two places a key comes
-		// from.
+		// Checked here rather than left to a 401, whose answer names neither of the
+		// two places a key comes from.
 		return nil, "", errors.New("no API key for anthropic; set ANTHROPIC_API_KEY or " +
 			`providers.anthropic.api_key in the config file`)
 	}
