@@ -137,17 +137,21 @@ func TestTodosSurvivesConcurrentCalls(t *testing.T) {
 
 	const writers = 8
 	var wg sync.WaitGroup
+
+	// Not the call helper: its Fatalf would be a FailNow on a goroutine that is not
+	// the test's, which Go does not promise to notice.
+	concurrently := func(args string) {
+		defer wg.Done()
+		if _, err := todos.Run(t.Context(), json.RawMessage(args)); err != nil {
+			t.Errorf("todos(%s) returned a Go error: %v", args, err)
+		}
+	}
+
 	for i := range writers {
 		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			call(t, todos, fmt.Sprintf(
-				`{"items":[{"content":"plan %d, step one","status":"completed"},{"content":"plan %d, step two","status":"pending"}]}`, i, i))
-		}()
-		go func() {
-			defer wg.Done()
-			call(t, todos, `{}`)
-		}()
+		go concurrently(fmt.Sprintf(
+			`{"items":[{"content":"plan %d, step one","status":"completed"},{"content":"plan %d, step two","status":"pending"}]}`, i, i))
+		go concurrently(`{}`)
 	}
 	wg.Wait()
 
