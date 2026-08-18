@@ -199,8 +199,7 @@ reading stdout has no way of its own to tell a half answer from a whole one, so 
 reporting success is the only failure it cannot detect.
 
 A refusal is not this case: the model finished, having declined, so the turn is complete and exits
-0, as §4 says. An interrupt is not settled here — nothing can cancel a turn yet, and the rule for
-one belongs to the work that adds the cancelling.
+0, as §4 says. An interrupt is its own case and went the same way — see below.
 
 **Reversing it looks like:** nothing at all interactively, because a person reads the reply and can
 see where it stops. In a pipeline it looks like a commit message cut mid-sentence or a generated
@@ -208,3 +207,25 @@ file missing its last function, discovered wherever that output is finally read,
 status behind it. Tempting because design §4 appears to say the opposite in as many words.
 
 *Settled in M0-08, the first non-interactive consumer.*
+
+## An interrupted turn is an error to whoever called it
+
+`Send` returns an error wrapping `agent.ErrInterrupted` when a turn stopped because it was
+cancelled rather than because the model finished, and the context's own error travels with it. The
+turn still commits what arrived — the partial assistant reply, and a failed result standing in for
+every call that did not run — so the transcript it leaves is one the next request can be built
+from. Design §4's termination table says to commit and emit `EventTurnEnd`; what the *function*
+reports is the question this settles.
+
+The tempting version returns nil. A person pressed Esc, nothing malfunctioned, and the UI has
+already drawn everything the turn produced. It is wrong for the reason above: the caller may not be
+a person. A script, a test, or the headless runner cannot tell a turn that finished from one that
+stopped part way, and success is the one failure it has no way to detect. A frontend that genuinely
+does not care asks `errors.Is(err, agent.ErrInterrupted)` and stays quiet — which is one line, in
+the one place that has a user to explain it to.
+
+**Reversing it looks like:** an automated run reporting a finished task with half of it done, and a
+transcript that reads as though the model chose to stop there. Interactively it looks like nothing
+at all, which is why this gets reversed by someone testing only in the TUI.
+
+*Settled in M1-04, the work that added the cancelling.*
