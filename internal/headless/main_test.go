@@ -100,8 +100,8 @@ func done(reason llm.StopReason) step {
 	}
 }
 
-// failed ends the stream, carrying text that reached Partial without an event of
-// its own — the shape a consumer sees if it reads the failure before the message.
+// failed ends the stream carrying text that reached Partial without an event of
+// its own, so the terminal event is the only place a consumer can see it.
 func failed(err error, arrived string) step {
 	return func(msg *llm.Message, yield func(llm.Event) bool) bool {
 		if arrived != "" {
