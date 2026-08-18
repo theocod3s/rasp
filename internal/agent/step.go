@@ -56,23 +56,13 @@ func (t *turn) step(ctx context.Context) (bool, error) {
 	calls := toolUses(msg, pending)
 	dispatch, stopErr := classify(msg.StopReason, len(calls))
 
-	if len(calls) == 0 {
-		t.agent.append(*msg)
-		return false, stopErr
-	}
-
 	results := make([]*tool.Result, len(calls))
 	if dispatch {
 		t.dispatch(ctx, calls, results)
 	}
+	t.commit(msg, calls, results, unrun(ctx, msg.StopReason))
 
-	// Every tool_use gets a tool_result, including the calls nothing ran: an
-	// orphan is a 400 on this request and on every request built from the
-	// transcript afterwards, so the session is bricked rather than degraded
-	// (design §4 invariant 1).
-	t.agent.append(*msg, llm.Message{Role: llm.RoleUser, Content: resultBlocks(calls, results)})
-
-	return stopErr == nil, stopErr
+	return len(calls) > 0 && stopErr == nil, stopErr
 }
 
 // call runs one stream to its end, buffering the tool calls it announces rather

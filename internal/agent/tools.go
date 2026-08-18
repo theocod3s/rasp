@@ -9,11 +9,6 @@ import (
 	"github.com/theocod3s/rasp/internal/tool"
 )
 
-// unanswered is what a call that never ran tells the model. Every string that
-// reaches the model is prompt text, so it says what happened and what to do
-// about it: asking again is usually the useful next move.
-const unanswered = "this tool call did not run and produced no result; ask for it again if you still need it."
-
 // pendingCall is one tool_use block, and the announcement that completed its
 // arguments if one arrived.
 type pendingCall struct {
@@ -93,23 +88,4 @@ func runCall(ctx context.Context, tools *tool.Set, call pendingCall) *tool.Resul
 		}
 	}
 	return &res
-}
-
-// resultBlocks answers every call in the order the model asked, including the
-// ones nothing ran.
-func resultBlocks(calls []pendingCall, results []*tool.Result) []llm.Block {
-	blocks := make([]llm.Block, len(calls))
-	for i, call := range calls {
-		res := tool.Result{IsError: true, Content: unanswered}
-		if ran := results[i]; ran != nil {
-			res = *ran
-		}
-		blocks[i] = llm.Block{
-			Type:      llm.BlockToolResult,
-			ToolUseID: call.id,
-			Content:   res.Content,
-			IsError:   res.IsError,
-		}
-	}
-	return blocks
 }
