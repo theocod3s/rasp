@@ -163,10 +163,12 @@ func TestRunFailsWhenTheModelStoppedForATool(t *testing.T) {
 	}
 }
 
-// TestRunSucceedsOnACompletedTurn: the reasons design §4 calls complete stay
-// complete, so the rule above cannot creep into a refusal a user asked for.
+// TestRunSucceedsOnACompletedTurn: a whole turn stays a whole turn, so the rule
+// above cannot creep into a refusal the user asked for. StopAborted is not here
+// — nothing can cancel a turn yet, and until something can, an interrupted reply
+// goes out through the incomplete branch rather than being called finished.
 func TestRunSucceedsOnACompletedTurn(t *testing.T) {
-	for _, reason := range []llm.StopReason{llm.StopEndTurn, llm.StopRefusal, llm.StopAborted} {
+	for _, reason := range []llm.StopReason{llm.StopEndTurn, llm.StopRefusal} {
 		var out bytes.Buffer
 		if err := run(t, &out, text("no"), done(reason)); err != nil {
 			t.Errorf("Run on %q: %v", reason, err)

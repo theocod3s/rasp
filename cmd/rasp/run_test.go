@@ -82,10 +82,22 @@ func unreachableModel(t *testing.T) {
 func TestRunExitsOneWithNothingOnStdout(t *testing.T) {
 	t.Setenv("RASP_LOG_FILE", filepath.Join(t.TempDir(), "rasp.log"))
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	// A model with no credential anywhere — projectConfig clears the environment
-	// layer, and the file names none. The SDK's chain refuses before any request,
-	// so the test needs no server to fail against.
-	projectConfig(t, `{"model": "anthropic/claude-opus-5"}`)
+	// A model with no credential: projectConfig clears rasp's environment layer,
+	// and this clears the one the SDK reads that rasp knows nothing about.
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	// And an endpoint that fails the test if anything reaches it, because the SDK
+	// resolves credentials from more places than rasp does — a profile file and
+	// workload federation among them. Without this the test billed a live request
+	// to api.anthropic.com for anyone with a gateway token exported.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("a request left the machine; this run should have failed before one")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	projectConfig(t, fmt.Sprintf(`{
+	  "model": "anthropic/claude-opus-5",
+	  "providers": {"anthropic": {"base_url": %q}}
+	}`, srv.URL))
 
 	stdout, readStdout := captureFile(t, "stdout")
 	stderr, readStderr := captureFile(t, "stderr")
@@ -104,9 +116,17 @@ func TestRunExitsOneWithNothingOnStdout(t *testing.T) {
 		t.Errorf("stdout = %q; a failure belongs on stderr", printed)
 	}
 	// The diagnosis, not merely something: a run that failed silently leaves the
-	// user with an exit status and nowhere to look.
-	if reported := readStderr(); !strings.Contains(reported, "ANTHROPIC_API_KEY") {
+	// user with an exit status and nowhere to look. The adapter names itself in
+	// every failure it reports, which a cobra usage dump or an empty stderr does
+	// not.
+	reported := readStderr()
+	if !strings.Contains(reported, "anthropic:") {
 		t.Errorf("stderr = %q, want the reason the run failed", reported)
+	}
+	// The last line of defence, and the one that survives the guards above being
+	// deleted: a unit test naming the production API has already talked to it.
+	if strings.Contains(reported, "api.anthropic.com") {
+		t.Errorf("the run reached the real API: %q", reported)
 	}
 }
 

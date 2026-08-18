@@ -77,8 +77,8 @@ func (r Runner) Run(ctx context.Context, prompt string) error {
 		case llm.EventDone:
 			finished = true
 			switch ev.StopReason {
-			case llm.StopEndTurn, llm.StopRefusal, llm.StopAborted:
-				// Finished, declined, or stopped by the person who asked.
+			case llm.StopEndTurn, llm.StopRefusal:
+				// The model finished, or declined; both are whole turns.
 			case llm.StopMaxTokens:
 				return fmt.Errorf("the reply was cut off at the %d-token limit", maxTokens)
 			default:
@@ -91,6 +91,10 @@ func (r Runner) Run(ctx context.Context, prompt string) error {
 		}
 	}
 	if !finished {
+		if err := ctx.Err(); err != nil {
+			// Asked first, or a caller who cancelled is told their provider misbehaves.
+			return err
+		}
 		return errors.New("the stream ended without a terminal event, so the reply may be incomplete")
 	}
 	return nil
