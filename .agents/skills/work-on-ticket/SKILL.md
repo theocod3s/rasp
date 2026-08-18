@@ -24,7 +24,8 @@ unmerged. If one is, say so and stop rather than working around it.
 
 **Don't invent scope.** If something looks missing it is usually deliberate — check
 `docs/scope.md`'s "deliberately excluded" before adding it. If it's a real gap, raise it; don't
-silently fill it.
+silently fill it. `VISION.md`'s closing accept/resist tests are the acceptance policy: a change
+that passes the ticket but fails them is a conflict to raise, not to ship.
 
 ## 2. Claim it, then branch
 
