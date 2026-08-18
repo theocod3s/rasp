@@ -194,20 +194,21 @@ define one Go struct, derive the schema from it by reflection.
 
 ```go
 type EditParams struct {
-    FilePath   string `json:"file_path"   description:"Absolute path to the file to edit"`
-    OldString  string `json:"old_string"  description:"Exact text to replace; must be unique"`
-    NewString  string `json:"new_string"  description:"Replacement text"`
-    ReplaceAll bool   `json:"replace_all,omitempty" description:"Replace every occurrence"`
+    FilePath   string `json:"file_path"   desc:"Absolute path to the file to edit"`
+    OldString  string `json:"old_string"  desc:"Exact text to replace; must be unique"`
+    NewString  string `json:"new_string"  desc:"Replacement text"`
+    ReplaceAll bool   `json:"replace_all,omitempty" desc:"Replace every occurrence"`
 }
 
-var EditTool = NewTool[EditParams]("edit", editDescription, func(
-    ctx context.Context, p EditParams) (Result, error) {
-    // p is already unmarshalled and validated
+var EditTool = tool.New("edit", editDescription, func(
+    ctx context.Context, p EditParams) (tool.Result, error) {
+    // p is already unmarshalled
 })
 ```
 
 One struct is the schema the model sees, the unmarshal target, *and* the compile-time type.
-They cannot drift. `omitempty` marks a field optional; the `description` tag is prompt text.
+They cannot drift. `omitempty` marks a field optional; the `desc` tag is prompt text, and `enum`
+lists the values a string field may take.
 
 **MCP tools can't work this way** — their schemas arrive at runtime as arbitrary JSON Schema,
 now including `$ref` and any 2020-12 keyword. So rasp's `Tool` interface returns
