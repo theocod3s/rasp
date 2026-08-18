@@ -58,8 +58,8 @@ func TestRequestOnTheWire(t *testing.T) {
 		t.Error("an unflagged system block went out with a cache breakpoint")
 	}
 
-	// Adaptive, never budget_tokens: current models reject the budget shape, and a
-	// caller who asks for one is refused rather than silently sent this instead.
+	// Adaptive, never budget_tokens: current models reject the budget shape, and
+	// ThinkingConfig has no field that could ask for one.
 	thinking, _ := json.Marshal(sent["thinking"])
 	if got := string(thinking); !strings.Contains(got, `"adaptive"`) || strings.Contains(got, "budget_tokens") {
 		t.Errorf("thinking = %s", got)
@@ -177,35 +177,20 @@ func TestStreamRefusesToSendBadRequest(t *testing.T) {
 	}
 }
 
-// TestBuildParamsRefusesToolsAndBudget covers the two fields the adapter reads
-// nowhere. Both would otherwise vanish between the caller and the wire, and the
-// turn would look successful with the request quietly missing half its meaning.
-func TestBuildParamsRefusesToolsAndBudget(t *testing.T) {
-	t.Run("tools", func(t *testing.T) {
-		req := ask()
-		req.Tools = []llm.ToolSpec{{Name: "read", Description: "read a file"}}
+// TestBuildParamsRefusesTools covers the one field the adapter reads nowhere. It
+// would otherwise vanish between the caller and the wire, and the turn would look
+// successful with the request quietly missing half its meaning.
+func TestBuildParamsRefusesTools(t *testing.T) {
+	req := ask()
+	req.Tools = []llm.ToolSpec{{Name: "read", Description: "read a file"}}
 
-		_, err := buildParams(req)
-		if err == nil {
-			t.Fatal("no error; the model would answer in prose with the tools never offered, and nothing above could tell")
-		}
-		if !strings.Contains(err.Error(), "tools") {
-			t.Errorf("error = %v, want one naming the tools", err)
-		}
-	})
-
-	t.Run("thinking budget", func(t *testing.T) {
-		req := ask()
-		req.Thinking = llm.ThinkingConfig{Enabled: true, BudgetTokens: 8000}
-
-		_, err := buildParams(req)
-		if err == nil {
-			t.Fatal("no error; the caller's budget would be dropped and the request sent as though none was asked for")
-		}
-		if !strings.Contains(err.Error(), "BudgetTokens") {
-			t.Errorf("error = %v, want one naming the field", err)
-		}
-	})
+	_, err := buildParams(req)
+	if err == nil {
+		t.Fatal("no error; the model would answer in prose with the tools never offered, and nothing above could tell")
+	}
+	if !strings.Contains(err.Error(), "tools") {
+		t.Errorf("error = %v, want one naming the tools", err)
+	}
 }
 
 // TestBuildParamsRefusesUnsetMaxTokens: the zero value a caller gets by forgetting
@@ -535,17 +520,5 @@ func TestBuildParamsRefusesUnsetModel(t *testing.T) {
 
 	if _, err := buildParams(req); err == nil || !strings.Contains(err.Error(), "no model") {
 		t.Errorf("error = %v, want one naming the missing model", err)
-	}
-}
-
-// TestBuildParamsRefusesBudgetWithThinkingOff: provider.go promises a non-zero
-// budget is refused rather than dropped, and a caller who set one on a disabled
-// config believes it just as much as one who set it on an enabled config.
-func TestBuildParamsRefusesBudgetWithThinkingOff(t *testing.T) {
-	req := ask()
-	req.Thinking = llm.ThinkingConfig{Enabled: false, BudgetTokens: 8000}
-
-	if _, err := buildParams(req); err == nil || !strings.Contains(err.Error(), "BudgetTokens") {
-		t.Errorf("error = %v, want one naming the field", err)
 	}
 }

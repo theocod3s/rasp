@@ -3,6 +3,7 @@ package anthropic
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 
@@ -16,14 +17,6 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 	if req.Model == "" {
 		return sdk.MessageNewParams{}, errors.New("anthropic: no model; the API requires one, " +
 			"and sending this costs an authenticated round trip to be told so")
-	}
-	// Outside the Enabled branch: a budget set on a disabled config is still a
-	// caller who believes it is being honoured, and provider.go now promises it is
-	// refused rather than dropped.
-	if req.Thinking.BudgetTokens != 0 {
-		return sdk.MessageNewParams{}, fmt.Errorf("anthropic: Thinking.BudgetTokens is %d and cannot be sent; "+
-			"depth is an effort level on the models that take the shape used here, and ThinkingConfig has "+
-			"nowhere to carry one", req.Thinking.BudgetTokens)
 	}
 	if req.MaxTokens <= 0 {
 		return sdk.MessageNewParams{}, fmt.Errorf("anthropic: MaxTokens is %d; the API requires a positive cap, "+
@@ -40,6 +33,25 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 	params := sdk.MessageNewParams{
 		Model:     sdk.Model(req.Model),
 		MaxTokens: int64(req.MaxTokens),
+	}
+
+	if req.Thinking.Enabled {
+		// Adaptive unconditionally: a model id is never checked against a catalog
+		// (scope.md), so nothing here can tell whether the model takes this shape or
+		// only the older enabled/budget_tokens one. Adaptive is what current models
+		// take, and the shape the SDK does not warn about on stderr.
+		params.Thinking = sdk.ThinkingConfigParamUnion{OfAdaptive: &sdk.ThinkingConfigAdaptiveParam{}}
+	}
+	// Up here with the other guards rather than beside the translation below: an
+	// unsendable rung is the caller's to fix, and reporting it only after some
+	// unrelated message failed costs them a second round of the same refusal.
+	if req.Effort != "" {
+		level, ok := wireEffort[req.Effort]
+		if !ok {
+			return sdk.MessageNewParams{}, fmt.Errorf("anthropic: cannot send effort %q; this API takes %v, "+
+				"and a turn never runs at a depth other than the one asked for", req.Effort, supported)
+		}
+		params.OutputConfig.Effort = level
 	}
 
 	for i, block := range req.System {
@@ -87,15 +99,34 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 			"the API requires at least one")
 	}
 
-	if req.Thinking.Enabled {
-		// Adaptive is the shape current models take, and budget_tokens is the only
-		// one older models accept. Nothing here can tell which is which: rasp never
-		// validates a model id against a catalog, so that `openrouter/auto` and any
-		// future router keep working (scope.md).
-		params.Thinking = sdk.ThinkingConfigParamUnion{OfAdaptive: &sdk.ThinkingConfigAdaptiveParam{}}
-	}
 	return params, nil
 }
+
+// wireEffort is the single source for what this adapter can express: supported is
+// derived from its keys and buildParams refuses everything else, so a picker and a
+// refusal cannot come apart. A rung added to llm's ladder is refused until someone
+// maps it here — the safe direction, since the API rejects a value its own enum
+// has no member for.
+var wireEffort = map[llm.Effort]sdk.OutputConfigEffort{
+	llm.EffortLow:    sdk.OutputConfigEffortLow,
+	llm.EffortMedium: sdk.OutputConfigEffortMedium,
+	llm.EffortHigh:   sdk.OutputConfigEffortHigh,
+	llm.EffortXHigh:  sdk.OutputConfigEffortXhigh,
+	llm.EffortMax:    sdk.OutputConfigEffortMax,
+}
+
+// supported is the ladder minus the rungs wireEffort has no entry for, derived
+// once at init: the filter is destructive, so running it per call would depend on
+// EffortLadder returning a fresh slice every time — a promise made in another
+// package that nothing here would notice being withdrawn.
+var supported = slices.DeleteFunc(llm.EffortLadder(), func(e llm.Effort) bool {
+	_, ok := wireEffort[e]
+	return !ok
+})
+
+// Efforts is every rung but none and minimal, which Anthropic's enum has no
+// member for. Cloned: supported is also what buildParams refuses against.
+func (c *Client) Efforts() []llm.Effort { return slices.Clone(supported) }
 
 func messageParam(msg llm.Message) (sdk.MessageParam, error) {
 	// Decide first, translate second. What llm can be asked about is neutral
