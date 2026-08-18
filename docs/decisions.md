@@ -188,8 +188,9 @@ take another step, which is a different question from what a process reports to 
 reading stdout has no way of its own to tell a half answer from a whole one, so producing one and
 reporting success is the only failure it cannot detect.
 
-A refusal is not this case, and neither is an interrupt: the model finished, having declined, and
-the user cancelled knowing they had. Both are complete turns and both exit 0, as §4 says.
+A refusal is not this case: the model finished, having declined, so the turn is complete and exits
+0, as §4 says. An interrupt is not settled here — nothing can cancel a turn yet, and the rule for
+one belongs to the work that adds the cancelling.
 
 **Reversing it looks like:** nothing at all interactively, because a person reads the reply and can
 see where it stops. In a pipeline it looks like a commit message cut mid-sentence or a generated
