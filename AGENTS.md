@@ -143,6 +143,9 @@ what the work is and where it stands.
   far. Named here rather than left to the skill's own description, because that description
   reliably fails to trigger: "implement M0-02" reads like ordinary work, so the skill never gets
   consulted. A pointer from a file that is always in context is the fix.
+- **Working a milestone — follow `.agents/skills/work-on-milestone/SKILL.md`.** The orchestrator
+  over work-on-ticket: ordering, fan-out, serial merges, milestone exit. Named here for the same
+  triggering reason — "work M1" reads like ordinary work too.
 - **Writing comments — follow `.agents/skills/comment-density/SKILL.md`.** Named here for the
   same reason, and it needs it more: nobody stops to ask about comment policy before writing a
   file, and the habit it prevents is invisible from inside. Each review round appends a

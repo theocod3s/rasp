@@ -43,10 +43,13 @@ to break by accident, and violating one is far more expensive than the ticket is
 **Comments: follow `.agents/skills/comment-density/SKILL.md` while writing, not after.** The
 habit it stops is invisible from inside — a review round asks "why?", the answer is appended to
 the comment, nothing is ever taken back out, every round is an improvement and the file still
-ends up a third prose. M0-06 shipped `internal/llm` at 45% comment lines that way. A comment
-earns its place by recording what the code **cannot** say: why a rule exists, which provider wire
-shape forced it, why it is deliberately *not* stricter. Cut what restates the identifier, and cut
-what the error string three lines below already says in full sentences.
+ends up a third prose. M0-06 shipped `internal/llm` at 45% comment lines that way. **The default
+is bare code.** An exported identifier owes `go doc` one sentence; an unexported one owes
+nothing; no function gets a comment for merely existing. Past that, a comment earns its place
+only by recording what the code **cannot** say — why a rule exists, which provider wire shape
+forced it, why it is deliberately *not* stricter — and says it in a sentence or two, not a
+paragraph. Cut what restates the identifier, and cut what the error string three lines below
+already says in full sentences.
 
 ## 4. Verify every acceptance criterion, one at a time
 
