@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -33,16 +34,16 @@ func newRunCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			provider, model, err := buildProvider(res.Config)
+			// On stderr, where the reply is not: a setting that did not apply is
+			// what the user needs to see when the answer looks wrong.
+			for _, warning := range res.Warnings {
+				fmt.Fprintf(cmd.ErrOrStderr(), "rasp: %s\n", warning)
+			}
+			provider, model, err := buildProvider(cmd.Context(), res)
 			if err != nil {
 				return err
 			}
-			runner := headless.Runner{
-				Provider: provider,
-				Model:    model,
-				Out:      cmd.OutOrStdout(),
-				Warn:     cmd.ErrOrStderr(),
-			}
+			runner := headless.Runner{Provider: provider, Model: model, Out: cmd.OutOrStdout()}
 			return runner.Run(cmd.Context(), prompt)
 		},
 	}
@@ -57,7 +58,9 @@ func newRunCmd() *cobra.Command {
 // and the id that adapter puts on the wire. A model id carries its provider —
 // `anthropic/claude-opus-5` — which is why there is no --provider flag to
 // contradict it (design §10).
-func buildProvider(cfg config.Config) (llm.Provider, string, error) {
+func buildProvider(ctx context.Context, res *config.Result) (llm.Provider, string, error) {
+	cfg := res.Config
+
 	name, model, ok := strings.Cut(cfg.Model, "/")
 	if !ok || name == "" || model == "" {
 		return nil, "", fmt.Errorf("model %q is not provider/id, so there is nothing saying which "+
@@ -75,8 +78,17 @@ func buildProvider(cfg config.Config) (llm.Provider, string, error) {
 		return nil, "", errors.New("no API key for anthropic; set ANTHROPIC_API_KEY or " +
 			`providers.anthropic.api_key in the config file`)
 	}
+	// What the file holds is a recipe — `$(op read …)`, `${VAR}` — and the resolver
+	// is what turns it into a credential. It also decides what NOT to expand: a key
+	// that came from the environment or a flag has already been through a shell
+	// (design §10). Sending the recipe is a 401 on every run.
+	key, err := config.NewExpander(res, config.ExpanderOptions{}).
+		Expand(ctx, "providers."+name+".api_key")
+	if err != nil {
+		return nil, "", err
+	}
 	return anthropic.New(anthropic.Config{
-		APIKey:  provider.APIKey,
+		APIKey:  key,
 		BaseURL: provider.BaseURL,
 	}), model, nil
 }

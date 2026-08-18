@@ -25,6 +25,24 @@ func TestRunPrintsTheReplyOnce(t *testing.T) {
 	}
 }
 
+// TestRunPrintsTextAddedToAnEarlierBlock drives the shape a single
+// already-written counter gets wrong: two text blocks open at once, and the
+// earlier one gains a fragment after the later one has been printed. Counting
+// bytes across the whole message skips that fragment and reprints as many bytes
+// of the later block in its place.
+func TestRunPrintsTextAddedToAnEarlierBlock(t *testing.T) {
+	var out bytes.Buffer
+	err := run(t, &out, text("Hello"), text("World"), grow(0, "!"), done(llm.StopEndTurn))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The late fragment lands where it arrived — stdout cannot be rewritten — but
+	// every byte is printed once.
+	if got := out.String(); got != "HelloWorld!" {
+		t.Errorf("stdout = %q, want %q", got, "HelloWorld!")
+	}
+}
+
 // TestRunWritesBeforeTheStreamEnds is the streaming half of the same criterion.
 // The handoff writer is unbuffered, so the first receive can only succeed while
 // the provider is still mid-script.
@@ -114,22 +132,20 @@ func TestRunFailsWhenTheStreamNeverTerminates(t *testing.T) {
 	}
 }
 
-func TestRunWarnsWhenTheReplyWasCutOff(t *testing.T) {
-	var out, warn bytes.Buffer
-	runner := headless.Runner{Provider: &scripted{steps: []step{
-		text("as far as it g"), done(llm.StopMaxTokens),
-	}}, Model: "m", Out: &out, Warn: &warn}
-
-	// Truncation is a completed run, per design §4's termination table: the
-	// warning is what stops it reading as a whole answer.
-	if err := runner.Run(context.Background(), "hi"); err != nil {
-		t.Fatalf("Run: %v", err)
+// TestRunFailsWhenTheReplyWasCutOff: a truncated reply is a half answer, and a
+// script reading stdout has no way of its own to notice one.
+func TestRunFailsWhenTheReplyWasCutOff(t *testing.T) {
+	var out bytes.Buffer
+	err := run(t, &out, text("as far as it g"), done(llm.StopMaxTokens))
+	if err == nil {
+		t.Fatal("Run succeeded on a reply the token limit cut short")
 	}
+	if !strings.Contains(err.Error(), "cut off") {
+		t.Errorf("error %q does not say the reply was cut off", err)
+	}
+	// The truncated text is still the model's answer, so it still goes out.
 	if got := out.String(); got != "as far as it g" {
 		t.Errorf("stdout = %q", got)
-	}
-	if !strings.Contains(warn.String(), "cut off") {
-		t.Errorf("stderr = %q, want a warning that the reply was cut off", warn.String())
 	}
 }
 

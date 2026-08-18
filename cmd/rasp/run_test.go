@@ -48,6 +48,18 @@ func TestRunRejectsAnEmptyPrompt(t *testing.T) {
 	}
 }
 
+// replayServer answers any request with one streamed text reply.
+func replayServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, replyStream)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 // unreachableModel points the configuration at a server that fails the test if
 // anything reaches it, so "the prompt never got sent" is asserted rather than
 // assumed.
@@ -163,6 +175,58 @@ func TestRunStreamsTheReplyToStdout(t *testing.T) {
 	}
 }
 
+// TestRunReportsConfigWarningsOnStderr: a misspelt setting is dropped silently
+// by the resolver, and `rasp run` is the command where the user would otherwise
+// meet that as an answer produced under settings they thought they had changed.
+func TestRunReportsConfigWarningsOnStderr(t *testing.T) {
+	srv := replayServer(t)
+	projectConfig(t, fmt.Sprintf(`{
+	  "model": "anthropic/claude-opus-5",
+	  "modle": "typo/here",
+	  "providers": {"anthropic": {"api_key": "test-key", "base_url": %q}}
+	}`, srv.URL))
+
+	stdout, stderr, err := run(t, "run", "-p", "hi")
+	if err != nil {
+		t.Fatalf("run: %v (stderr %q)", err, stderr)
+	}
+	if !strings.Contains(stderr, "modle") {
+		t.Errorf("stderr = %q, want the ignored setting named", stderr)
+	}
+	// And the warning did not land in what a script reads.
+	if stdout != "Rayleigh scattering." {
+		t.Errorf("stdout = %q, want the reply and nothing else", stdout)
+	}
+}
+
+// TestRunExpandsTheConfiguredCredential: what a config file holds is a recipe,
+// not a secret. Sent as written it is a 401 on every run, and the report from
+// `config check` would still look right, because it hides the value either way.
+func TestRunExpandsTheConfiguredCredential(t *testing.T) {
+	t.Setenv("RASP_TEST_CREDENTIAL", "sk-expanded")
+
+	headers := make(chan http.Header, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headers <- r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, replyStream)
+	}))
+	defer srv.Close()
+
+	projectConfig(t, fmt.Sprintf(`{
+	  "model": "anthropic/claude-opus-5",
+	  "providers": {"anthropic": {"api_key": "${RASP_TEST_CREDENTIAL}", "base_url": %q}}
+	}`, srv.URL))
+
+	if _, stderr, err := run(t, "run", "-p", "hi"); err != nil {
+		t.Fatalf("run: %v (stderr %q)", err, stderr)
+	}
+	if got := (<-headers).Get("X-Api-Key"); got != "sk-expanded" {
+		t.Errorf("X-Api-Key = %q, want the expanded credential", got)
+	}
+}
+
 func TestBuildProviderRejectsWhatItCannotServe(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -187,7 +251,7 @@ func TestBuildProviderRejectsWhatItCannotServe(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := buildProvider(tc.cfg)
+			_, _, err := buildProvider(t.Context(), &config.Result{Config: tc.cfg})
 			if err == nil {
 				t.Fatalf("buildProvider(%+v) succeeded", tc.cfg)
 			}

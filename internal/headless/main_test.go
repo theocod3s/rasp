@@ -93,6 +93,16 @@ func miscounted(chunks ...string) step {
 	}
 }
 
+// grow adds to a block already open, which is how a provider streaming two text
+// blocks at once delivers the earlier one's next fragment. Legal: one delta adds
+// to one block, and nothing says it has to be the last.
+func grow(index int, chunk string) step {
+	return func(msg *llm.Message, yield func(llm.Event) bool) bool {
+		msg.Content[index].Text += chunk
+		return yield(llm.Event{Type: llm.EventTextDelta, Delta: chunk, Partial: msg})
+	}
+}
+
 func done(reason llm.StopReason) step {
 	return func(msg *llm.Message, yield func(llm.Event) bool) bool {
 		msg.StopReason = reason
