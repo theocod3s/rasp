@@ -465,7 +465,15 @@ var Edit = tool.New("edit", editDescription,
 ```
 
 The `desc` tags are prompt text and get hand-tuned like prompt text — but they live beside the
-field they describe instead of in a parallel map that rots.
+field they describe instead of in a parallel map that rots. A fourth tag, `enum:"a,b,c"`, lists
+the values a string field may take; Go has no enum to reflect over, so the values are named on
+the field.
+
+Reflection refuses rather than guesses. A type whose JSON is not its fields — anything with its
+own `MarshalJSON`, `time.Time` first among them — a channel, a map keyed by anything but a
+string, or two fields claiming one property name: each panics at construction, which for a
+package-level tool var means at startup. The alternative is a schema that describes the wrong
+thing, and the model finds that out one failed call at a time.
 
 **Producer 2 — pass-through, for MCP.** See §8. The server's schema is used verbatim; we do
 not attempt to validate or re-derive it.

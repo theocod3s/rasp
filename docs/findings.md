@@ -64,9 +64,9 @@ duplication and no drift between "what the model was told" and "what we parse." 
 their own small reflector rather than using `invopop/jsonschema` (which they do use, but only
 for the *config* schema).
 
-**For us:** reflection with a `description` struct tag. The descriptions still get hand-tuned
-— they're prompt text — but they live next to the field they describe instead of in a
-parallel map that silently rots.
+**For us:** reflection with a `desc` struct tag — Crush's idea under a shorter name, because it
+shares a line with the `json` tag. The descriptions still get hand-tuned — they're prompt text
+— but they live next to the field they describe instead of in a parallel map that silently rots.
 
 ### 2. The edit tool is exact-string replace, and it fails loudly
 
