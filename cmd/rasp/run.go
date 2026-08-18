@@ -79,16 +79,22 @@ func buildProvider(ctx context.Context, res *config.Result) (llm.Provider, strin
 			`providers.anthropic.api_key in the config file`)
 	}
 	// What the file holds is a recipe — `$(op read …)`, `${VAR}` — and the resolver
-	// is what turns it into a credential. It also decides what NOT to expand: a key
+	// is what turns it into a value. It also decides what NOT to expand: anything
 	// that came from the environment or a flag has already been through a shell
 	// (design §10). Sending the recipe is a 401 on every run.
-	key, err := config.NewExpander(res, config.ExpanderOptions{}).
-		Expand(ctx, "providers."+name+".api_key")
+	expander := config.NewExpander(res, config.ExpanderOptions{})
+	key, err := expander.Expand(ctx, "providers."+name+".api_key")
 	if err != nil {
 		return nil, "", err
 	}
-	return anthropic.New(anthropic.Config{
-		APIKey:  key,
-		BaseURL: provider.BaseURL,
-	}), model, nil
+	baseURL := provider.BaseURL
+	if baseURL != "" {
+		// The grammar is per value, not per key: someone who writes `${GATEWAY}` in
+		// one field has the same expectation in the other, and an unexpanded one
+		// fails naming a URL they never wrote.
+		if baseURL, err = expander.Expand(ctx, "providers."+name+".base_url"); err != nil {
+			return nil, "", err
+		}
+	}
+	return anthropic.New(anthropic.Config{APIKey: key, BaseURL: baseURL}), model, nil
 }

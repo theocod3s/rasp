@@ -82,9 +82,9 @@ func unreachableModel(t *testing.T) {
 func TestRunExitsOneWithNothingOnStdout(t *testing.T) {
 	t.Setenv("RASP_LOG_FILE", filepath.Join(t.TempDir(), "rasp.log"))
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("ANTHROPIC_API_KEY", "")
-	// A model with no credential behind it: the failure happens before any
-	// request, so the test needs no server to fail against.
+	// A model with no credential behind it — projectConfig clears the environment
+	// layer, so the file is the only place one could come from. The failure
+	// happens before any request, so the test needs no server to fail against.
 	projectConfig(t, `{"model": "anthropic/claude-opus-5"}`)
 
 	stdout, readStdout := captureFile(t, "stdout")
@@ -199,10 +199,11 @@ func TestRunReportsConfigWarningsOnStderr(t *testing.T) {
 	}
 }
 
-// TestRunExpandsTheConfiguredCredential: what a config file holds is a recipe,
-// not a secret. Sent as written it is a 401 on every run, and the report from
-// `config check` would still look right, because it hides the value either way.
-func TestRunExpandsTheConfiguredCredential(t *testing.T) {
+// TestRunExpandsWhatTheConfigFileHolds: a config value is a recipe, not the
+// thing itself. Sent as written, the credential is a 401 on every run and the
+// endpoint is a request naming a URL nobody typed — and `config check` would
+// still look right, because it hides the credential either way.
+func TestRunExpandsWhatTheConfigFileHolds(t *testing.T) {
 	t.Setenv("RASP_TEST_CREDENTIAL", "sk-expanded")
 
 	headers := make(chan http.Header, 1)
@@ -214,10 +215,16 @@ func TestRunExpandsTheConfiguredCredential(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	projectConfig(t, fmt.Sprintf(`{
+	// The endpoint goes through the grammar too, so a request reaching this
+	// server at all is the assertion that it did.
+	t.Setenv("RASP_TEST_ENDPOINT", srv.URL)
+	projectConfig(t, `{
 	  "model": "anthropic/claude-opus-5",
-	  "providers": {"anthropic": {"api_key": "${RASP_TEST_CREDENTIAL}", "base_url": %q}}
-	}`, srv.URL))
+	  "providers": {"anthropic": {
+	    "api_key": "${RASP_TEST_CREDENTIAL}",
+	    "base_url": "${RASP_TEST_ENDPOINT}"
+	  }}
+	}`)
 
 	if _, stderr, err := run(t, "run", "-p", "hi"); err != nil {
 		t.Fatalf("run: %v (stderr %q)", err, stderr)

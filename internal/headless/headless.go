@@ -10,10 +10,11 @@ import (
 	"github.com/theocod3s/rasp/internal/llm"
 )
 
-// DefaultMaxTokens caps the reply. Configuration has no key for it: design §10's
-// context.reserve_tokens is the compaction margin, not an output budget, so the
-// number lives here until a turn has reason to vary it.
-const DefaultMaxTokens = 8192
+// DefaultMaxTokens caps the reply. Configuration has no key for it yet, and
+// reaching this cap is a failed run with no way for a user to raise it, so the
+// number is set where truncating a text answer takes deliberate effort rather
+// than where it saves tokens.
+const DefaultMaxTokens = 16384
 
 // Runner answers one prompt with one model call. There is no loop and no tools
 // yet, so a turn is a single Stream.
@@ -35,10 +36,9 @@ type Runner struct {
 // as it arrives, including whatever arrived before a failure.
 //
 // nil means a complete reply. A stream that broke, one that stopped without
-// saying so, and a reply the token cap cut short all come back as errors,
-// because a script reading stdout cannot tell a half answer from a whole one.
-// Design §4's termination table calls truncation "complete" — that is whether
-// the loop takes another step, not what a process reports to a shell.
+// saying so, and a reply the token cap cut short all come back as errors, so a
+// caller reading stdout is never handed a half answer with nothing to say so
+// (decisions.md, which also covers why truncation counts and a refusal does not).
 func (r Runner) Run(ctx context.Context, prompt string) error {
 	maxTokens := r.MaxTokens
 	if maxTokens == 0 {
@@ -97,7 +97,9 @@ type written []int
 // records it. Reading Partial rather than adding Event.Delta up is the
 // StreamResponse contract: the message is the authority, so a provider whose
 // delta bookkeeping is wrong still gets its reply printed correctly. Thinking is
-// not part of the reply and is skipped.
+// not part of the reply and is skipped, and growth in a block that is not the
+// last one goes out where it arrived rather than where it belongs — what has
+// been written cannot be unwritten.
 func (w *written) gained(msg *llm.Message) string {
 	if len(*w) < len(msg.Content) {
 		*w = append(*w, make([]int, len(msg.Content)-len(*w))...)

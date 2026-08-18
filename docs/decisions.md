@@ -179,14 +179,17 @@ is no safer than stdout once the alternate screen buffer is in use.
 *Settled while scoping M0-07d, where `anthropic-sdk-go` wrote two lines from inside the first
 request, one of them naming an environment variable that was not set.*
 
-## A half answer never exits 0
+## A reply the output limit cut short is a failure, not a completion
 
-Anything short of a complete reply is a non-zero exit, and that includes a reply the output limit
-cut short. Design §4's termination table calls `StopMaxTokens` with no tool calls "Complete; warn
-the reply was cut off" — that is the loop's decision about whether to take another step, which is
-a different question from what a process reports to a shell. A caller reading stdout has no way of
-its own to tell a half answer from a whole one, so producing one and reporting success is the only
-failure it cannot detect.
+A non-interactive run exits non-zero when the output limit truncates a reply, printing the
+truncated text to stdout all the same. Design §4's termination table calls `StopMaxTokens` with no
+tool calls "Complete; warn the reply was cut off" — that is the loop's decision about whether to
+take another step, which is a different question from what a process reports to a shell. A caller
+reading stdout has no way of its own to tell a half answer from a whole one, so producing one and
+reporting success is the only failure it cannot detect.
+
+A refusal is not this case, and neither is an interrupt: the model finished, having declined, and
+the user cancelled knowing they had. Both are complete turns and both exit 0, as §4 says.
 
 **Reversing it looks like:** nothing at all interactively, because a person reads the reply and can
 see where it stops. In a pipeline it looks like a commit message cut mid-sentence or a generated
