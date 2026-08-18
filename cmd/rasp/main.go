@@ -46,9 +46,9 @@ func execute(args []string) int {
 	return 0
 }
 
-// newRootCmd builds the command tree. The TUI, `run` and the session and mcp
+// newRootCmd builds the command tree. The TUI and the session and mcp
 // subcommands join it with the milestones that add them; until then the root
-// says what it is and the config subcommand is the whole of it.
+// says what it is and `run` is the whole of the agent.
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "rasp",
@@ -72,7 +72,7 @@ func newRootCmd() *cobra.Command {
 		cmd.PersistentFlags().String(b.Flag, "", b.Usage)
 	}
 
-	cmd.AddCommand(newConfigCmd())
+	cmd.AddCommand(newConfigCmd(), newRunCmd())
 	return cmd
 }
 
