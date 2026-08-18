@@ -471,11 +471,19 @@ func TestStreamFinishedTurnCarriesNoContent(t *testing.T) {
 			[]llm.Block{{Type: llm.BlockText}}},
 	}
 
+	// Neither fixture has anything to announce: one block was dropped before it
+	// reached the message, the other never filled. An adapter that announced either
+	// would have a UI drawing a paragraph nothing is ever written to.
+	wantEvents := []llm.EventType{llm.EventMessageStart, llm.EventDone}
+
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			events, err := llm.CheckStream(replay(t, tc.fixture).Stream(context.Background(), ask()))
 			if err != nil {
 				t.Fatalf("CheckStream: %v; the API answered this turn with a 200", err)
+			}
+			if got := types(events); !slices.Equal(got, wantEvents) {
+				t.Errorf("event types = %v, want %v", got, wantEvents)
 			}
 			// stop_sequence maps onto end_turn, so both fixtures are a finished turn:
 			// the reasons that exempt a half-delivered one are not in play here.
@@ -499,7 +507,13 @@ func TestStreamFinishedTurnCarriesNoContent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("buildParams: %v; every later request in this session would fail the same way", err)
 			}
+			// Asserted on both user turns and on the count: with only "go on" named, a
+			// skip that took the turn before it as well would read as a pass.
+			if got := len(params.Messages); got != 1 {
+				t.Fatalf("sent %d messages, want the two user turns merged into one", got)
+			}
 			assertSendsNoEmptyTextBlock(t, params, "go on")
+			assertSendsNoEmptyTextBlock(t, params, "read auth.go")
 			assertRolesAlternate(t, params)
 		})
 	}
