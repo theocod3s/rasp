@@ -4,8 +4,9 @@
 // Design §2 is mostly a table of exclusions — what each package must *not*
 // contain — and a rule that lives only in a design document is one nobody reads
 // at the moment they are about to break it. These tests move that rule to where
-// it fails the build. The workspace boundary is slated for the same treatment
-// ("enforced by a lint or test") when it lands.
+// it fails the build; workspace_boundary_test.go does the same for the one §2
+// states as a route rather than an exclusion, every file tool reaching the
+// filesystem through internal/workspace.
 //
 // The package list is parsed out of docs/design.md rather than copied into this
 // file. A copy would let the tree and the document drift apart one green build
