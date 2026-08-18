@@ -101,6 +101,8 @@ when they are already in context.
 | Why a mechanism works at all, from first principles | `docs/internals.md` |
 | Evidence behind a decision ("neo does X, and here's why") | `docs/findings.md` |
 | A rule already settled that new code must not reverse | `docs/decisions.md` |
+| Whether a change fits what rasp is becoming — the accept/resist tests | `VISION.md` |
+| A first orientation in the tree, for a reader design.md would drown | `ARCHITECTURE.md` |
 | What the next piece of work is, with deps and acceptance criteria | Linear — [project Rasp](https://linear.app/theocod3s/project/rasp-be0653f32d76) |
 
 The last row is the only one that is not a file in this repo, and that is deliberate: tickets

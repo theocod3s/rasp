@@ -84,8 +84,8 @@ changed shape. A milestone worked in silence produces a report nobody can act on
 too late to act.
 
 When a spec conflict or scope gap appears mid-run, that is a decision, not an obstacle to route
-around — stop that ticket, state the options and your recommendation, and keep working only
-what does not depend on the answer.
+around — stop that ticket, state the options against `VISION.md`'s accept/resist tests along
+with your recommendation, and keep working only what does not depend on the answer.
 
 All tickets Done is not the exit. The milestone description states its exit criteria (a demo, a
 live run, a gate); run them, and only then call the milestone closed — with the board reading
