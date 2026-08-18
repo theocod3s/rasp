@@ -172,9 +172,9 @@ func TestATruncatedReplyRunsNoneOfItsCalls(t *testing.T) {
 	}
 	msgs := a.Messages()
 	wantPaired(t, msgs, 1)
-	if result := msgs[2].Content[0]; !result.IsError {
-		t.Errorf("the call was answered with %q and no error flag; the model needs to see it did not run",
-			result.Content)
+	if result := msgs[2].Content[0]; !result.IsError || strings.Contains(result.Content, "interrupted") {
+		t.Errorf("the call was answered with %q (error: %t); the model needs to see it did not run, and "+
+			"nothing interrupted this turn", result.Content, result.IsError)
 	}
 	if len(p.Requests()) != 2 {
 		t.Errorf("the provider was called %d time(s); the model is told its calls failed and takes "+
@@ -342,7 +342,8 @@ func TestCancellingMidStreamAnswersTheCallItWasMaking(t *testing.T) {
 	}
 	msgs := a.Messages()
 	wantPaired(t, msgs, 1)
-	if result := msgs[2].Content[0]; !result.IsError {
-		t.Errorf("the unrun call was answered with %q and no error flag", result.Content)
+	if result := msgs[2].Content[0]; !result.IsError || !strings.Contains(result.Content, "interrupted") {
+		t.Errorf("the unrun call was answered with %q (error: %t); a call the user stopped says so, "+
+			"because asking again is a suggestion to a person", result.Content, result.IsError)
 	}
 }

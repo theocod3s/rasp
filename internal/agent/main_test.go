@@ -87,35 +87,79 @@ func (r *recorder) of(kind agent.EventKind) []agent.Event {
 	return out
 }
 
-// wantPaired asserts design §4 invariant 1 over a transcript: the tool_use ids
-// it holds and the tool_result ids answering them are the same sequence. An
-// orphan either way is a 400 on this request and on every request built from the
-// transcript afterwards.
-//
-// calls is how many tool_use blocks the transcript should hold, because a
-// transcript with none passes every other assertion in here — which is the
-// quietest way for this check to stop checking anything.
+// wantPaired is wantValid over a transcript whose shape the test knows: calls is
+// how many tool_use blocks it should hold, because a transcript with none passes
+// every assertion in wantValid — which is the quietest way for this check to stop
+// checking anything.
 func wantPaired(t *testing.T, msgs []llm.Message, calls int) {
 	t.Helper()
 
-	var uses, results []string
+	var uses []string
 	for _, msg := range msgs {
 		for _, block := range msg.Content {
-			switch block.Type {
-			case llm.BlockToolUse:
+			if block.Type == llm.BlockToolUse {
 				uses = append(uses, block.ID)
-			case llm.BlockToolResult:
-				results = append(results, block.ToolUseID)
 			}
 		}
 	}
-
 	if len(uses) != calls {
 		t.Fatalf("the transcript holds %d tool_use block(s) and the test expects %d: %v", len(uses), calls, uses)
 	}
-	if !slices.Equal(uses, results) {
-		t.Fatalf("tool_use ids %v are answered by tool_result ids %v; every provider rejects a "+
-			"transcript where those two differ", uses, results)
+	wantValid(t, msgs)
+}
+
+// wantValid asserts the transcript is one a provider will still accept, whatever
+// the turn did or how it ended.
+//
+// Two properties, checked in one comparison per message. Roles alternate from the
+// user's prompt onward, so two replies in a row — a step that committed the
+// assistant message without its results, or committed it twice — is caught. And
+// every message's tool_use ids are exactly the tool_result ids of the message
+// after it, in order: a call answered late, out of order, in a message of its
+// own, or not at all all read as a mismatch, as does a result answering nothing.
+// The last message is compared against no successor, which is what makes a
+// dangling call at the end of an interrupted turn a failure here.
+//
+// An orphan either way is a 400 on this request and on every request built from
+// the transcript afterwards, so the session is bricked rather than degraded
+// (design §4 invariant 1).
+func wantValid(t *testing.T, msgs []llm.Message) {
+	t.Helper()
+
+	ids := func(msg llm.Message, kind llm.BlockType) []string {
+		var out []string
+		for _, block := range msg.Content {
+			switch {
+			case block.Type != kind:
+			case kind == llm.BlockToolUse:
+				out = append(out, block.ID)
+			default:
+				out = append(out, block.ToolUseID)
+			}
+		}
+		return out
+	}
+
+	want := llm.RoleUser
+	for i, msg := range msgs {
+		if msg.Role != want {
+			t.Fatalf("message %d of %d is a %q message where the transcript wants %q; the loop "+
+				"alternates from the prompt onward", i, len(msgs), msg.Role, want)
+		}
+		if want == llm.RoleUser {
+			want = llm.RoleAssistant
+		} else {
+			want = llm.RoleUser
+		}
+
+		var answers []string
+		if i+1 < len(msgs) {
+			answers = ids(msgs[i+1], llm.BlockToolResult)
+		}
+		if uses := ids(msg, llm.BlockToolUse); !slices.Equal(uses, answers) {
+			t.Fatalf("message %d asks for tool_use ids %v and the message after it answers %v; every "+
+				"provider rejects a transcript where those two differ", i, uses, answers)
+		}
 	}
 }
 
