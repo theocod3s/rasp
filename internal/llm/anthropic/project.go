@@ -54,9 +54,10 @@ func project(msg *llm.Message, acc *sdk.Message) error {
 //
 // The three-way split is the point. Dropping an unknown type silently is the
 // quietest failure the receive side could have — the user reads an answer with a
-// hole in it, and a turn whose only block was unknown commits with no content at
-// all, which every provider refuses on replay. Anthropic adds block types
-// regularly, so the default has to be loud.
+// hole in it, and a turn whose only block was unknown commits with nothing in it,
+// which the send side then withholds from every later request, so the reply leaves
+// no trace at all. Anthropic adds block types regularly, so the default has to be
+// loud.
 //
 // Drop on the block's TYPE and never on its contents. Projection is positional,
 // and the SDK documents that deltas and stops interleave across open blocks,

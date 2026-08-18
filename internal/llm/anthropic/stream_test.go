@@ -454,6 +454,57 @@ func TestStreamFinishedTurnCarriesAnEmptyBlock(t *testing.T) {
 	}
 }
 
+// TestStreamFinishedTurnCarriesNoContent: two successful turns with nothing in them
+// for the loop to draw. redacted_thinking is dropped on its type (see projectBlock),
+// so a turn whose only block was one commits with no blocks at all; a stop sequence
+// the model emits before any text commits one empty text block, which is the shape
+// an "at least one block with content" rule would fail. The stream contract accepts
+// both (design §3.1a), and the transcript stays usable either way — which is what
+// the count rule it used to hold claimed to be protecting.
+func TestStreamFinishedTurnCarriesNoContent(t *testing.T) {
+	cases := map[string]struct {
+		fixture string
+		want    []llm.Block
+	}{
+		"a turn whose only block was redacted thinking": {"redacted_thinking_only.sse", nil},
+		"a stop sequence hit before any text arrived": {"stop_sequence.sse",
+			[]llm.Block{{Type: llm.BlockText}}},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			events, err := llm.CheckStream(replay(t, tc.fixture).Stream(context.Background(), ask()))
+			if err != nil {
+				t.Fatalf("CheckStream: %v; the API answered this turn with a 200", err)
+			}
+			// stop_sequence maps onto end_turn, so both fixtures are a finished turn:
+			// the reasons that exempt a half-delivered one are not in play here.
+			end := last(t, events)
+			if end.Type != llm.EventDone || end.StopReason != llm.StopEndTurn {
+				t.Fatalf("terminal event = %s/%s, want %s/%s", end.Type, end.StopReason,
+					llm.EventDone, llm.StopEndTurn)
+			}
+			committed := *end.Partial
+			if got := committed.Content; len(got) != len(tc.want) ||
+				(len(got) > 0 && !reflect.DeepEqual(got, tc.want)) {
+				t.Fatalf("committed content = %+v, want %+v", got, tc.want)
+			}
+
+			// And the transcript still works: the turn is withheld from the next
+			// request, the user turns either side of it are not.
+			next := ask()
+			next.Messages = append(next.Messages, committed,
+				llm.Message{Role: llm.RoleUser, Content: []llm.Block{{Type: llm.BlockText, Text: "go on"}}})
+			params, err := buildParams(next)
+			if err != nil {
+				t.Fatalf("buildParams: %v; every later request in this session would fail the same way", err)
+			}
+			assertSendsNoEmptyTextBlock(t, params, "go on")
+			assertRolesAlternate(t, params)
+		})
+	}
+}
+
 // TestStreamContextWindowExceeded: §12 wants this one fatal with a fix hint, and
 // the retry classifier is a pure function over the message — so it has to be
 // distinguishable from a stop reason nobody has taught the adapter yet.
@@ -475,9 +526,8 @@ func TestStreamContextWindowExceeded(t *testing.T) {
 }
 
 // TestStreamUnknownBlock: Anthropic ships new content block types regularly, and
-// dropping one silently is the quietest failure the receive side could have — the
-// user reads an answer with a hole in it, and a turn whose only block was unknown
-// commits with no content at all, which every provider refuses on replay.
+// dropping one silently is the quietest failure the receive side could have — what
+// it costs is in projectBlock.
 func TestStreamUnknownBlock(t *testing.T) {
 	events, err := llm.CheckStream(replay(t, "unknown_block.sse").Stream(context.Background(), ask()))
 	if err != nil {
