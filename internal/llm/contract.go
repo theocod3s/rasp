@@ -82,15 +82,14 @@ var (
 	doneReasons  = []StopReason{StopEndTurn, StopToolUse, StopMaxTokens, StopRefusal, StopAborted}
 	errorReasons = []StopReason{StopError, StopAborted}
 
-	// finished are the reasons claiming every tool call was announced; they gate
-	// the empty-message rule below too. Truncation and cancellation stop mid-flight,
-	// leaving what design §4 invariant 2's guard exists to fail.
+	// finished are the reasons claiming every tool call was announced. Truncation
+	// and cancellation stop mid-flight, leaving what design §4 invariant 2's guard
+	// exists to fail.
 	//
-	// Refusal's absence reads oddly and is load-bearing both ways: a model can
-	// decline part way through a call, which design §4's termination table does
-	// not cover, and can decline before producing anything, which arrives as a 200
-	// with no blocks. errorReasons does not take StopRefusal either, so requiring
-	// announcements or content here leaves a faithful adapter nowhere to put them.
+	// Refusal's absence reads oddly and is load-bearing: a model can decline part
+	// way through a call, which design §4's termination table does not cover, and
+	// errorReasons does not take StopRefusal either — so requiring an announcement
+	// here would leave a faithful adapter nowhere to put that turn.
 	finished = []StopReason{StopEndTurn, StopToolUse}
 )
 
@@ -178,14 +177,12 @@ func (c *streamChecker) checkComplete() error {
 			"model stopped to use one", c.stop)
 	}
 
-	// Design §4 step 6 commits whatever the turn produced without asking, so this
-	// is the only place to catch an empty one while the blame is the adapter's.
-	// A message with blocks, one of them empty, is legal by contrast: that is a real
-	// wire shape, and dropping the block moves an index (design §3.1a).
-	if len(c.partial.Content) == 0 {
-		return fmt.Errorf("the stream ended with StopReason %q and no content; a finished message with "+
-			"no blocks in it is refused by every provider the next time it is sent", c.stop)
-	}
+	// How many blocks a finished turn carries is deliberately unchecked, and the
+	// rule has now been argued in both directions twice (design §3.1a). An adapter
+	// may drop a block on its type, so a turn whose only content was Anthropic's
+	// redacted_thinking arrives with no blocks at all — indistinguishable here from
+	// an adapter that mapped nothing, and harmless downstream, since a message with
+	// nothing left to send is skipped rather than refused (CheckSendable).
 	return nil
 }
 

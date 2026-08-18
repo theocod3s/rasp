@@ -159,11 +159,21 @@ The contract shipped with the opposite rule and it could not hold. Every adapter
 it required removing a block from a position, which is exactly what the index rule forbids, and the
 index rule is the load-bearing one: a consumer has already drawn the block.
 
-**Reversing it looks like:** a re-added emptiness check that no adapter can pass, so the first
-provider to send an empty block fails a turn the API considered successful. Tempting because "a turn
-that finished had time to fill it" reads as obviously true.
+The **count** goes the same way: a finished turn may carry no blocks at all. An adapter drops
+`redacted_thinking` on its type (above), so a turn whose only content was redacted thinking arrives
+with none — and at that point it cannot be told from an adapter that mapped nothing. Nothing needs
+the rule anyway, since an assistant message with nothing left to send is withheld from the next
+request rather than refused (above).
 
-*Settled while scoping M0-07c.*
+**Reversing it looks like:** a re-added emptiness or count check that no adapter can pass, so the
+first provider to send an empty block, or to end a turn on a block type the adapter drops, fails a
+turn the API considered successful. Tempting because "a turn that finished had time to fill it" reads
+as obviously true. The tightening is tempting for the same reason and fails a third real shape: "at
+least one block *with content in it*" rejects an Anthropic turn that hit a stop sequence, which
+returns exactly one empty text block.
+
+*Settled while scoping M0-07c, and the count half in M1-29 — after that half was argued in both
+directions a second time.*
 
 ## The standard loggers belong to rasp, not to whatever wrote to them
 

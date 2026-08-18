@@ -820,13 +820,20 @@ func TestCheckStreamRejects(t *testing.T) {
 			// for a block gone after the stream opens the same way.
 			want: "blocks are only ever added to",
 		},
-		"a finished turn with nothing in it": {
-			seq: stream(llm.Event{
-				Type:       llm.EventDone,
-				StopReason: llm.StopEndTurn,
-				Partial:    &llm.Message{Role: llm.RoleAssistant, StopReason: llm.StopEndTurn},
-			}),
-			want: "no blocks in it",
+		// The same drop with nothing surviving it. A finished turn with no blocks
+		// is legal now (see checkComplete), so what has to stay caught here is the
+		// block having been seen, not the count.
+		"a finished turn whose only block was dropped once it had been seen": {
+			seq: func(yield func(llm.Event) bool) {
+				msg := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText}}}
+				if !yield(llm.Event{Type: llm.EventMessageStart, Partial: msg}) {
+					return
+				}
+				msg.Content = nil
+				msg.StopReason = llm.StopEndTurn
+				yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+			},
+			want: "blocks are only ever added to",
 		},
 		"a placeholder cleared instead of replaced": {
 			seq: func(yield func(llm.Event) bool) {
@@ -1443,6 +1450,32 @@ func TestCheckStreamAcceptsRealWireShapes(t *testing.T) {
 				return
 			}
 			msg.Content = append(msg.Content, llm.Block{Type: llm.BlockText})
+			msg.StopReason = llm.StopEndTurn
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+		},
+
+		// A finished turn with no blocks at all. An adapter may drop a block on its
+		// type (decisions.md), and Anthropic's redacted_thinking is one it drops, so a
+		// turn whose only content was that arrives empty — and nothing here can tell it
+		// from an adapter that mapped nothing.
+		"a finished turn whose only block was dropped on its type": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant}
+			if !yield(llm.Event{Type: llm.EventMessageStart, Partial: msg}) {
+				return
+			}
+			msg.StopReason = llm.StopEndTurn
+			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
+		},
+
+		// Anthropic returns the text up to the stop sequence, so a model that emits
+		// the sequence first returns exactly one EMPTY text block. That is the shape
+		// making "at least one block with content in it" the wrong tightening.
+		"a stop sequence hit before any text arrived": func(yield func(llm.Event) bool) {
+			msg := &llm.Message{Role: llm.RoleAssistant}
+			if !yield(llm.Event{Type: llm.EventMessageStart, Partial: msg}) {
+				return
+			}
+			msg.Content = []llm.Block{{Type: llm.BlockText}}
 			msg.StopReason = llm.StopEndTurn
 			yield(llm.Event{Type: llm.EventDone, StopReason: llm.StopEndTurn, Partial: msg})
 		},

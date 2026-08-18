@@ -293,7 +293,7 @@ truncated-tool-call guard, and getting that wrong silently corrupts files.
 ### 3.1a What the contract deliberately does not check
 
 `llm.CheckStream` is the contract above in executable form, and every adapter is run against
-it. Four of its gaps are deliberate, and all four were settled the same way: **a rule that
+it. Five of its gaps are deliberate, and all five were settled the same way: **a rule that
 rejects a wire format some provider actually sends costs more than the bug it would have
 caught**, because the adapter's author cannot tell which of the two they are looking at.
 
@@ -342,6 +342,26 @@ trailing blocks: a block that never fills at all, filtered before it ever reache
 invisible whatever index it sat at — nothing above the adapter can see a block that never
 appeared. What is caught is every block that *does* fill, which is the same thing as saying an
 adapter only learns which blocks those were once the stream has ended.
+
+**How many blocks a finished turn carries.** The emptiness rule above has a count half — "at least
+one block" — which shipped and has now been argued in both directions twice. It goes. An adapter is
+licensed to drop a block on its **type** ([decisions.md](decisions.md)), and `redacted_thinking` is
+the type it drops, so a turn whose only content was redacted thinking reaches this check with no
+blocks and fails a turn the API answered 200 to. Nothing here can tell that turn from an adapter
+that mapped nothing: the dropped block never reaches `Partial`, which is the blindness the paragraph
+above ends on. Tightening it the other way — "at least one block *with content in it*" — is worse
+again, because an Anthropic turn that hits a stop sequence returns exactly one *empty* text block.
+
+What the count rule caught was an adapter that filtered its **only** block on the block's contents,
+which is one case of that invisible drop rather than a rule of its own; a block seen in any earlier
+event and then dropped is still caught, wherever it sat. Closing the invisible case is the adapter's
+own job against a recorded response — `finished_empty_block.sse` and `finished_empty_thinking.sse`
+assert the committed blocks exactly, which is how the Anthropic adapter closes it. Nothing is lost
+downstream either, and the rule's own error message had that backwards: a message with nothing left
+to send is withheld from the next request rather than refused ([decisions.md](decisions.md)), so a
+blockless finished turn does not wedge a transcript. What survives here is the half that never
+depended on the count: a turn reporting `tool_use` with no tool_use block in it is still refused, in
+that direction only.
 
 **That usage is reported at all.** `Message.Usage` is authoritative for context estimation
 (§11), so an adapter that never maps it is a real bug. Requiring it here is still wrong: an

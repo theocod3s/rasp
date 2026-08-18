@@ -289,9 +289,8 @@ func TestReplayingATurnCutOnABlockBoundary(t *testing.T) {
 }
 
 // TestReplayingARefusal: a model can decline before producing anything, which
-// arrives as a 200 with no blocks at all — contract.go exempts StopRefusal from
-// its emptiness rule for exactly that reason, so the state is one the repo already
-// says is reachable. The committed message is then unsendable, and refusing it
+// arrives as a 200 with no blocks at all and which the stream contract accepts
+// (design §3.1a). The committed message is then unsendable, and refusing it
 // would fail not just the next request but every request built from that
 // transcript afterwards. StopAborted reaches the same place.
 func TestReplayingARefusal(t *testing.T) {
