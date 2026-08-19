@@ -1,0 +1,2 @@
+data: {"id":"gen-cutshort","object":"chat.completion.chunk","created":1787108071,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":"The connection drops after","role":"assistant"},"finish_reason":null}]}
+

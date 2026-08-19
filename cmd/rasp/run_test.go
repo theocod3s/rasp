@@ -311,31 +311,88 @@ func TestRunExpandsWhatTheConfigFileHolds(t *testing.T) {
 	}
 }
 
-func TestBuildProviderRejectsWhatItCannotServe(t *testing.T) {
-	tests := []struct {
-		name   string
-		cfg    config.Config
-		errHas string
-	}{
-		{
-			name:   "no provider prefix",
-			cfg:    config.Config{Model: "claude-opus-5"},
-			errHas: "provider/id",
-		},
-		{
-			name:   "no adapter",
-			cfg:    config.Config{Model: "openrouter/auto"},
-			errHas: "openrouter",
-		},
+// TestRunAnswersFromAnOpenAICompatibleEndpoint is the second adapter reached the
+// way a user reaches it: a provider name with a base URL, and no code path of its
+// own past the prefix. The reply arriving on stdout is what says the wiring holds
+// end to end — config, credential expansion, the adapter, and the runner.
+func TestRunAnswersFromAnOpenAICompatibleEndpoint(t *testing.T) {
+	sent := make(chan []byte, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading the request: %v", err)
+		}
+		sent <- body
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, openAIReplyStream)
+	}))
+	defer srv.Close()
+
+	projectConfig(t, fmt.Sprintf(`{
+	  "model": "openrouter/openai/gpt-4o-mini",
+	  "providers": {"openrouter": {"api_key": "test-key", "base_url": %q}}
+	}`, srv.URL))
+
+	stdout, stderr, err := run(t, "run", "-p", "why is the sky blue")
+	if err != nil {
+		t.Fatalf("run: %v (stderr %q)", err, stderr)
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := buildProvider(t.Context(), &config.Result{Config: tc.cfg})
-			if err == nil {
-				t.Fatalf("buildProvider(%+v) succeeded", tc.cfg)
+	if stdout != "Rayleigh scattering.\n" {
+		t.Errorf("stdout = %q, want the reply and nothing else", stdout)
+	}
+
+	var request struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(<-sent, &request); err != nil {
+		t.Fatalf("decoding the request: %v", err)
+	}
+	// The provider prefix chose the adapter and is not a name this API knows.
+	if request.Model != "openai/gpt-4o-mini" {
+		t.Errorf("model on the wire = %q, want the id with the provider prefix taken off", request.Model)
+	}
+}
+
+func TestBuildProviderRejectsWhatItCannotServe(t *testing.T) {
+	cfg := config.Config{Model: "claude-opus-5"}
+
+	_, _, err := buildProvider(t.Context(), &config.Result{Config: cfg})
+	if err == nil {
+		t.Fatalf("buildProvider(%+v) succeeded", cfg)
+	}
+	if !strings.Contains(err.Error(), "provider/id") {
+		t.Errorf("error %q does not say what the model id should have looked like", err)
+	}
+}
+
+// TestBuildProviderRoutesOnTheProviderPrefix: `anthropic` has an adapter of its
+// own and every other name is an OpenAI-compatible endpoint, so the prefix is the
+// whole routing decision. The model ids are the ones that make it worth asserting
+// — `openrouter/anthropic/claude-sonnet-4.5` cuts at the FIRST slash, and the rest
+// goes on the wire as OpenRouter's own id rather than as a second provider name.
+func TestBuildProviderRoutesOnTheProviderPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		model     string
+		wantID    string
+		wantModel string
+	}{
+		{"anthropic/claude-opus-5", "anthropic", "claude-opus-5"},
+		{"openrouter/anthropic/claude-sonnet-4.5", "openrouter", "anthropic/claude-sonnet-4.5"},
+		{"ollama/qwen2.5-coder:1.5b", "ollama", "qwen2.5-coder:1.5b"},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			res := &config.Result{Config: config.Config{Model: tc.model}}
+
+			provider, model, err := buildProvider(t.Context(), res)
+			if err != nil {
+				t.Fatalf("buildProvider: %v", err)
 			}
-			if !strings.Contains(err.Error(), tc.errHas) {
-				t.Errorf("error %q does not mention %q", err, tc.errHas)
+			if provider.ID() != tc.wantID {
+				t.Errorf("provider = %q, want %q", provider.ID(), tc.wantID)
+			}
+			if model != tc.wantModel {
+				t.Errorf("model on the wire = %q, want %q", model, tc.wantModel)
 			}
 		})
 	}
@@ -362,4 +419,14 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":
 
 event: message_stop
 data: {"type":"message_stop"}
+`
+
+// openAIReplyStream is the OpenAI-compatible SSE shape, saying the same thing.
+const openAIReplyStream = `data: {"id":"gen-1","object":"chat.completion.chunk","created":1787108071,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":"Rayleigh","role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"gen-1","object":"chat.completion.chunk","created":1787108071,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":" scattering.","role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"gen-1","object":"chat.completion.chunk","created":1787108071,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}
+
+data: [DONE]
 `

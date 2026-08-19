@@ -1,0 +1,6 @@
+data: {"id":"gen-one","object":"chat.completion.chunk","created":1787108071,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":"Half of one reply","role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"gen-two","object":"chat.completion.chunk","created":1787108071,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":" and half of another.","role":"assistant"},"finish_reason":"stop"}]}
+
+data: [DONE]
+

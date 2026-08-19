@@ -41,6 +41,7 @@ func EnvBindings() []EnvBinding {
 		{Var: "RASP_SMALL_MODEL", Key: "small_model"},
 		{Var: "RASP_MODE", Key: "mode"},
 		{Var: "ANTHROPIC_API_KEY", Key: "providers.anthropic.api_key"},
+		{Var: "OPENROUTER_API_KEY", Key: "providers.openrouter.api_key"},
 	}
 }
 

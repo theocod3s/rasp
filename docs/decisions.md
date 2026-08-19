@@ -42,6 +42,26 @@ with a gateway — and the error names neither credential, so it reads as a bad 
 
 *Settled in M0-07, where `ANTHROPIC_AUTH_TOKEN` and a configured key both went out.*
 
+## A base-URL adapter never falls back to its SDK's vendor, for the endpoint or the credential
+
+The OpenAI-compatible adapter refuses a request with no `base_url`, and when no API key is
+configured it *deletes* the Authorization header the SDK would otherwise fill from
+`OPENAI_API_KEY`. Both defaults exist and both are wrong here: this adapter's endpoint is by
+definition not OpenAI's, so falling back means sending a conversation, or a credential for one
+vendor, to another.
+
+This narrows the rule two entries down — *configuring a credential clears the ones it replaces* —
+rather than contradicting it. Anthropic's adapter leaves its SDK's credential chain alone because
+there the endpoint really is Anthropic's. The test is whether the vendor's default endpoint is the
+one being talked to.
+
+**Reversing it looks like:** a provider named `ollama` whose `base_url` never made it through
+configuration, answering fluently from `api.openai.com` and billing an OpenAI account — or an
+`OPENAI_API_KEY` exported for something else arriving at whatever a LAN address is running.
+Neither errors. Tempting because both look like the missing half of the credential-chain rule.
+
+*Settled in M1-23.*
+
 ## An adapter refuses what it cannot express; it never silently drops it
 
 If a request carries something an adapter cannot put on the wire — tools it does not support, a

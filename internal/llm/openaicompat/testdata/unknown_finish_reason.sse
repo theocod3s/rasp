@@ -1,0 +1,6 @@
+data: {"id":"gen-unknown","object":"chat.completion.chunk","created":1787108071,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":"Hold on.","role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"gen-unknown","object":"chat.completion.chunk","created":1787108071,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"function_call"}]}
+
+data: [DONE]
+

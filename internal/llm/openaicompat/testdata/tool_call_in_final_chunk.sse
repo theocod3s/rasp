@@ -1,0 +1,6 @@
+data: {"id":"cmpl-final","object":"chat.completion.chunk","created":1787108041,"model":"local-model","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_last","type":"function","function":{"name":"read","arguments":"{\"path\":"}}]},"finish_reason":null}]}
+
+data: {"id":"cmpl-final","object":"chat.completion.chunk","created":1787108041,"model":"local-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"auth.go\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+

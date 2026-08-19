@@ -1,0 +1,8 @@
+data: {"id":"gen-badargs","object":"chat.completion.chunk","created":1787108100,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"id":"call_bad","type":"function","function":{"name":"read","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"gen-badargs","object":"chat.completion.chunk","created":1787108100,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":"path=auth.go"}}]},"finish_reason":null}]}
+
+data: {"id":"gen-badargs","object":"chat.completion.chunk","created":1787108100,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+

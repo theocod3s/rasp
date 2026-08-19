@@ -244,6 +244,64 @@ func TestEveryResolvedValueHasAnOrigin(t *testing.T) {
 	}
 }
 
+// TestEveryEnvBindingLandsAtItsKey walks the table rather than naming its rows. A
+// binding promises that one variable configures one setting, and the key path on
+// the right is the half nothing else checks: a path Config has no field for
+// resolves to an unknown setting, warns, and is dropped — so the variable reads as
+// supported and does nothing.
+func TestEveryEnvBindingLandsAtItsKey(t *testing.T) {
+	bindings := config.EnvBindings()
+	if len(bindings) == 0 {
+		t.Fatal("the environment layer binds nothing, so this examined nothing")
+	}
+	for _, b := range bindings {
+		t.Run(b.Var, func(t *testing.T) {
+			// `mode` is the one key with a rule about its value, and an unknown mode
+			// stops the load before any of this could be asserted.
+			value := "set-by-" + b.Var
+			if b.Key == "mode" {
+				value = config.ModeAuto
+			}
+
+			res := load(t, config.Sources{Getenv: env{b.Var: value}.lookup})
+			if got := res.Values[b.Key]; got != value {
+				t.Errorf("%s set %s to %v, want %q", b.Var, b.Key, got, value)
+			}
+			if got := res.Origins[b.Key]; got.Layer != config.LayerEnv || got.Detail != b.Var {
+				t.Errorf("origin of %s = %+v, want the variable that set it", b.Key, got)
+			}
+			for _, w := range res.Warnings {
+				if w.Key == b.Key {
+					t.Errorf("%s warns %q; the key it binds is not one Config has", b.Var, w.Message)
+				}
+			}
+		})
+	}
+}
+
+// TestTheEnvironmentLayerStillReadsThese names variables the walk above cannot
+// protect: a binding deleted takes its own subtest with it, so the walk goes green
+// having examined one row fewer. Each of these is documented as the way to
+// configure something, and a removal is otherwise silent — a key that stops being
+// read looks exactly like a key nobody set.
+//
+// One direction only. A binding added needs no entry here.
+func TestTheEnvironmentLayerStillReadsThese(t *testing.T) {
+	want := []string{
+		"RASP_MODEL", "RASP_SMALL_MODEL", "RASP_MODE",
+		"ANTHROPIC_API_KEY", "OPENROUTER_API_KEY",
+	}
+	var bound []string
+	for _, b := range config.EnvBindings() {
+		bound = append(bound, b.Var)
+	}
+	for _, name := range want {
+		if !slices.Contains(bound, name) {
+			t.Errorf("%s is no longer read from the environment; the layer binds %v", name, bound)
+		}
+	}
+}
+
 // configPaths asks the encoder for the key path of every value in cfg, so the
 // test tracks what the struct holds rather than a list somebody has to update.
 func configPaths(t *testing.T, cfg config.Config) []string {

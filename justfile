@@ -50,6 +50,10 @@ clean:
     rm -f rasp
     rm -rf dist
 
+# Check the OpenAI-compatible adapter against live endpoints — see the README
+verify-openaicompat:
+    RASP_LIVE=1 go test -count=1 -v ./internal/llm/openaicompat/
+
 # Everything CI runs
 ci: fmt-check tidy-check vet build test race
 
