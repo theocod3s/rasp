@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"context"
+	"errors"
+
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/theocod3s/rasp/internal/agent"
@@ -9,7 +12,7 @@ import (
 // Program is a running rasp TUI: a Bubble Tea program, plus the one goroutine
 // that carries agent events into it.
 type Program struct {
-	prog   *tea.Program
+	opts   []tea.ProgramOption
 	bridge *bridge
 }
 
@@ -17,7 +20,7 @@ type Program struct {
 // caller with no terminal — a test, a recorded session — supplies its own input
 // and output.
 func New(opts ...tea.ProgramOption) *Program {
-	return &Program{prog: tea.NewProgram(Model{}, opts...), bridge: newBridge()}
+	return &Program{opts: opts, bridge: newBridge()}
 }
 
 // Events is the sink for agent.Config.Events, and the only thing the agent knows
@@ -26,9 +29,24 @@ func New(opts ...tea.ProgramOption) *Program {
 func (p *Program) Events(ev agent.Event) { p.bridge.handle(ev) }
 
 // Run draws until the user quits, and returns whatever ended it.
-func (p *Program) Run() error {
-	p.bridge.start(p.prog)
+//
+// The agent arrives here rather than at New because agent.Config.Events is fixed
+// when the agent is built, and what it points at is this program's own sink.
+func (p *Program) Run(a Turner) error {
+	if a == nil {
+		return errors.New("the program has no agent, so there would be nothing for a prompt to reach")
+	}
+
+	// Every turn's context descends from this one, so a program that stopped for
+	// a reason Update never saw — a signal, a broken terminal — does not leave a
+	// turn running against a UI that has gone.
+	ctx, cancel := context.WithCancel(context.Background())
+
+	prog := tea.NewProgram(newModel(ctx, a), p.opts...)
+	p.bridge.start(prog)
 	defer p.bridge.stop()
-	_, err := p.prog.Run()
+	defer cancel()
+
+	_, err := prog.Run()
 	return err
 }
