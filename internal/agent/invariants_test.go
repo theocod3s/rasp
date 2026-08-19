@@ -162,6 +162,181 @@ func TestCancellingMidBatchAnswersTheCallsThatNeverRan(t *testing.T) {
 	}
 }
 
+// TestARepeatedCallHaltsTheTurn is design §4 invariant 3. Nothing supervises the
+// model, and a call that returns the same answer to the same arguments is the one
+// shape that cannot be progress — so the turn stops on the sixth rather than
+// spending the ninety-four steps left in the fuse (internals §4.6).
+//
+// One more step is scripted than the halt allows, so a loop that failed to notice
+// runs out of assertions rather than out of script, and the request count is what
+// catches it.
+func TestARepeatedCallHaltsTheTurn(t *testing.T) {
+	const halts = 6
+
+	var script []fake.Step
+	for range halts + 1 {
+		script = append(script, fake.ToolCall("read", `{"path":"a.go"}`), fake.Done(llm.StopToolUse))
+	}
+	script = append(script, fake.Text("done at last"), fake.Done(llm.StopEndTurn))
+
+	p := fake.New(script...)
+	var rec recorder
+	a := newAgent(t, agent.Config{Provider: p, Tools: registry(&stub{name: "read"}), Events: rec.add})
+
+	err := a.Send(context.Background(), "read it")
+	if !errors.Is(err, agent.ErrLooping) {
+		t.Fatalf("Send returned %v; a turn making the same call over and over halts", err)
+	}
+	if got := len(p.Requests()); got != halts {
+		t.Errorf("the provider was called %d time(s); the %dth identical call is the one that halts "+
+			"the turn, and no step follows it", got, halts)
+	}
+
+	// What the user is handed. A halt they cannot read is indistinguishable from
+	// the loop giving up on them.
+	for _, want := range []string{`"read"`, "6 times", "10 tool calls"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the halt reads %q, and it has to say %s: it is the only account of why the "+
+				"turn stopped that reaches a person", err, want)
+		}
+	}
+	if errs := rec.of(agent.EventError); len(errs) != 1 {
+		t.Errorf("the halt emitted %d error event(s); it reaches a frontend as an explanation, not "+
+			"as a turn that simply stopped", len(errs))
+	}
+	if ends := rec.of(agent.EventTurnEnd); len(ends) != 1 {
+		t.Errorf("the halted turn emitted %d end event(s); every turn ends with exactly one", len(ends))
+	}
+
+	// The halt is a step boundary, after the results are committed: a transcript
+	// carrying a call nothing answered would brick every request built from it.
+	wantPaired(t, a.Messages(), halts)
+}
+
+// TestABatchOfIdenticalCallsHaltsWithinOneStep: the window counts tool calls
+// rather than steps, so a model that asks for the same thing six times in one
+// reply is the same runaway as one that takes six steps over it.
+func TestABatchOfIdenticalCallsHaltsWithinOneStep(t *testing.T) {
+	const calls = 6
+
+	script := make([]fake.Step, 0, calls+3)
+	for range calls {
+		script = append(script, fake.ToolCall("read", `{"path":"a.go"}`))
+	}
+	script = append(script, fake.Done(llm.StopToolUse), fake.Text("done at last"), fake.Done(llm.StopEndTurn))
+
+	p := fake.New(script...)
+	a := newAgent(t, agent.Config{Provider: p, Tools: registry(&stub{name: "read"})})
+
+	if err := a.Send(context.Background(), "read it"); !errors.Is(err, agent.ErrLooping) {
+		t.Fatalf("Send returned %v; six identical calls in one reply are a loop", err)
+	}
+	if got := len(p.Requests()); got != 1 {
+		t.Errorf("the provider was called %d time(s); the halt lands on the step that made the calls", got)
+	}
+	wantPaired(t, a.Messages(), calls)
+}
+
+// TestARepeatedCallInterleavedWithAnotherStillHalts is why the count is over a
+// window rather than a run. Two of one call and one of another, repeating, never
+// puts three identical calls in a row — so opencode's simpler rule would let this
+// turn run to the fuse, and design §4 takes the windowed version for exactly this
+// shape.
+func TestARepeatedCallInterleavedWithAnotherStillHalts(t *testing.T) {
+	// The eighth call is the sixth `read`, and the window still holds all of them.
+	const halts = 8
+
+	var script []fake.Step
+	for i := range halts + 1 {
+		call := fake.ToolCall("read", `{"path":"a.go"}`)
+		if i%3 == 2 {
+			call = fake.ToolCall("list", `{"dir":"."}`)
+		}
+		script = append(script, call, fake.Done(llm.StopToolUse))
+	}
+	script = append(script, fake.Text("done at last"), fake.Done(llm.StopEndTurn))
+
+	p := fake.New(script...)
+	a := newAgent(t, agent.Config{
+		Provider: p,
+		Tools:    registry(&stub{name: "read"}, &stub{name: "list"}),
+	})
+
+	err := a.Send(context.Background(), "read it")
+	if !errors.Is(err, agent.ErrLooping) {
+		t.Fatalf("Send returned %v; `read` repeated with `list` between it is still a turn going in circles", err)
+	}
+	if !strings.Contains(err.Error(), `"read"`) {
+		t.Errorf("the halt reads %q; the call that repeated is `read`, and naming the other one sends "+
+			"the reader after the wrong thing", err)
+	}
+	if got := len(p.Requests()); got != halts {
+		t.Errorf("the provider was called %d time(s); the %dth call is the sixth `read` in a window "+
+			"of ten", got, halts)
+	}
+}
+
+// TestWorkThatDoesNotRepeatItselfRunsToTheEnd holds the other side of the guard,
+// which is the one that matters in daily use: a false halt is a turn that
+// abandons work the user asked for. Neither case here is a loop, and the reason
+// the second is not is that the answer is in the signature.
+func TestWorkThatDoesNotRepeatItselfRunsToTheEnd(t *testing.T) {
+	// Comfortably past the window, so a guard counting anything coarser than the
+	// whole signature has room to fire.
+	const steps = 14
+
+	cases := []struct {
+		name  string
+		input func(i int) string
+		tool  func() tool.Tool
+	}{
+		{
+			// Reading fourteen different files is what a turn on an unfamiliar
+			// repository looks like.
+			name:  "the same tool over different arguments",
+			input: func(i int) string { return fmt.Sprintf(`{"path":"%d.go"}`, i) },
+			tool:  func() tool.Tool { return &stub{name: "read"} },
+		},
+		{
+			// A test the model is fixing, or a file something else is editing: the
+			// call is identical every time and the answer keeps changing, which is
+			// progress rather than a loop.
+			name:  "the same call answered differently each time",
+			input: func(int) string { return `{"cmd":"go test ./..."}` },
+			tool: func() tool.Tool {
+				runs := 0
+				return &stub{name: "bash", run: func(context.Context, json.RawMessage) (tool.Result, error) {
+					runs++
+					return tool.Result{Content: fmt.Sprintf("%d tests failed", runs)}, nil
+				}}
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			impl := c.tool()
+
+			var script []fake.Step
+			for i := range steps {
+				script = append(script, fake.ToolCall(impl.Name(), c.input(i)), fake.Done(llm.StopToolUse))
+			}
+			script = append(script, fake.Text("all done"), fake.Done(llm.StopEndTurn))
+
+			p := fake.New(script...)
+			a := newAgent(t, agent.Config{Provider: p, Tools: registry(impl)})
+
+			if err := a.Send(context.Background(), "get on with it"); err != nil {
+				t.Fatalf("Send: %v; this turn repeats no call and has to run to its answer", err)
+			}
+			if got := len(p.Requests()); got != steps+1 {
+				t.Errorf("the provider was called %d time(s); the turn takes %d steps and then answers",
+					got, steps+1)
+			}
+		})
+	}
+}
+
 // TestAStepIsCommittedWholeOrNotAtAll reads the transcript from inside the step
 // that is building it: a tool's Run is on the turn's own goroutine, so it sees
 // what anything reading Messages part way through a step sees. The reply holding

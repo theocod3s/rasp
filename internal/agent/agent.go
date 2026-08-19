@@ -21,6 +21,11 @@ var (
 	// was looping, and design §4 invariant 3 is what is supposed to notice.
 	ErrMaxSteps = errors.New("the turn hit its step fuse")
 
+	// ErrLooping reports a turn halted for repeating one tool call. It is not a
+	// bound on work like the fuse above: the same call, with the same arguments,
+	// answered the same way is the one shape that cannot be progress.
+	ErrLooping = errors.New("the turn was repeating itself")
+
 	// ErrInterrupted reports a turn that stopped because it was cancelled rather
 	// than because the model finished. The transcript is left valid either way.
 	ErrInterrupted = errors.New("the turn was interrupted before the model finished")
@@ -107,9 +112,9 @@ func New(cfg Config) (*Agent, error) {
 // complete here and says so in its stop reason — whether a process reports that
 // to a shell is a different question, and a different answer (decisions.md).
 // Everything else ended the turn early: ErrInterrupted for a cancelled one,
-// ErrMaxSteps for the fuse, and the provider's own error for a stream that
-// failed. The transcript is left valid whichever way it ends, so the next Send
-// can carry on from it.
+// ErrMaxSteps for the fuse, ErrLooping for a turn that went in circles, and the
+// provider's own error for a stream that failed. The transcript is left valid
+// whichever way it ends, so the next Send can carry on from it.
 func (a *Agent) Send(ctx context.Context, text string) error {
 	if text == "" {
 		// An assistant message with nothing sendable is a state; a user message
