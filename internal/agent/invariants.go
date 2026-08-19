@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 
 	"github.com/theocod3s/rasp/internal/llm"
 	"github.com/theocod3s/rasp/internal/tool"
@@ -64,6 +67,74 @@ func resultFor(id string, calls []pendingCall, results []*tool.Result) *tool.Res
 		if calls[i].id == id {
 			return results[i]
 		}
+	}
+	return nil
+}
+
+// The window, and how many of it one signature may fill (design §4 invariant 3).
+// Counting over a window rather than a run is what survives an interleaved second
+// call, which resets a consecutive-repeat rule and leaves the pair spinning; the
+// cost is that two signatures alternating exactly evenly sit at 5 of 10 and are
+// left to the step fuse.
+const (
+	loopWindow  = 10
+	loopRepeats = 5
+)
+
+type signature [sha256.Size]byte
+
+// loopDetector holds the last loopWindow tool-call signatures. One lives per
+// turn: a new prompt is a person redirecting the work, so a call repeated after
+// one is an instruction rather than a runaway.
+type loopDetector struct{ recent []signature }
+
+// observe records a finished call and reports how many of the window match it.
+//
+// The hash is what bounds the window — a call that read a large file would
+// otherwise be held in memory ten times over — and the parts are length-prefixed
+// so a name running into its arguments cannot collide with a different split of
+// the same bytes. The call id is deliberately absent: ids are unique per call, so
+// a signature carrying one would never repeat.
+func (d *loopDetector) observe(name string, input json.RawMessage, output string) int {
+	h := sha256.New()
+	for _, part := range []string{name, string(input), output} {
+		fmt.Fprintf(h, "%d:%s", len(part), part)
+	}
+	sig := signature(h.Sum(nil))
+
+	d.recent = append(d.recent, sig)
+	if len(d.recent) > loopWindow {
+		d.recent = d.recent[1:]
+	}
+
+	matches := 0
+	for _, s := range d.recent {
+		if s == sig {
+			matches++
+		}
+	}
+	return matches
+}
+
+// checkLooping is design §4's step 9: a signature that has taken over the recent
+// window ends the turn with something a person can read, rather than leaving it
+// to the step fuse ninety-odd calls later.
+//
+// Calls nothing ran are skipped, because what answers those is what the turn did
+// rather than what the call produced. The batch is walked in index order, so what
+// the window holds does not depend on the order a concurrent one finishes in.
+func (t *turn) checkLooping(calls []pendingCall, results []*tool.Result) error {
+	for i := 0; i < len(calls) && i < len(results); i++ {
+		if results[i] == nil {
+			continue
+		}
+		matches := t.loops.observe(calls[i].name, calls[i].input, results[i].Content)
+		if matches <= loopRepeats {
+			continue
+		}
+		return fmt.Errorf("%w: %q was called %d times in the last %d tool calls with the same "+
+			"arguments and the same result, so running it again would produce the same nothing",
+			ErrLooping, calls[i].name, matches, loopWindow)
 	}
 	return nil
 }

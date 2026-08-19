@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/theocod3s/rasp/internal/llm"
@@ -57,6 +58,66 @@ func TestCommitAnswersACallTheDispatchListLeftOut(t *testing.T) {
 			}
 			if got := msgs[1].Content[1]; got.Content != unanswered || !got.IsError {
 				t.Errorf("the call nothing ran was answered with %q (error: %t)", got.Content, got.IsError)
+			}
+		})
+	}
+}
+
+// TestTheLoopWindowForgetsWhatFellOutOfIt pins the "last 10" half of the rule,
+// which a turn driven through Send cannot show: the sixth `a` below arrives with
+// the first already pushed out, so it counts five and the turn carries on. A
+// detector that never dropped anything would halt here on work that had moved on.
+func TestTheLoopWindowForgetsWhatFellOutOfIt(t *testing.T) {
+	seq := []string{"a", "a", "a", "a", "a", "b", "b", "b", "b", "b", "a"}
+	want := []int{1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 5}
+
+	var d loopDetector
+	for i, name := range seq {
+		if got := d.observe(name, nil, "ok"); got != want[i] {
+			t.Fatalf("call %d (%s) matched %d of the window; %d of the last %d are %s",
+				i+1, name, got, want[i], loopWindow, name)
+		}
+	}
+	if len(d.recent) != loopWindow {
+		t.Errorf("the window holds %d signature(s) after %d calls; it is capped at %d",
+			len(d.recent), len(seq), loopWindow)
+	}
+}
+
+// TestTwoDifferentCallsNeverShareASignature walks the three parts of a signature
+// one at a time, plus the split the length prefix exists for. A collision here
+// halts a turn over work it never repeated, which is the expensive direction of
+// this guard being wrong.
+func TestTwoDifferentCallsNeverShareASignature(t *testing.T) {
+	const (
+		name   = "read"
+		output = "package main"
+	)
+	input := json.RawMessage(`{"path":"a.go"}`)
+
+	cases := []struct {
+		what   string
+		name   string
+		input  json.RawMessage
+		output string
+	}{
+		{"another tool asked the same thing", "list", input, output},
+		{"the same tool over different arguments", name, json.RawMessage(`{"path":"b.go"}`), output},
+		{"the same call answered differently", name, input, "package api"},
+		{"a name running into its arguments", "rea", json.RawMessage(`d{"path":"a.go"}`), output},
+	}
+
+	for _, c := range cases {
+		t.Run(c.what, func(t *testing.T) {
+			var d loopDetector
+			d.observe(name, input, output)
+
+			if got := d.observe(c.name, c.input, c.output); got != 1 {
+				t.Errorf("the second call matched %d of the window; it differs from the first and "+
+					"the two hash alike", got)
+			}
+			if got := d.observe(name, input, output); got != 2 {
+				t.Errorf("the first call repeated matched %d of the window; two identical calls are two", got)
 			}
 		})
 	}

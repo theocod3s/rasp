@@ -20,6 +20,7 @@ import (
 // to meet its services through the interfaces in llm and tool (design §1, §2).
 var allowed = []string{
 	"context",
+	"crypto/sha256",
 	"encoding/json",
 	"errors",
 	"fmt",

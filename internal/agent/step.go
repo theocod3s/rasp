@@ -16,6 +16,7 @@ type turn struct {
 	agent *Agent
 	tools *tool.Set
 	usage llm.Usage
+	loops loopDetector
 }
 
 func (t *turn) run(ctx context.Context) (err error) {
@@ -61,8 +62,16 @@ func (t *turn) step(ctx context.Context) (bool, error) {
 		t.dispatch(ctx, calls, results)
 	}
 	t.commit(msg, calls, results, unrun(ctx, msg.StopReason))
+	if stopErr != nil {
+		return false, stopErr
+	}
 
-	return len(calls) > 0 && stopErr == nil, stopErr
+	// After the commit and never before it: the halt is a step boundary, so the
+	// transcript it stops on is one the next request can still be built from.
+	if err := t.checkLooping(calls, results); err != nil {
+		return false, err
+	}
+	return len(calls) > 0, nil
 }
 
 // call runs one stream to its end, buffering the tool calls it announces rather
