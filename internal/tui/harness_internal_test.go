@@ -83,12 +83,12 @@ func snapshots() []snapshot {
 // reply across frames (internals §4.4), so a run that skips its neighbours does
 // not necessarily reach a golden by the same path the suite does.
 func TestViewGoldens(t *testing.T) {
-	// The one thing about the frame that is not the UI's to decide. Glamour
-	// measures a reply in terminal cells, and charmbracelet/x/ansi widens every
-	// East Asian ambiguous character — the bullet it draws a list with among them
-	// — to two of them when RUNEWIDTH_EASTASIAN is set; it reads the variable once
-	// at init and offers no override. Named here because the diff on its own
-	// reads as a styling regression nobody made.
+	// The one thing about a frame that is not the UI's to decide. Glamour measures
+	// a reply in terminal cells, and charmbracelet/x/ansi widens every East Asian
+	// ambiguous character to two of them when RUNEWIDTH_EASTASIAN is set — the
+	// bullet glamour draws a list with among them — reading the variable once at
+	// init with no override. Named here because the diff alone reads as a styling
+	// regression nobody made.
 	if wide, err := strconv.ParseBool(os.Getenv("RUNEWIDTH_EASTASIAN")); err == nil && wide {
 		t.Fatal("RUNEWIDTH_EASTASIAN is set and these frames were recorded without it; unset it to " +
 			"compare them, or every diff below is the width of a bullet rather than a change to the UI")
