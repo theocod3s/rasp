@@ -427,7 +427,7 @@ func TestTheSchemaAsksForAPathAndOffersTheWindow(t *testing.T) {
 	h := newHarness(t)
 
 	if name := h.subject.Name(); name != "read" {
-		t.Errorf("the tool is named %q; prd §6.2 names it read, and the session log records that name", name)
+		t.Errorf("the tool is named %q; it ships as read, and the session log records that name", name)
 	}
 
 	schema := h.subject.Schema()

@@ -140,6 +140,12 @@ what the work is and where it stands.
   a recipe is a dead reference for every reader who is not us — and it dates the code without
   explaining it. Say what the thing does and why instead. Commits and PRs keep their IDs: those
   are addressed to us, and git history is where that trail belongs.
+- **Never cite `prd.md` in a code comment**, tests included. The prd states requirements, so a
+  comment leaning on it justifies the code's existence instead of recording a constraint the
+  reader needs. When a comment wants a source, point at `design.md`, `internals.md`,
+  `decisions.md`, `VISION.md` or `ARCHITECTURE.md` — the documents that explain mechanisms — or
+  carry the reasoning in the comment itself. prd references stay welcome in tickets, commits and
+  PR bodies, which is where requirements talk belongs.
 - **Working a ticket — follow `.agents/skills/work-on-ticket/SKILL.md`.** It holds the
   sequence and, more usefully, the verification discipline that caught all three real bugs so
   far. Named here rather than left to the skill's own description, because that description

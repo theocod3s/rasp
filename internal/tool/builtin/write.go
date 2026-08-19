@@ -50,9 +50,8 @@ const writeDescription = "Write a file, creating any parent directories that do 
 // file alongside the destination and renames it into place, so a write that
 // fails partway leaves the original file as it was. reads is the session's
 // read-before-edit tracker: overwriting a file this session has not read
-// through it, or has read at a since-superseded mtime, is refused (prd §6.6).
-// A path that does not exist yet is a creation, not an overwrite, and needs no
-// prior read.
+// through it, or has read at a since-superseded mtime, is refused. A path that
+// does not exist yet is a creation, not an overwrite, and needs no prior read.
 func NewWrite(ws writeFS, reads *workspace.Tracker) tool.Tool {
 	switch {
 	case ws == nil:

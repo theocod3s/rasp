@@ -27,3 +27,4 @@ go.work.sum
 CLAUDE.local.md
 .rasp/
 doppler.yaml
+.claude/worktrees/

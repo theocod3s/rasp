@@ -6,9 +6,9 @@ import (
 	"strings"
 )
 
-// Rung identifies which rung of the ladder placed a replacement. Two of the four
-// in prd §6.2 place text at all, so these values name those two rather than
-// numbering the ladder.
+// Rung identifies which rung of the ladder placed a replacement. Two of the
+// ladder's four rungs (design §13) place text at all, so these values name those
+// two rather than numbering the ladder.
 type Rung int
 
 const (

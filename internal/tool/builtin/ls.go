@@ -12,9 +12,9 @@ import (
 	"github.com/theocod3s/rasp/internal/workspace"
 )
 
-// maxLsEntries bounds one listing. prd §6.2 asks tool output to keep its head
-// and its tail; a sorted listing has neither the command echo of the one nor the
-// error of the other, so this keeps the head and says how many names it dropped.
+// maxLsEntries bounds one listing. Truncated tool output keeps its head and its
+// tail; a sorted listing has neither the command echo of the one nor the error
+// of the other, so this keeps the head and says how many names it dropped.
 const maxLsEntries = 1000
 
 const lsDescription = "List the contents of one directory in the workspace. It does not descend: a " +
