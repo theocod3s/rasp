@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -255,6 +256,51 @@ func TestARendererIsSharedAcrossFrames(t *testing.T) {
 	if a, b := <-done, <-done; a != b {
 		t.Errorf("two frames of the same reply drew different text:\n%s\nand\n%s", indent(a), indent(b))
 	}
+}
+
+// TestGlamourRendererIsMemoizedPerWidth is the memo's own proof: the same
+// width has to return the same *TermRenderer, and a different width must not
+// share it.
+func TestGlamourRendererIsMemoizedPerWidth(t *testing.T) {
+	renderersMu.Lock()
+	defer renderersMu.Unlock()
+
+	a, err := renderer(60)
+	if err != nil {
+		t.Fatalf("renderer(60): %v", err)
+	}
+	again, err := renderer(60)
+	if err != nil {
+		t.Fatalf("renderer(60): %v", err)
+	}
+	if a != again {
+		t.Error("two calls at the same width built two renderers instead of reusing one")
+	}
+
+	other, err := renderer(40)
+	if err != nil {
+		t.Fatalf("renderer(40): %v", err)
+	}
+	if a == other {
+		t.Error("two different widths shared one renderer")
+	}
+}
+
+// TestGlamourBlockIsSafeForConcurrentCallers exists to fail under -race: once
+// a renderer is memoized, callers at the same width share it, and glamour is
+// not reentrant. Direct calls rather than through markdown.render, which
+// already serializes on its own mutex and would prove nothing about this one.
+func TestGlamourBlockIsSafeForConcurrentCallers(t *testing.T) {
+	doc := corpus["a table"]
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			glamourBlock(doc, 60)
+		}()
+	}
+	wg.Wait()
 }
 
 // BenchmarkStreamingReply replays one long reply delta by delta, the way a turn

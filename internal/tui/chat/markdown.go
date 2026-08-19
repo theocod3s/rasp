@@ -8,9 +8,9 @@ import (
 	"charm.land/glamour/v2/styles"
 )
 
-// md is the conversation's markdown renderer. One value for the whole package,
-// because glamour is not reentrant and because the memo inside it is worth
-// nothing split between callers — only one message is ever still arriving.
+// md is the conversation's markdown renderer. One value for the whole package:
+// the memo inside it is worth nothing split between callers — only one message
+// is ever still arriving.
 var md = &markdown{draw: glamourBlock}
 
 type markdown struct {
@@ -76,16 +76,44 @@ func join(head, tail string) string {
 	return head + "\n\n" + tail
 }
 
+// renderersMu guards renderers and every call into one. Building a
+// TermRenderer costs ~27µs, so this memoizes one per width instead of paying
+// that on every block — but a memoized renderer is now shared between calls,
+// and glamour is not reentrant: two callers at the same width must not run
+// Render at once.
+var (
+	renderersMu sync.Mutex
+	renderers   = map[int]*glamour.TermRenderer{}
+)
+
+// renderer returns the TermRenderer memoized for width, building one on the
+// first call at that width. Callers hold renderersMu.
+func renderer(width int) (*glamour.TermRenderer, error) {
+	if r, ok := renderers[width]; ok {
+		return r, nil
+	}
+	r, err := glamour.NewTermRenderer(
+		glamour.WithStandardStyle(styles.DarkStyle),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return nil, err
+	}
+	renderers[width] = r
+	return r, nil
+}
+
 func glamourBlock(src string, width int) string {
 	// Glamour reads a wrap width of zero as "do not wrap", which is what a
 	// terminal whose size has not arrived yet wants drawn.
 	if width < 0 {
 		width = 0
 	}
-	r, err := glamour.NewTermRenderer(
-		glamour.WithStandardStyle(styles.DarkStyle),
-		glamour.WithWordWrap(width),
-	)
+
+	renderersMu.Lock()
+	defer renderersMu.Unlock()
+
+	r, err := renderer(width)
 	if err == nil {
 		var out string
 		if out, err = r.Render(src); err == nil {
