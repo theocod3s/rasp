@@ -22,12 +22,12 @@ const (
 )
 
 func TestEditReplacesAndReportsADiff(t *testing.T) {
-	ws, dir := editWorkspace(t)
-	editWrite(t, dir, "main.go", "a\nb\nc\n")
+	ws, reads, dir := editWorkspace(t)
+	editWrite(t, reads, dir, "main.go", "a\nb\nc\n")
 
 	// One line out, two in, so a diff that counted additions as deletions reads
 	// differently from one that did not.
-	result := editRun(t, ws, `{"path":"main.go","old_string":"b","new_string":"B1\nB2"}`)
+	result := editRun(t, ws, reads, `{"path":"main.go","old_string":"b","new_string":"B1\nB2"}`)
 	if result.IsError {
 		t.Fatalf("edit failed: %s", result.Content)
 	}
@@ -60,10 +60,10 @@ func TestEditReplacesAndReportsADiff(t *testing.T) {
 // file has to come back untouched, and the message has to carry the count, or
 // the model has no way to know how much context to add.
 func TestEditRefusesAnAmbiguousMatch(t *testing.T) {
-	ws, dir := editWorkspace(t)
-	editWrite(t, dir, "server.go", editTwice)
+	ws, reads, dir := editWorkspace(t)
+	editWrite(t, reads, dir, "server.go", editTwice)
 
-	result := editRun(t, ws, `{"path":"server.go","old_string":"8080","new_string":"9090"}`)
+	result := editRun(t, ws, reads, `{"path":"server.go","old_string":"8080","new_string":"9090"}`)
 	if !result.IsError {
 		t.Fatalf("edit succeeded on an ambiguous match: %s", result.Content)
 	}
@@ -90,10 +90,10 @@ func TestEditRefusesAnAmbiguousMatch(t *testing.T) {
 }
 
 func TestEditReplaceAllTakesEveryOccurrence(t *testing.T) {
-	ws, dir := editWorkspace(t)
-	editWrite(t, dir, "server.go", editTwice)
+	ws, reads, dir := editWorkspace(t)
+	editWrite(t, reads, dir, "server.go", editTwice)
 
-	result := editRun(t, ws, `{"path":"server.go","old_string":"8080","new_string":"9090","replace_all":true}`)
+	result := editRun(t, ws, reads, `{"path":"server.go","old_string":"8080","new_string":"9090","replace_all":true}`)
 	if result.IsError {
 		t.Fatalf("edit failed: %s", result.Content)
 	}
@@ -115,10 +115,10 @@ const editIndented = "func f() {\n\tif x {\n\t\treturn 1\n\t}\n}\n"
 // says the whitespace moved, the next edit it builds from that copy fails for a
 // reason it has no way to see.
 func TestEditTellsTheModelAMatchWasNotByteExact(t *testing.T) {
-	ws, dir := editWorkspace(t)
-	editWrite(t, dir, "main.go", editIndented)
+	ws, reads, dir := editWorkspace(t)
+	editWrite(t, reads, dir, "main.go", editIndented)
 
-	result := editRun(t, ws, `{"path":"main.go","old_string":"    if x {\n        return 1\n    }","new_string":"    if x {\n        return 2\n    }"}`)
+	result := editRun(t, ws, reads, `{"path":"main.go","old_string":"    if x {\n        return 1\n    }","new_string":"    if x {\n        return 2\n    }"}`)
 	if result.IsError {
 		t.Fatalf("edit failed: %s", result.Content)
 	}
@@ -149,10 +149,10 @@ func TestEditTellsTheModelAMatchWasNotByteExact(t *testing.T) {
 // a notice on every edit is a notice the model learns to skip, and the byte-exact
 // rung has nothing to report.
 func TestEditSaysNothingExtraAboutAByteExactMatch(t *testing.T) {
-	ws, dir := editWorkspace(t)
-	editWrite(t, dir, "main.go", editIndented)
+	ws, reads, dir := editWorkspace(t)
+	editWrite(t, reads, dir, "main.go", editIndented)
 
-	result := editRun(t, ws, `{"path":"main.go","old_string":"\t\treturn 1","new_string":"\t\treturn 2"}`)
+	result := editRun(t, ws, reads, `{"path":"main.go","old_string":"\t\treturn 1","new_string":"\t\treturn 2"}`)
 	if result.IsError {
 		t.Fatalf("edit failed: %s", result.Content)
 	}
@@ -168,11 +168,11 @@ func TestEditSaysNothingExtraAboutAByteExactMatch(t *testing.T) {
 // makes the model guess again; the file's own line back, with the whitespace it
 // cannot see spelled out, lets it correct its input.
 func TestEditShowsWhereTheFileComesClosest(t *testing.T) {
-	ws, dir := editWorkspace(t)
-	editWrite(t, dir, "main.go", editIndented)
+	ws, reads, dir := editWorkspace(t)
+	editWrite(t, reads, dir, "main.go", editIndented)
 
 	// The model wrote the line it wants rather than the line that is there.
-	result := editRun(t, ws, `{"path":"main.go","old_string":"\tif x {\n\t\treturn 2\n\t}","new_string":"\tif x {\n\t\treturn 3\n\t}"}`)
+	result := editRun(t, ws, reads, `{"path":"main.go","old_string":"\tif x {\n\t\treturn 2\n\t}","new_string":"\tif x {\n\t\treturn 3\n\t}"}`)
 	if !result.IsError {
 		t.Fatalf("edit succeeded on text that is not in the file: %s", result.Content)
 	}
@@ -227,10 +227,10 @@ func TestEditRefusalsLeaveTheFileAlone(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			ws, dir := editWorkspace(t)
-			editWrite(t, dir, "main.go", original)
+			ws, reads, dir := editWorkspace(t)
+			editWrite(t, reads, dir, "main.go", original)
 
-			result := editRun(t, ws, tc.args)
+			result := editRun(t, ws, reads, tc.args)
 			if !result.IsError {
 				t.Fatalf("edit succeeded: %s", result.Content)
 			}
@@ -250,13 +250,13 @@ func TestEditRefusalsLeaveTheFileAlone(t *testing.T) {
 // is a switch to writing a temporary file and renaming it over the original,
 // which would publish every 0600 file it touched.
 func TestEditKeepsTheFileMode(t *testing.T) {
-	ws, dir := editWorkspace(t)
-	editWrite(t, dir, "secret.txt", "a\n")
+	ws, reads, dir := editWorkspace(t)
+	editWrite(t, reads, dir, "secret.txt", "a\n")
 	if err := os.Chmod(filepath.Join(dir, "secret.txt"), 0o600); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
 
-	if result := editRun(t, ws, `{"path":"secret.txt","old_string":"a","new_string":"b"}`); result.IsError {
+	if result := editRun(t, ws, reads, `{"path":"secret.txt","old_string":"a","new_string":"b"}`); result.IsError {
 		t.Fatalf("edit failed: %s", result.Content)
 	}
 
@@ -270,8 +270,8 @@ func TestEditKeepsTheFileMode(t *testing.T) {
 }
 
 func TestEditSchema(t *testing.T) {
-	ws, _ := editWorkspace(t)
-	schema := builtin.Edit(ws).Schema()
+	ws, reads, _ := editWorkspace(t)
+	schema := builtin.Edit(ws, reads).Schema()
 
 	properties, ok := schema["properties"].(map[string]any)
 	if !ok {
@@ -294,7 +294,29 @@ func TestEditSchema(t *testing.T) {
 	}
 }
 
-func editWorkspace(t *testing.T) (*workspace.Workspace, string) {
+func TestNewEditRefusesToBuildWithoutWhatItNeeds(t *testing.T) {
+	ws, reads, _ := editWorkspace(t)
+
+	cases := []struct {
+		what  string
+		build func()
+	}{
+		{"no workspace", func() { builtin.Edit(nil, reads) }},
+		{"no tracker", func() { builtin.Edit(ws, nil) }},
+	}
+	for _, c := range cases {
+		t.Run(c.what, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Error("Edit built a tool that would fail on its first call instead of at startup")
+				}
+			}()
+			c.build()
+		})
+	}
+}
+
+func editWorkspace(t *testing.T) (*workspace.Workspace, *workspace.Tracker, string) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -307,24 +329,35 @@ func editWorkspace(t *testing.T) (*workspace.Workspace, string) {
 	// t.TempDir hands back /var/... on macOS, which is a symlink to /private/var;
 	// workspace.Open resolves it, so reading a file back has to use the resolved
 	// root or the paths compare unequal for no reason the test is about.
-	return ws, ws.Root()
+	return ws, workspace.NewTracker(), ws.Root()
 }
 
-func editRun(t *testing.T, ws *workspace.Workspace, args string) tool.Result {
+func editRun(t *testing.T, ws *workspace.Workspace, reads *workspace.Tracker, args string) tool.Result {
 	t.Helper()
 
-	result, err := builtin.Edit(ws).Run(context.Background(), json.RawMessage(args))
+	result, err := builtin.Edit(ws, reads).Run(context.Background(), json.RawMessage(args))
 	if err != nil {
 		t.Fatalf("edit could not run: %v", err)
 	}
 	return result
 }
 
-func editWrite(t *testing.T, dir, name, content string) {
+// editWrite writes content to name outside any tool call and records the
+// result in reads, standing in for a session that has just seen this file —
+// through a read, or through an edit or write of its own — so tests about
+// edit's replacement logic are not also, incidentally, tests of the
+// read-before-edit guard.
+func editWrite(t *testing.T, reads *workspace.Tracker, dir, name, content string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("writing %s: %v", name, err)
 	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", name, err)
+	}
+	reads.Record(name, info.ModTime())
 }
 
 func editRead(t *testing.T, dir, name string) string {
