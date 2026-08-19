@@ -143,9 +143,9 @@ func TestABoundaryIsOnlyClaimedWhereNothingIsOpen(t *testing.T) {
 func TestAFrameCostsTheTailRatherThanTheReply(t *testing.T) {
 	short, long := streamed(t, 8), streamed(t, 16)
 
-	if long.reply < 2*short.reply-len(block) {
-		t.Fatalf("the two replies are %d and %d bytes, and the comparison below reads them as one "+
-			"doubling the other", short.reply, long.reply)
+	if long.reply != 2*short.reply {
+		t.Fatalf("the two replies are %d and %d bytes, and every line below reads them as one doubling "+
+			"the other", short.reply, long.reply)
 	}
 	// The control. Without it a renderer that drew nothing at all would pass
 	// every line below.
