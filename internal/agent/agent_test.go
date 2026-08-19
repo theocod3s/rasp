@@ -36,10 +36,11 @@ func TestTwoStepTurnCallsAToolAndThenAnswers(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	if len(read.calls) != 1 {
-		t.Fatalf("read ran %d time(s); the script asks for it once", len(read.calls))
+	calls := read.calls()
+	if len(calls) != 1 {
+		t.Fatalf("read ran %d time(s); the script asks for it once", len(calls))
 	}
-	if got := string(read.calls[0]); got != `{"path":"main.go"}` {
+	if got := string(calls[0]); got != `{"path":"main.go"}` {
 		t.Errorf("read received %s; the model sent {\"path\":\"main.go\"}", got)
 	}
 

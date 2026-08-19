@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"go.uber.org/goleak"
 
@@ -13,10 +15,9 @@ import (
 	"github.com/theocod3s/rasp/internal/tool"
 )
 
-// TestMain runs the leak detector over the package. The loop dispatches
-// sequentially today and spawns nothing; the check is in place before the batch
-// starts running concurrently, because a goroutine outliving a turn is a hung
-// process on quit (design §13).
+// TestMain runs the leak detector over the package. A batch spawns a goroutine
+// per call, and one that outlives its turn is a hung process on quit (design
+// §13).
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
@@ -44,9 +45,11 @@ func newAgent(t *testing.T, cfg agent.Config) *agent.Agent {
 // tool.New, because these tests assert on the exact bytes the model sent and a
 // reflected tool unmarshals them before its handler sees anything.
 type stub struct {
-	name  string
-	calls []json.RawMessage
-	run   func(context.Context, json.RawMessage) (tool.Result, error)
+	name string
+	run  func(context.Context, json.RawMessage) (tool.Result, error)
+
+	mu   sync.Mutex
+	args []json.RawMessage
 }
 
 func (s *stub) Name() string           { return s.name }
@@ -54,14 +57,109 @@ func (s *stub) Description() string    { return s.name + " is a tool for a test"
 func (s *stub) Schema() map[string]any { return map[string]any{"type": "object"} }
 
 func (s *stub) Run(ctx context.Context, raw json.RawMessage) (tool.Result, error) {
-	s.calls = append(s.calls, raw)
+	s.mu.Lock()
+	s.args = append(s.args, raw)
+	s.mu.Unlock()
+
 	if s.run == nil {
 		return tool.Result{Content: "ok"}, nil
 	}
 	return s.run(ctx, raw)
 }
 
+// calls is what the tool received, in arrival order. Locked because one name
+// twice in a reply is two concurrent Runs on this one stub.
+func (s *stub) calls() []json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.args)
+}
+
+// serialStub is a stub that declares itself sequential, which drags the whole
+// batch it appears in into serial (design §6 rule 4).
+type serialStub struct{ *stub }
+
+func (*serialStub) Sequential() bool { return true }
+
 func registry(tools ...tool.Tool) *tool.Registry { return tool.NewRegistry(tools) }
+
+// meeting is a barrier of a fixed width with a deadline, attended by a tool for
+// the length of its call.
+//
+// It is what turns "did these overlap?" into a fact rather than a guess, in both
+// directions and without either answer resting on how long anything took. A batch
+// running its calls at once puts width of them inside together, meets the barrier
+// and waits out nothing; a batch running them one at a time can never meet it
+// however long anyone waits, so every call reports that it stood there alone.
+// Meeting the barrier by a hair is not merely unlikely but impossible: it takes
+// width calls inside at the same instant.
+type meeting struct {
+	width int
+	wait  time.Duration
+
+	// full runs once, under the lock, at the moment the last of width arrives and
+	// before any of them is released. It is how a test acts on a batch it knows
+	// to be entirely in flight.
+	full func()
+
+	mu       sync.Mutex
+	inFlight int
+	peak     int
+	alone    int
+	order    []string
+	met      bool
+	open     chan struct{}
+}
+
+func newMeeting(width int, wait time.Duration) *meeting {
+	return &meeting{width: width, wait: wait, open: make(chan struct{})}
+}
+
+func (m *meeting) attend(name string) {
+	m.mu.Lock()
+	m.inFlight++
+	m.peak = max(m.peak, m.inFlight)
+	m.order = append(m.order, name)
+	if m.inFlight == m.width && !m.met {
+		m.met = true
+		if m.full != nil {
+			m.full()
+		}
+		close(m.open)
+	}
+	m.mu.Unlock()
+
+	timer := time.NewTimer(m.wait)
+	defer timer.Stop()
+
+	select {
+	case <-m.open:
+	case <-timer.C:
+		m.mu.Lock()
+		m.alone++
+		m.mu.Unlock()
+	}
+
+	m.mu.Lock()
+	m.inFlight--
+	m.mu.Unlock()
+}
+
+// attendee is a tool that does nothing but attend the meeting and say it ran.
+func (m *meeting) attendee(name string) *stub {
+	return &stub{name: name, run: func(context.Context, json.RawMessage) (tool.Result, error) {
+		m.attend(name)
+		return tool.Result{Content: name + " ran"}, nil
+	}}
+}
+
+// peaked is the most calls that were ever inside at once, how many waited out the
+// deadline with no sibling arriving, and the order they arrived in.
+func (m *meeting) peaked() (peak, alone int, order []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.peak, m.alone, slices.Clone(m.order)
+}
 
 // recorder collects the turn's events. They arrive on the goroutine running the
 // turn, so a test reads them once Send has returned.

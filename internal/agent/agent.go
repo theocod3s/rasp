@@ -52,8 +52,12 @@ type Config struct {
 	// MaxSteps defaults to DefaultMaxSteps.
 	MaxSteps int
 
-	// Events receives every event a turn produces, in order, on the goroutine
-	// running the turn — so a consumer that blocks in here stalls the turn. nil
+	// Events receives every event a turn produces. A batch runs its tools
+	// concurrently, so tool events come from as many goroutines as there are
+	// calls in flight — but the agent holds a lock across this call, so a
+	// consumer is never entered twice at once and needs no synchronisation of its
+	// own. What it does need is to be quick: blocking in here stalls the turn,
+	// and during a batch it stalls every other tool's events behind it. nil
 	// discards them.
 	Events func(Event)
 }
@@ -72,6 +76,10 @@ type Agent struct {
 	// messages is the transcript, guarded because Messages may be read from a
 	// frontend's goroutine while the turn appends to it (design §6).
 	messages []llm.Message
+
+	// A lock of its own rather than mu, so a consumer may read Messages from
+	// inside its callback without deadlocking against the turn that called it.
+	eventsMu sync.Mutex
 }
 
 // New refuses a config that could not run a turn, rather than leaving it to fail
@@ -169,7 +177,10 @@ func (a *Agent) append(msgs ...llm.Message) {
 }
 
 func (a *Agent) emit(ev Event) {
-	if a.events != nil {
-		a.events(ev)
+	if a.events == nil {
+		return
 	}
+	a.eventsMu.Lock()
+	defer a.eventsMu.Unlock()
+	a.events(ev)
 }

@@ -229,3 +229,27 @@ transcript that reads as though the model chose to stop there. Interactively it 
 at all, which is why this gets reversed by someone testing only in the TUI.
 
 *Settled in M1-04, the work that added the cancelling.*
+
+---
+
+## The agent serialises its event callback, so no consumer needs a lock
+
+A batch runs its tools concurrently, so `EventToolStart` and `EventToolEnd` come from as many
+goroutines as there are calls in flight. The agent holds a lock across the call into
+`Config.Events`, which means a consumer is never entered twice at once and can keep unguarded
+state. The cost is on us and it is bounded: an event handler that blocks now stalls every other
+tool's events behind it, which is the same rule as before — be quick in there — with a wider blast
+radius.
+
+The tempting version is to drop the lock and document the callback as concurrent. It reads as
+cheaper: the lock sits on the assistant-delta path too, which fires hundreds of times a second,
+and a Bubble Tea frontend forwards straight into `program.Send`, which is already goroutine-safe.
+Both are true and neither is the point. Pushing the requirement outward means every frontend, every
+test recorder, and the headless runner each grow their own mutex, and the one consumer where
+forgetting it is invisible is the TUI — precisely the one anybody actually looks at.
+
+**Reversing it looks like:** nothing, until a turn dispatches more than one tool at once. Then a
+consumer that appends to a slice corrupts it, and the report is a frontend crashing or dropping
+events on batches only, in a build nobody ran under `-race`.
+
+*Settled in M1-20, the work that made dispatch parallel.*

@@ -10,8 +10,10 @@ import (
 	"github.com/theocod3s/rasp/internal/tool"
 )
 
-// turn is one Send. It lives on the goroutine that called Send and is touched by
-// nothing else, which is the whole of the loop's concurrency story (design §6).
+// turn is one Send. Every field is read and written on the goroutine that called
+// Send; the only others a turn owns are the ones a batch spawns, and those touch
+// nothing but their own index of the result slice and the event callback, which
+// the agent serialises (design §6).
 type turn struct {
 	agent *Agent
 	tools *tool.Set
