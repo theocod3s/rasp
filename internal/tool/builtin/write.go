@@ -17,6 +17,7 @@ import (
 // call and check what the failure left behind.
 type writeFS interface {
 	Resolve(name string) (string, error)
+	LockFile(name string) (func(), error)
 	Stat(name string) (fs.FileInfo, error)
 	MkdirAll(name string, perm fs.FileMode) error
 	OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error)
@@ -67,6 +68,16 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 	if err != nil {
 		return writeRefused(err.Error()), nil
 	}
+
+	// Taken before the stat, not around the rename: the mode and the created flag
+	// are read off the file this call is about to replace, and reading them
+	// outside the lock reports creating a file that already existed, with the
+	// mode of one that did not.
+	unlock, err := w.ws.LockFile(rel)
+	if err != nil {
+		return writeRefused(err.Error()), nil
+	}
+	defer unlock()
 
 	info, err := w.ws.Stat(rel)
 	switch {

@@ -319,7 +319,7 @@ func TestFSWalkSeesOnlyTheWorkspace(t *testing.T) {
 }
 
 // TestAbsAndRootAreCanonical pins the two properties the per-file mutation mutex
-// will key on: a symlink-resolved root, and an absolute path built from it.
+// keys on: a symlink-resolved root, and an absolute path built from it.
 func TestAbsAndRootAreCanonical(t *testing.T) {
 	f := newFixture(t)
 

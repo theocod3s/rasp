@@ -253,3 +253,26 @@ consumer that appends to a slice corrupts it, and the report is a frontend crash
 events on batches only, in a build nobody ran under `-race`.
 
 *Settled in M1-20, the work that made dispatch parallel.*
+
+---
+
+## The mutation lock is taken by the tool, not by the workspace method it wraps
+
+`workspace.LockFile` hands out a per-file mutex and the mutating tools acquire it themselves:
+`edit` from before its read to after its write, `write` from before its stat to after its rename.
+The workspace's own `WriteFile`, `Rename` and `Stat` take nothing.
+
+Pushing the lock down into those methods is the version that looks better. It is one place instead
+of three, no tool can forget it, and it passes every test that two concurrent writes to one file do
+not interleave. It is also wrong, because the unit being protected is not the write — it is the
+read the write was derived from. Two edits that each lock their own write still both read the
+original, and the second one's write is the first one's change deleted. Only the caller knows where
+its read-modify-write began, which is why the lock is a handle it holds rather than a service it
+calls.
+
+**Reversing it looks like:** an edit reported as applied, with `Result.Content` naming the
+replacements it made and a diff in `Details` to match, whose change is simply absent from the file.
+Nothing errors and nothing is corrupt — one of two edits the model asked for in the same batch is
+missing, so it reads as a model that changed its mind.
+
+*Settled in M1-21, the work that added the lock.*
