@@ -86,6 +86,18 @@ func (s *spy) overlapped() int {
 	return s.overlaps
 }
 
+// parked waits until the pump has taken an event out of the mailbox and entered
+// a Send it cannot leave.
+func parked(t *testing.T, s *spy) {
+	t.Helper()
+	for deadline := time.Now().Add(settle); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		if s.inside.Load() > 0 {
+			return
+		}
+	}
+	t.Fatal("the pump never reached the spy, so the mailbox filled behind nothing")
+}
+
 func (s *spy) await(t *testing.T, what string) {
 	t.Helper()
 	select {
@@ -147,6 +159,13 @@ func TestAFullMailboxDropsDeltasAndNeverTheTurnsEnd(t *testing.T) {
 		s.resume()
 		b.stop()
 	}()
+
+	// The pump has to be inside a Send before the flood starts, and waited for
+	// rather than assumed: a pump that took its first delta out of a mailbox
+	// already full leaves 128 behind it instead of 129, and the count above — the
+	// only thing await can key on — is then one that never arrives.
+	b.handle(agent.Event{Kind: agent.EventAssistantDelta})
+	parked(t, s)
 
 	// In a goroutine with a deadline rather than inline: a delta that blocks on a
 	// full mailbox is this test's other failure, and inline it would hang the run

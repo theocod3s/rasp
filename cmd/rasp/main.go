@@ -46,9 +46,8 @@ func execute(args []string) int {
 	return 0
 }
 
-// newRootCmd builds the command tree. The TUI, and the session and mcp
-// subcommands, join it with the milestones that add them; until then the root
-// says what it is and `run` is the whole of the agent.
+// newRootCmd builds the command tree. `rasp` on its own is the TUI; the session
+// and mcp subcommands join it with the milestones that add them.
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "rasp",
@@ -59,10 +58,7 @@ func newRootCmd() *cobra.Command {
 		// usage block after one buries the sentence that matters.
 		SilenceUsage: true,
 
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			fmt.Fprintf(cmd.OutOrStdout(), "rasp %s\n", version)
-			return nil
-		},
+		RunE: func(cmd *cobra.Command, _ []string) error { return startTUI(cmd) },
 	}
 
 	// Flags come from the config package's own table rather than being

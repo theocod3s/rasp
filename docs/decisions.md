@@ -241,14 +241,22 @@ The tempting version returns nil. A person pressed Esc, nothing malfunctioned, a
 already drawn everything the turn produced. It is wrong for the reason above: the caller may not be
 a person. A script, a test, or the headless runner cannot tell a turn that finished from one that
 stopped part way, and success is the one failure it has no way to detect. A frontend that genuinely
-does not care asks `errors.Is(err, agent.ErrInterrupted)` and stays quiet — which is one line, in
-the one place that has a user to explain it to.
+does not care asks `errors.Is(err, agent.ErrInterrupted)` and stays quiet, in the one place that has
+a user to explain it to.
+
+**A frontend has to stay quiet in two places, not one.** The error `Send` returns is also emitted as
+an `EventError`, because design §4's termination path emits one before the `EventTurnEnd` of every
+turn that failed. A UI that filters the return value and draws every event still draws
+`error: the turn was interrupted before the model finished` under a conversation the user
+deliberately stopped. This paragraph was added after exactly that shipped: the model's cancellation
+was correct, its tests were green, and the screen said otherwise.
 
 **Reversing it looks like:** an automated run reporting a finished task with half of it done, and a
 transcript that reads as though the model chose to stop there. Interactively it looks like nothing
 at all, which is why this gets reversed by someone testing only in the TUI.
 
-*Settled in M1-04, the work that added the cancelling.*
+*Settled in M1-04, the work that added the cancelling; the second rule in M2-02, the first frontend
+that had to obey it.*
 
 ---
 
