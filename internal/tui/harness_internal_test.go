@@ -3,8 +3,10 @@ package tui
 import (
 	"errors"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -37,8 +39,8 @@ type snapshot struct {
 func snapshots() []snapshot {
 	const prompt = "fix the failing auth test"
 
-	fragment := reply("Reading `auth_test.go` now — the header is parsed")
-	explained := reply("Reading `auth_test.go` now — the header is parsed **twice**.\n\n" +
+	fragment := reply("Reading `auth_test.go` now. The header is parsed")
+	explained := reply("Reading `auth_test.go` now. The header is parsed **twice**.\n\n" +
 		"- once in the middleware\n- once in the handler\n")
 	fixed := reply("Both call sites read the parsed header instead of parsing it again.")
 
@@ -81,6 +83,17 @@ func snapshots() []snapshot {
 // reply across frames (internals §4.4), so a run that skips its neighbours does
 // not necessarily reach a golden by the same path the suite does.
 func TestViewGoldens(t *testing.T) {
+	// The one thing about the frame that is not the UI's to decide. Glamour
+	// measures a reply in terminal cells, and charmbracelet/x/ansi widens every
+	// East Asian ambiguous character — the bullet it draws a list with among them
+	// — to two of them when RUNEWIDTH_EASTASIAN is set; it reads the variable once
+	// at init and offers no override. Named here because the diff on its own
+	// reads as a styling regression nobody made.
+	if wide, err := strconv.ParseBool(os.Getenv("RUNEWIDTH_EASTASIAN")); err == nil && wide {
+		t.Fatal("RUNEWIDTH_EASTASIAN is set and these frames were recorded without it; unset it to " +
+			"compare them, or every diff below is the width of a bullet rather than a change to the UI")
+	}
+
 	states := snapshots()
 	if len(states) == 0 {
 		t.Fatal("there are no states to record, and a golden suite that snapshots nothing passes forever")
