@@ -25,13 +25,13 @@ const (
 // edit, so an edit holding the lock only around its write would apply to text it
 // read before waiting and silently undo the change it waited for.
 func TestEditHoldsTheFileLockAcrossItsReadAndWrite(t *testing.T) {
-	ws, dir := editWorkspace(t)
-	editWrite(t, dir, "main.go", "one\ntwo\n")
+	ws, reads, dir := editWorkspace(t)
+	editWrite(t, reads, dir, "main.go", "one\ntwo\n")
 
 	unlock := lock(t, ws, "main.go")
 	defer unlock()
 
-	second := run(t, builtin.Edit(ws), `{"path":"main.go","old_string":"two","new_string":"TWO"}`)
+	second := run(t, builtin.Edit(ws, reads), `{"path":"main.go","old_string":"two","new_string":"TWO"}`)
 	select {
 	case <-second:
 		t.Fatal("the edit finished while the file was locked, so it takes no lock at all")
@@ -39,7 +39,7 @@ func TestEditHoldsTheFileLockAcrossItsReadAndWrite(t *testing.T) {
 	}
 
 	// The edit that got there first, landing while the second is still waiting.
-	editWrite(t, dir, "main.go", "ONE\ntwo\n")
+	editWrite(t, reads, dir, "main.go", "ONE\ntwo\n")
 	unlock()
 
 	if result := arrive(t, second); result.IsError {
@@ -56,13 +56,13 @@ func TestEditHoldsTheFileLockAcrossItsReadAndWrite(t *testing.T) {
 // line. Serialized, either order leaves both replacements; unserialized, both
 // read the original and whichever writes last drops the other.
 func TestConcurrentEditsOfOneFileBothApply(t *testing.T) {
-	ws, dir := editWorkspace(t)
-	edit := builtin.Edit(ws)
+	ws, reads, dir := editWorkspace(t)
+	edit := builtin.Edit(ws, reads)
 
 	const rounds = 32
 	for i := range rounds {
 		name := fmt.Sprintf("round%d.go", i)
-		editWrite(t, dir, name, "one\ntwo\n")
+		editWrite(t, reads, dir, name, "one\ntwo\n")
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -96,14 +96,14 @@ func TestConcurrentEditsOfOneFileBothApply(t *testing.T) {
 // one edit runs inside the window another file's lock is held open, so a lock
 // keyed on anything coarser than the file fails here.
 func TestEditOfAnotherFileDoesNotWaitOnALockedOne(t *testing.T) {
-	ws, dir := editWorkspace(t)
-	editWrite(t, dir, "held.go", "one\n")
-	editWrite(t, dir, "free.go", "one\n")
+	ws, reads, dir := editWorkspace(t)
+	editWrite(t, reads, dir, "held.go", "one\n")
+	editWrite(t, reads, dir, "free.go", "one\n")
 
 	unlock := lock(t, ws, "held.go")
 	defer unlock()
 
-	if result := arrive(t, run(t, builtin.Edit(ws), `{"path":"free.go","old_string":"one","new_string":"ONE"}`)); result.IsError {
+	if result := arrive(t, run(t, builtin.Edit(ws, reads), `{"path":"free.go","old_string":"one","new_string":"ONE"}`)); result.IsError {
 		t.Fatalf("the edit of free.go failed: %s", result.Content)
 	}
 	if got := editRead(t, dir, "free.go"); got != "ONE\n" {
@@ -119,19 +119,19 @@ func TestEditOfAnotherFileDoesNotWaitOnALockedOne(t *testing.T) {
 // decides created — and the mode the replacement lands with — is read inside the
 // lock or it is read of a file somebody else is about to replace.
 func TestWriteHoldsTheFileLockAcrossItsStatAndRename(t *testing.T) {
-	ws, dir := editWorkspace(t)
+	ws, reads, dir := editWorkspace(t)
 
 	unlock := lock(t, ws, "notes.txt")
 	defer unlock()
 
-	second := run(t, builtin.NewWrite(ws), `{"path":"notes.txt","content":"second"}`)
+	second := run(t, builtin.NewWrite(ws, reads), `{"path":"notes.txt","content":"second"}`)
 	select {
 	case <-second:
 		t.Fatal("the write finished while the file was locked, so it takes no lock at all")
 	case <-time.After(alwaysWaits):
 	}
 
-	editWrite(t, dir, "notes.txt", "first")
+	editWrite(t, reads, dir, "notes.txt", "first")
 	unlock()
 
 	result := arrive(t, second)

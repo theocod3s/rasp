@@ -77,15 +77,19 @@ func TestTheAgentReadsEditsRunsACommandAndReports(t *testing.T) {
 		}
 	})
 
+	// One tracker, shared with every tool that reads or mutates a file: the
+	// read-before-edit guard only sees the demo's own read of config.go if edit
+	// and write consult the same tracker read recorded into.
+	reads := workspace.NewTracker()
 	tools := tool.NewRegistry([]tool.Tool{
 		builtin.NewBash(ws.Root()),
-		builtin.Edit(ws),
+		builtin.Edit(ws, reads),
 		builtin.NewFind(ws),
 		builtin.NewGrep(ws, builtin.RipgrepPath()),
 		builtin.NewLs(ws),
-		builtin.NewRead(ws, workspace.NewTracker()),
+		builtin.NewRead(ws, reads),
 		builtin.NewTodos(),
-		builtin.NewWrite(ws),
+		builtin.NewWrite(ws, reads),
 	})
 
 	provider := fake.New(

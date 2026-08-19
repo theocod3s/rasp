@@ -287,12 +287,35 @@ func TestWriteSchemaRequiresBothFields(t *testing.T) {
 	}
 }
 
+func TestNewWriteRefusesToBuildWithoutWhatItNeeds(t *testing.T) {
+	f := newWriteFixture(t)
+
+	cases := []struct {
+		what  string
+		build func()
+	}{
+		{"no workspace", func() { builtin.NewWrite(nil, f.reads) }},
+		{"no tracker", func() { builtin.NewWrite(f.spy, nil) }},
+	}
+	for _, c := range cases {
+		t.Run(c.what, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Error("NewWrite built a tool that would fail on its first call instead of at startup")
+				}
+			}()
+			c.build()
+		})
+	}
+}
+
 // writeFixture is the write tool over a workspace holding nothing.
 type writeFixture struct {
-	t    *testing.T
-	dir  string
-	spy  *writeSpy
-	tool tool.Tool
+	t     *testing.T
+	dir   string
+	spy   *writeSpy
+	reads *workspace.Tracker
+	tool  tool.Tool
 }
 
 func newWriteFixture(t *testing.T) *writeFixture {
@@ -306,7 +329,8 @@ func newWriteFixture(t *testing.T) *writeFixture {
 	t.Cleanup(func() { ws.Close() })
 
 	spy := &writeSpy{Workspace: ws}
-	return &writeFixture{t: t, dir: dir, spy: spy, tool: builtin.NewWrite(spy)}
+	reads := workspace.NewTracker()
+	return &writeFixture{t: t, dir: dir, spy: spy, reads: reads, tool: builtin.NewWrite(spy, reads)}
 }
 
 func (f *writeFixture) write(path, content string) tool.Result {
@@ -336,7 +360,10 @@ func (f *writeFixture) details(res tool.Result) *builtin.WriteDetails {
 	return details
 }
 
-// seed writes a file the tool did not, creating its parents.
+// seed writes a file the tool did not, creating its parents, and records it in
+// the fixture's tracker as read — standing in for a session that has already
+// seen it, so a test seeding a file to overwrite is not incidentally a test of
+// the read-before-edit guard too.
 func (f *writeFixture) seed(rel, content string) {
 	f.t.Helper()
 	full := filepath.Join(f.dir, filepath.FromSlash(rel))
@@ -346,6 +373,11 @@ func (f *writeFixture) seed(rel, content string) {
 	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		f.t.Fatalf("seeding %s: %v", rel, err)
 	}
+	info, err := os.Stat(full)
+	if err != nil {
+		f.t.Fatalf("stat %s: %v", rel, err)
+	}
+	f.reads.Record(filepath.ToSlash(rel), info.ModTime())
 }
 
 func (f *writeFixture) wantContent(rel, want string) {

@@ -28,8 +28,17 @@ read rather than retyping it. It must appear exactly once unless replace_all is 
 one occurrence is refused, and the answer is to include more of the surrounding lines, never to
 guess which one was meant.`
 
-// Edit returns the edit tool, reading and writing through ws.
-func Edit(ws *workspace.Workspace) tool.Tool {
+// Edit returns the edit tool, reading and writing through ws. reads is the
+// session's read-before-edit tracker: an edit of a file this session has not
+// read through it, or has read at a since-superseded mtime, is refused (prd
+// §6.6).
+func Edit(ws *workspace.Workspace, reads *workspace.Tracker) tool.Tool {
+	switch {
+	case ws == nil:
+		panic("builtin: edit needs a workspace, which is the only route a file tool has to the filesystem")
+	case reads == nil:
+		panic("builtin: edit needs a tracker, or it cannot tell a file this session read from one it has not")
+	}
 	return tool.New("edit", editDescription, func(_ context.Context, in EditInput) (tool.Result, error) {
 		// The model's spelling of the path is what every error names; the resolved
 		// one is for the diff, which the UI draws against the workspace root.
@@ -46,6 +55,16 @@ func Edit(ws *workspace.Workspace) tool.Tool {
 			return editError("%v", err), nil
 		}
 		defer unlock()
+
+		// Stat'd inside the lock, so the mtime checked here is the one the write
+		// below actually replaces (design §5 step 17).
+		info, err := ws.Stat(path)
+		if err != nil {
+			return editError("%v", err), nil
+		}
+		if err := refuseUnread(reads, path, info.ModTime(), "editing it"); err != nil {
+			return editError("%v", err), nil
+		}
 
 		before, err := ws.ReadFile(in.Path)
 		if err != nil {
@@ -71,6 +90,7 @@ func Edit(ws *workspace.Workspace) tool.Tool {
 		if err := ws.WriteFile(in.Path, []byte(replacement.Text), 0o644); err != nil {
 			return editError("%v", err), nil
 		}
+		recordRead(reads, path, ws.Stat)
 
 		noun := "replacements"
 		if replacement.Count == 1 {

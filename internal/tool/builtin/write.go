@@ -10,6 +10,7 @@ import (
 	"path"
 
 	"github.com/theocod3s/rasp/internal/tool"
+	"github.com/theocod3s/rasp/internal/workspace"
 )
 
 // writeFS is the part of the workspace a write reaches the filesystem through.
@@ -47,13 +48,26 @@ const writeDescription = "Write a file, creating any parent directories that do 
 
 // NewWrite returns the write tool. It builds the new contents in a temporary
 // file alongside the destination and renames it into place, so a write that
-// fails partway leaves the original file as it was.
-func NewWrite(ws writeFS) tool.Tool {
-	w := &writeTool{ws: ws}
+// fails partway leaves the original file as it was. reads is the session's
+// read-before-edit tracker: overwriting a file this session has not read
+// through it, or has read at a since-superseded mtime, is refused (prd §6.6).
+// A path that does not exist yet is a creation, not an overwrite, and needs no
+// prior read.
+func NewWrite(ws writeFS, reads *workspace.Tracker) tool.Tool {
+	switch {
+	case ws == nil:
+		panic("builtin: write needs a workspace, which is the only route a file tool has to the filesystem")
+	case reads == nil:
+		panic("builtin: write needs a tracker, or it cannot tell a file this session read from one it has not")
+	}
+	w := &writeTool{ws: ws, reads: reads}
 	return tool.New("write", writeDescription, w.run)
 }
 
-type writeTool struct{ ws writeFS }
+type writeTool struct {
+	ws    writeFS
+	reads *workspace.Tracker
+}
 
 func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error) {
 	if err := ctx.Err(); err != nil {
@@ -87,6 +101,11 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 		return writeRefused(err.Error()), nil
 	}
 	created := err != nil
+	if !created {
+		if err := refuseUnread(w.reads, rel, info.ModTime(), "overwriting it"); err != nil {
+			return writeRefused(err.Error()), nil
+		}
+	}
 
 	// os masks the mode of a file it creates by the process umask, so an
 	// overwrite needs the chmod as well to land on the mode it found. Creating
@@ -108,6 +127,7 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 		// model asked about.
 		return writeRefused(fmt.Sprintf("Cannot write %s: %v", rel, err)), nil
 	}
+	recordRead(w.reads, rel, w.ws.Stat)
 
 	summary := fmt.Sprintf("Replaced %s", rel)
 	if created {
