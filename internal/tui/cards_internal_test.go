@@ -89,6 +89,10 @@ func TestATickMovesTheRunningCardAndLeavesTheFinishedOnesAlone(t *testing.T) {
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	var m tea.Model = Model{now: func() time.Time { return now }}
 
+	// A delta first, so the turn reads as running: a beat with no turn behind it
+	// declines to schedule another whatever the cards say, and the last check
+	// below would then pass for a reason it is not testing.
+	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventAssistantDelta, Message: reply("Reading it.")}})
 	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventToolStart, CallID: "call_1", Tool: "read"}})
 	now = now.Add(2 * time.Second)
 	m, _ = m.Update(agentMsg{event: agent.Event{
@@ -130,6 +134,29 @@ func TestATickMovesTheRunningCardAndLeavesTheFinishedOnesAlone(t *testing.T) {
 	}})
 	if _, cmd := m.(Model).beat(); cmd != nil {
 		t.Error("the beat scheduled another with no call left running")
+	}
+}
+
+// TestTheBeatStopsWithTheTurnThatStartedIt. Every call the loop starts gets a
+// tool_end, so a card still running once the turn is over is one whose end went
+// missing — and a beat that kept rescheduling on it would wake the program ten
+// times a second for the rest of the session.
+func TestTheBeatStopsWithTheTurnThatStartedIt(t *testing.T) {
+	var m tea.Model = Model{}
+	for _, ev := range []agent.Event{
+		{Kind: agent.EventAssistantDelta, Message: reply("Running the tests.")},
+		{Kind: agent.EventToolStart, CallID: "call_1", Tool: "bash"},
+	} {
+		m, _ = m.Update(agentMsg{event: ev})
+	}
+
+	if _, cmd := m.(Model).beat(); cmd == nil {
+		t.Fatal("the beat stopped while a call was still running mid-turn")
+	}
+
+	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventTurnEnd}})
+	if _, cmd := m.(Model).beat(); cmd != nil {
+		t.Error("the beat outlived the turn, with a card left running and nothing to finish it")
 	}
 }
 

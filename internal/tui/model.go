@@ -273,7 +273,12 @@ func (m Model) beat() (Model, tea.Cmd) {
 		c.item.Elapsed = now.Sub(c.started)
 		m = m.draw(id, c)
 	}
-	if !running {
+
+	// Nothing running is the ordinary end of it. A card still running with no
+	// turn behind it is one whose tool_end went missing, and beating on would
+	// redraw it ten times a second for the rest of the session, timing a call
+	// nothing is left to finish.
+	if !running || !m.busy {
 		return m, nil
 	}
 	return m.pulse()
