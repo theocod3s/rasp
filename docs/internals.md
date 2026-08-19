@@ -460,20 +460,31 @@ The sanctioned bridge is `Program.Send`, which is safe from any goroutine:
 // One goroutine drains agent events into the UI's mailbox.
 go func() {
     for ev := range agentEvents {
-        program.Send(ev)          // tea.Msg is interface{} — send the event directly
+        program.Send(detach(ev))  // tea.Msg is interface{} — send the event directly
     }
 }()
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     switch ev := msg.(type) {
     case agent.Event:
-        m.current = ev.Partial    // just re-render state
+        m.current = ev.Message    // just re-render state
         return m, nil
     }
 }
 ```
 
-neo's comment notes they chose this over a hand-rolled channel pump specifically to escape
+`detach` is the one thing this sketch cannot be written without. §4.2's stable pointer is the
+provider's own message, mutated in place for the rest of the stream — so handing it to `Update`
+puts the turn's writes and `View`'s reads on two goroutines at the same address. The copy is
+shallow, per block rather than per byte, because a block holds a string header and the provider
+replaces the string rather than writing through it.
+
+The mailbox is bounded, and full it drops a delta rather than making the turn wait — every event
+carries the whole accumulation, so the next one says everything the dropped one would have. That
+licence is the delta's alone: a turn end lost to a full channel leaves the UI busy forever
+(decisions.md).
+
+neo's comment notes they chose `Send` over a hand-rolled channel pump specifically to escape
 backpressure problems. Their entire agent↔TUI wiring is ~30 lines.
 
 The turn itself runs as a `tea.Cmd` — Bubble Tea's own goroutine-per-command mechanism — so

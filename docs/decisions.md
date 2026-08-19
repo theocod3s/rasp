@@ -318,3 +318,35 @@ pipeline arrives in M5 with no convention to trigger on, so one gets invented un
 pressure.
 
 *Settled at the M2 kickoff, before any M2 ticket.*
+
+---
+
+## The agent → UI bridge copies the accumulated message, and drops deltas rather than the turn
+
+Two rules at one seam, both about the same handful of bytes crossing between the turn's goroutine
+and Bubble Tea's.
+
+**The bridge copies.** `Event.Message` on an assistant delta is the provider's own message,
+mutated in place for the rest of the step (design §3.1). That is exactly right for a consumer
+rendering inside the callback, and exactly wrong for one that hands the pointer to another
+goroutine: `Update` stores it and `View` reads it while the turn is still writing. The copy is
+per block, not per byte — a `Block` holds a string header and the provider replaces the string
+rather than writing through it — so it costs about what keeping the pointer would.
+
+**And it drops deltas, never anything else.** The mailbox between the callback and `Program.Send`
+is bounded. A full one discards a delta, because every event carries the whole accumulation and
+the next delta says everything the dropped one would have; anything else waits, however slow the
+UI is. A dropped turn end is a UI busy for the rest of the session with nothing later to correct
+it, which is a worse trade than a turn stalled behind a frame.
+
+The tempting version of the first rule is written out in internals §4.3 as `m.current =
+ev.Partial`, which is that race — so someone deleting the copy is not being careless, they are
+following a document. §4.3 has been corrected; this entry is the part that survives a reader who
+never opens it. The tempting version of the second is one policy for the whole channel, in either
+direction: drop everything, or block on everything.
+
+**Reversing it looks like:** for the copy, nothing outside `-race` — the UI draws plausible text
+either way, because a message caught mid-write is still a valid one. For the drop policy, a turn
+that finished with the spinner still running, on long replies only, on slow terminals only.
+
+*Settled in M2-01, the work that built the bridge.*
