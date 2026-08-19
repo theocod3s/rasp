@@ -66,30 +66,22 @@ func TestRequestOnTheWire(t *testing.T) {
 	}
 }
 
+// TestBuildParamsRejectsWhatItCannotSend: llm gains block types over time, and a
+// request quietly missing one is the failure that surfaces furthest from its
+// cause — the model answers without ever being told what it was not sent.
 func TestBuildParamsRejectsWhatItCannotSend(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		block llm.Block
-		want  string
-	}{
-		{"tool_use", llm.Block{Type: llm.BlockToolUse, ID: "toolu_01", Name: "read"}, "tool_use"},
-		{"tool_result", llm.Block{Type: llm.BlockToolResult, ToolUseID: "toolu_01", Content: "ok"}, "tool_result"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			req := ask()
-			req.Messages = append(req.Messages, llm.Message{
-				Role:    llm.RoleAssistant,
-				Content: []llm.Block{tc.block},
-			})
+	req := ask()
+	req.Messages = append(req.Messages, llm.Message{
+		Role:    llm.RoleAssistant,
+		Content: []llm.Block{{Type: "image", Text: "a screenshot"}},
+	})
 
-			_, err := buildParams(req)
-			if err == nil {
-				t.Fatal("no error; a block dropped from a request breaks the tool_use/tool_result pairing where nothing above can still see it")
-			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("error = %v, want one naming %s", err, tc.want)
-			}
-		})
+	_, err := buildParams(req)
+	if err == nil {
+		t.Fatal("no error; a block this adapter has no shape for went out as nothing at all")
+	}
+	if !strings.Contains(err.Error(), "image") {
+		t.Errorf("error = %v, want one naming the block type", err)
 	}
 }
 
@@ -174,22 +166,6 @@ func TestStreamRefusesToSendBadRequest(t *testing.T) {
 	}
 	if events[0].Type != llm.EventError || events[0].StopReason != llm.StopError {
 		t.Errorf("terminal event = %s/%s", events[0].Type, events[0].StopReason)
-	}
-}
-
-// TestBuildParamsRefusesTools covers the one field the adapter reads nowhere. It
-// would otherwise vanish between the caller and the wire, and the turn would look
-// successful with the request quietly missing half its meaning.
-func TestBuildParamsRefusesTools(t *testing.T) {
-	req := ask()
-	req.Tools = []llm.ToolSpec{{Name: "read", Description: "read a file"}}
-
-	_, err := buildParams(req)
-	if err == nil {
-		t.Fatal("no error; the model would answer in prose with the tools never offered, and nothing above could tell")
-	}
-	if !strings.Contains(err.Error(), "tools") {
-		t.Errorf("error = %v, want one naming the tools", err)
 	}
 }
 

@@ -3,6 +3,7 @@ package anthropic
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
@@ -22,17 +23,17 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 		return sdk.MessageNewParams{}, fmt.Errorf("anthropic: MaxTokens is %d; the API requires a positive cap, "+
 			"and sending this costs an authenticated round trip to be told so", req.MaxTokens)
 	}
-	// The quietest failure this adapter could have: the loop passes its per-turn
-	// registry snapshot, no tools reach the wire, the model answers in prose, and
-	// the turn completes looking successful with the user's tools never offered.
-	if len(req.Tools) > 0 {
-		return sdk.MessageNewParams{}, fmt.Errorf("anthropic: the request carries %d tools; this adapter "+
-			"streams text only and would send none of them", len(req.Tools))
-	}
-
 	params := sdk.MessageNewParams{
 		Model:     sdk.Model(req.Model),
 		MaxTokens: int64(req.MaxTokens),
+	}
+
+	for i, spec := range req.Tools {
+		tool, err := toolParam(spec)
+		if err != nil {
+			return sdk.MessageNewParams{}, fmt.Errorf("anthropic: tool %d: %w", i, err)
+		}
+		params.Tools = append(params.Tools, tool)
 	}
 
 	if req.Thinking.Enabled {
@@ -102,6 +103,39 @@ func buildParams(req llm.Request) (sdk.MessageNewParams, error) {
 	return params, nil
 }
 
+// toolParam puts one tool on the wire. The schema travels through ExtraFields
+// rather than InputSchema's own Properties and Required, so it goes out as the
+// tool or the MCP server wrote it: naming those two keys drops every other
+// keyword — additionalProperties, $defs, enum — and the model would be told the
+// arguments are looser than they are.
+func toolParam(spec llm.ToolSpec) (sdk.ToolUnionParam, error) {
+	if spec.Name == "" {
+		return sdk.ToolUnionParam{}, errors.New("no name; the model calls a tool by the name it was " +
+			"given, and nothing could be resolved from an answer naming none")
+	}
+
+	schema := maps.Clone(spec.Schema)
+	if schema == nil {
+		schema = map[string]any{}
+	}
+	// The SDK writes `type` itself and would emit it twice. Anthropic takes an
+	// object schema and nothing else, so another type is refused rather than
+	// relabelled into one — the tool would then be called with arguments its own
+	// unmarshal target cannot read.
+	if kind, ok := schema["type"]; ok {
+		if kind != "object" {
+			return sdk.ToolUnionParam{}, fmt.Errorf("input schema is a %v; the API takes an object schema", kind)
+		}
+		delete(schema, "type")
+	}
+
+	def := sdk.ToolParam{Name: spec.Name, InputSchema: sdk.ToolInputSchemaParam{ExtraFields: schema}}
+	if spec.Description != "" {
+		def.Description = sdk.String(spec.Description)
+	}
+	return sdk.ToolUnionParam{OfTool: &def}, nil
+}
+
 // wireEffort is the single source for what this adapter can express: supported is
 // derived from its keys and buildParams refuses everything else, so a picker and a
 // refusal cannot come apart. A rung added to llm's ladder is refused until someone
@@ -146,12 +180,23 @@ func messageParam(msg llm.Message) (sdk.MessageParam, error) {
 			}
 		case llm.BlockThinking:
 			// Dropped rather than replayed. Anthropic wants a thinking block back
-			// with the signature it arrived with, llm.Block has no field for one,
-			// and replay is only required of a turn that went on to call a tool —
-			// which this adapter cannot yet produce.
+			// with the signature it arrived with, and llm.Block has no field for one.
+			// Replay is required only of a thinking turn that went on to call a tool,
+			// so this is a gap that opens the first request that sets Thinking.Enabled
+			// with tools in it — which nothing builds yet.
 			continue
+		case llm.BlockToolUse:
+			if block.ID == "" || block.Name == "" {
+				return sdk.MessageParam{}, fmt.Errorf("a tool_use block names %q with id %q; "+
+					"both are required, and the result answering it points at the id", block.Name, block.ID)
+			}
+		case llm.BlockToolResult:
+			if block.ToolUseID == "" {
+				return sdk.MessageParam{}, errors.New("a tool_result block names no tool_use; " +
+					"the API rejects one answering nothing")
+			}
 		default:
-			return sdk.MessageParam{}, fmt.Errorf("cannot send a %s block: this adapter streams text only", block.Type)
+			return sdk.MessageParam{}, fmt.Errorf("cannot send a %s block: this adapter has no wire shape for it", block.Type)
 		}
 		kept = append(kept, block)
 	}
@@ -168,6 +213,12 @@ func messageParam(msg llm.Message) (sdk.MessageParam, error) {
 		switch block.Type {
 		case llm.BlockText:
 			content = append(content, sdk.NewTextBlock(block.Text))
+		case llm.BlockToolUse:
+			// Arguments rather than Input: json.Marshal refuses the fragment a
+			// truncated turn commits, and refuses the whole request with it.
+			content = append(content, sdk.NewToolUseBlock(block.ID, block.Arguments(), block.Name))
+		case llm.BlockToolResult:
+			content = append(content, toolResultBlock(block))
 		default:
 			return sdk.MessageParam{}, fmt.Errorf("kept a %s block and has no wire shape for it", block.Type)
 		}
@@ -180,4 +231,16 @@ func messageParam(msg llm.Message) (sdk.MessageParam, error) {
 		return sdk.NewAssistantMessage(content...), nil
 	}
 	return sdk.MessageParam{}, fmt.Errorf("unknown role %q", msg.Role)
+}
+
+// toolResultBlock carries what a tool produced back to the model. A tool that
+// succeeds and prints nothing is ordinary, and the two ways of sending one are
+// not equivalent: the content list is optional, an empty text block inside it is
+// rejected like any other.
+func toolResultBlock(block llm.Block) sdk.ContentBlockParamUnion {
+	result := sdk.ToolResultBlockParam{ToolUseID: block.ToolUseID, IsError: sdk.Bool(block.IsError)}
+	if block.Content != "" {
+		result.Content = []sdk.ToolResultBlockParamContentUnion{{OfText: &sdk.TextBlockParam{Text: block.Content}}}
+	}
+	return sdk.ContentBlockParamUnion{OfToolResult: &result}
 }
