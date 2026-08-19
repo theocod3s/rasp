@@ -1111,7 +1111,8 @@ const (
 )
 
 // PatternRules maps a glob to a rule. Matched against a literal string —
-// the whole bash command line, or "server__tool" for MCP.
+// the whole bash command line, or "mcp__<server>__<tool>" for MCP (the tool
+// name exactly as §8.2 builds it and the user sees it).
 type PatternRules map[string]Rule
 
 type PermissionSet struct {
@@ -1230,7 +1231,10 @@ func (p *compiledSet) resolveBash(cmd string) Rule {
 }
 ```
 
-Matching is `filepath.Match`-style over the whole command string. This is a **usability
+Matching is `filepath.Match`-style in syntax (`*` and `?`; `[`, `]` and `\` stay literal,
+because shell commands carry them far more often than a permission pattern wants a character
+class) but not in its separator rule: a star crosses every character, `/` included — the
+example below depends on it. This is a **usability
 feature, not a security boundary** — `git diff; rm -rf /` matches `git diff*` and would be
 allowed. That limitation is documented in the user-facing docs rather than papered over. The
 real protections are `os.Root` confinement and the fact that a human is watching.
@@ -1625,7 +1629,7 @@ this: a cache-hit rate that drops to zero after adding an MCP server is the sign
 ### 8.5 What `internal/mcp` does **not** contain
 
 - **No permission logic.** MCP tools flow through the same `permission.Service` and the same
-  mode presets as built-ins. `PermissionSet.MCP` patterns match `server__tool`.
+  mode presets as built-ins. `PermissionSet.MCP` patterns match `mcp__<server>__<tool>`.
 - **No schema interpretation.** The server's JSON Schema is passed through untouched (§3.2).
 - **No transport but stdio.** Streamable HTTP would live in a sibling implementation of the
   same `Client` interface when it arrives. HTTP+SSE specifically is now formally deprecated
