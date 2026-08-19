@@ -2213,7 +2213,9 @@ config writes it explicitly rather than leaving it to a fallback nobody sees.
 
 ### Two-tier retry
 
-**Tier 1 — transport.** Wraps the HTTP call. Retries `408`, `409`, `429`, `5xx`. Honors
+**Tier 1 — transport.** Wraps the HTTP call — an `http.RoundTripper` on the client the adapter
+hands its SDK, so a retry happens before any event has been yielded and §3.1a's rule against
+replaying a half-streamed reply never comes into it. Retries `408`, `409`, `429`, `5xx`. Honors
 `retry-after` and `retry-after-ms`, including HTTP-date form. Exponential backoff capped at 8s
 with 25% downward jitter.
 
@@ -2223,8 +2225,12 @@ not a silent hang. The sleep is interruptible by the turn's context — the vend
 retry timers ignore cancellation, which is why we call them with `maxRetries: 0` and implement
 this ourselves.
 
-**Tier 2 — semantic.** Operates on the resulting `Message`, which is possible only because of
-the "never returns a Go error" contract.
+**Tier 2 — semantic.** Operates on the resulting `Message` and the error its terminal event
+carried — a pure function over the two, which is possible only because of the "never returns a
+Go error" contract: one failure path to classify, not a tangle of error types. Both halves are
+needed because a `Message` has nowhere to keep an error. The stop reason says a call failed; the
+text saying *why* — the text every rule below matches on — exists only on the terminal event
+(§3.1).
 
 | Class | Examples | Action |
 |---|---|---|

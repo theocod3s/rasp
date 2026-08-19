@@ -190,10 +190,9 @@ func terminalEvent(msg *llm.Message, reason sdk.StopReason) llm.Event {
 		return errorEvent(msg, errors.New("anthropic: stream ended without a stop reason"))
 	}
 	// The one unmapped reason a long session reaches routinely, and §12 wants it
-	// fatal with a fix hint rather than retried. The text below reaches the user; it
-	// does NOT reach the retry classifier, which reads a Message, and a Message
-	// carries no error. Telling this apart from a stream that merely ended is still
-	// open, and it is the classifier's shape to settle, not this file's.
+	// fatal with a fix hint rather than retried. The text below is what earns that:
+	// the classifier takes the terminal event's error beside the message, and reads
+	// "context window" out of this sentence (internal/llm/retry).
 	if reason == sdk.StopReasonModelContextWindowExceeded {
 		return errorEvent(msg, errors.New("anthropic: the conversation is longer than the model's "+
 			"context window; it has to be compacted or started again"))
