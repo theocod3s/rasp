@@ -358,3 +358,25 @@ either way, because a message caught mid-write is still a valid one. For the dro
 that finished with the spinner still running, on long replies only, on slow terminals only.
 
 *Settled in M2-01, the work that built the bridge.*
+
+---
+
+## The loop's approval seam speaks in tool calls, not in permission requests
+
+`agent.Approver` takes an `llm.ToolCall` — an id, a name and the arguments the model sent. It does
+not take a `permission.Request`, and `internal/agent` does not import `internal/permission`.
+
+The obvious simplification is to pass the request the service actually wants. It fails on what a
+request holds: an `Action`, a resolved `Path`, a `Command`. None of those is in a tool call. Filling
+them means knowing that `read` is a read and `write` is a write, and which JSON field of each tool's
+arguments is the path — per-tool semantics, in the one package design §2 gives no knowledge of tools
+beyond the interface. A grant is keyed on exactly those fields (§7.7), so a loop that half-filled
+them would hand the user grants that cover nothing or cover everything. The mapping belongs to the
+adapter the composition root writes, which knows both sides because composing them is its job
+(design §1).
+
+**Reversing it looks like:** an import of `internal/permission` into `internal/agent` that reads as
+tidying, followed by a `switch` on tool name to work out the action — the mode branch design §7
+exists to keep out of the loop, arriving by way of a type.
+
+*Settled in M2-15, the work that made approval a serial barrier.*

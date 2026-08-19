@@ -105,6 +105,13 @@ func TestTheLadderAnswersInTheDocumentedOrder(t *testing.T) {
 				h.SetRules(fixed(tc.rule))
 			}
 
+			// Asked before Ask, against exactly the state Ask is about to walk. A
+			// dispatcher splits its batch on this answer, so a rung that answers
+			// without asking has to be a rung this reports no question for.
+			if asks := h.Prompts(req); asks != tc.wantPrompted {
+				t.Errorf("Prompts = %v, want %v: it and Ask disagree about which rung answers", asks, tc.wantPrompted)
+			}
+
 			err := h.Ask(t.Context(), req)
 			switch {
 			case tc.wantAllowed && err != nil:

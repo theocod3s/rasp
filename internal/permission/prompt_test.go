@@ -317,6 +317,29 @@ func TestAskWithNobodyToAskIsADenial(t *testing.T) {
 	}
 }
 
+// TestNoQuestionIsPromisedWhenNoneCanBeAsked covers the two refusals that are
+// decided by the prompt being undeliverable rather than by a rung above it. Both
+// are denials with nobody asked, so a caller partitioning its work around a
+// question would be waiting on one that is never coming.
+func TestNoQuestionIsPromisedWhenNoneCanBeAsked(t *testing.T) {
+	req := permission.Request{
+		CallID: "call-1",
+		Tool:   "write",
+		Action: permission.ActionWrite,
+		Path:   "/foo/a.go",
+	}
+
+	if permission.New(nil).Prompts(req) {
+		t.Errorf("a service with no Prompter reports that it would ask the user")
+	}
+
+	h := newHarness(t, permission.DecisionOnce)
+	req.CallID = ""
+	if h.Prompts(req) {
+		t.Errorf("a request with no call id reports that it would reach the user")
+	}
+}
+
 // reentrant asks a second time for the same call from inside the first prompt,
 // which is what a caller that retried an Ask would do to the service.
 type reentrant struct {

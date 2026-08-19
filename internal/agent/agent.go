@@ -58,6 +58,10 @@ type Config struct {
 	// MaxSteps defaults to DefaultMaxSteps.
 	MaxSteps int
 
+	// Approver gates every tool call before it runs. nil installs no gate and
+	// every call runs, which is the loop with nothing composed onto it (design §1).
+	Approver Approver
+
 	// Events receives every event a turn produces. A batch runs its tools
 	// concurrently, so tool events come from as many goroutines as there are
 	// calls in flight — but the agent holds a lock across this call, so a
@@ -76,6 +80,7 @@ type Agent struct {
 	model     string
 	maxTokens int
 	maxSteps  int
+	approver  Approver
 	events    func(Event)
 
 	mu      sync.Mutex
@@ -117,6 +122,7 @@ func New(cfg Config) (*Agent, error) {
 		model:     cfg.Model,
 		maxTokens: cfg.MaxTokens,
 		maxSteps:  steps,
+		approver:  cfg.Approver,
 		events:    cfg.Events,
 	}, nil
 }
