@@ -244,8 +244,8 @@ func TestGrantsDoNotOutliveTheService(t *testing.T) {
 	}
 }
 
-// switcher ends the session while the first prompt is open, then answers it —
-// the order a keystroke racing a new session produces.
+// switcher ends the session while the first prompt is open and then answers it,
+// which is what a keystroke landing as the user starts a new session does.
 type switcher struct {
 	svc     *permission.Service
 	prompts int
@@ -259,10 +259,10 @@ func (s *switcher) Prompt(req permission.Request) {
 	s.svc.Resolve(req.CallID, permission.DecisionAlways)
 }
 
-// TestAnAnswerFromTheSessionThatEndedGrantsNothing is the half of the boundary a
-// clear cannot enforce on its own: the answer is given before the session ends
-// and recorded after it, so the new session would start holding an approval
-// nobody asked its user for.
+// TestAnAnswerFromTheSessionThatEndedGrantsNothing is the half of the boundary
+// clearing the map cannot enforce on its own: the prompt was opened by the
+// session that has since ended, so recording its answer would start the new one
+// holding an approval nobody asked its user for.
 func TestAnAnswerFromTheSessionThatEndedGrantsNothing(t *testing.T) {
 	req := permission.Request{
 		CallID: "call-1",
