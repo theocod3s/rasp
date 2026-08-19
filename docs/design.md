@@ -1250,20 +1250,14 @@ cat template.go > handler.go       # matches cat*   → would be allowed
 go vet ./... | tee report.txt      # matches go vet* → would be allowed
 ```
 
-So plan mode applies one hard check *before* glob resolution, and it is a deny rather than an
-ask because there is no legitimate read-only use of output redirection:
-
-```go
-var redirectPattern = regexp.MustCompile(`(^|[^0-9<>])>>?[^>]|\|\s*tee\b`)
-
-// planPreflight runs before resolveBash. Plan mode only.
-func planPreflight(cmd string) (Rule, bool) {
-    if redirectPattern.MatchString(cmd) {
-        return RuleDeny, true
-    }
-    return 0, false
-}
-```
+So a preset can demand one hard check *before* its pattern table, and it is a deny rather than
+an ask because there is no legitimate read-only use of output redirection. It ships as data —
+`PermissionSet.DenyRedirection`, set by the plan preset — rather than a mode check, so nothing
+in the resolution path learns a mode's name. The scan is a small quote-aware walk rather than a
+regexp: single-quoted text is inert because the shell makes it so; a `>` inside double quotes
+still counts, because `bash -c "… > f"` is the spelling that reaches a file; `2>errors.txt`
+counts; backslash escapes are honoured. The denial names the operator it matched and says what
+to do instead.
 
 **Say plainly what this is worth.** It closes the accidents — a model reaching for `>` because
 that's the shortest way to write a file. It does not close the hole: `bash -c "..."`,
