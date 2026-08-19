@@ -37,6 +37,16 @@ func Edit(ws *workspace.Workspace) tool.Tool {
 		if err != nil {
 			return editError("%v", err), nil
 		}
+
+		// Taken before the read, not around the write, because the write is built
+		// from the read: two edits that each read the original both apply, and the
+		// second silently undoes the first.
+		unlock, err := ws.LockFile(in.Path)
+		if err != nil {
+			return editError("%v", err), nil
+		}
+		defer unlock()
+
 		before, err := ws.ReadFile(in.Path)
 		if err != nil {
 			return editError("%v", err), nil

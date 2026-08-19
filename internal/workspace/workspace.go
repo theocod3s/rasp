@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // Workspace is the only route from a tool to the filesystem. Its methods take a
@@ -21,6 +22,11 @@ type Workspace struct {
 	// hands every process /tmp and /var as symlinks, which makes this the normal
 	// case there rather than an exotic one.
 	given string
+
+	// locks maps a resolved path to the mutex mutations of it serialize on.
+	// Entries are never removed: one mutex per file a session mutated is not
+	// worth the refcounting it would take to reclaim.
+	locks sync.Map
 }
 
 // Open confines a Workspace to dir, which must exist.
