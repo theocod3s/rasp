@@ -34,13 +34,14 @@ func fixed(r permission.Rule) rules {
 type harness struct {
 	*permission.Service
 
+	t      *testing.T
 	mu     sync.Mutex
 	answer permission.Decision
 	asked  []permission.Request
 }
 
-func newHarness(answer permission.Decision, allowed ...string) *harness {
-	h := &harness{answer: answer}
+func newHarness(t *testing.T, answer permission.Decision, allowed ...string) *harness {
+	h := &harness{t: t, answer: answer}
 	h.Service = permission.New(h, allowed...)
 	return h
 }
@@ -51,9 +52,14 @@ func (h *harness) Prompt(req permission.Request) {
 	answer := h.answer
 	h.mu.Unlock()
 
-	if answer != "" {
-		h.Resolve(req.CallID, answer)
+	// A prompt with no decision armed would park the caller until go test's
+	// ten-minute panic, and a goroutine dump names no assertion. Failing here
+	// says which request had nothing to answer it.
+	if answer == "" {
+		h.t.Errorf("%v reached the prompt with no decision armed", req)
+		answer = permission.DecisionReject
 	}
+	h.Resolve(req.CallID, answer)
 }
 
 func (h *harness) prompts() []permission.Request {
@@ -82,7 +88,7 @@ func (h *harness) answers(d permission.Decision) permission.Decision {
 func grantOnce(t *testing.T, h *harness, req permission.Request) {
 	t.Helper()
 
-	was := h.answers(permission.DecideAlways)
+	was := h.answers(permission.DecisionAlways)
 	if err := h.Ask(t.Context(), req); err != nil {
 		t.Fatalf("granting %v: %v", req, err)
 	}

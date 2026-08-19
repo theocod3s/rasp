@@ -3,6 +3,7 @@ package permission_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -51,9 +52,9 @@ func TestOnlyTheFirstAnswerDecidesAPrompt(t *testing.T) {
 		var wg sync.WaitGroup
 		start := make(chan struct{})
 		for i := range resolvers {
-			d := permission.DecideOnce
+			d := permission.DecisionOnce
 			if i%2 == 1 {
-				d = permission.DecideReject
+				d = permission.DecisionReject
 			}
 			wg.Add(1)
 			go func() {
@@ -78,10 +79,10 @@ func TestOnlyTheFirstAnswerDecidesAPrompt(t *testing.T) {
 		}
 
 		err := <-asked
-		if winner == permission.DecideOnce && err != nil {
+		if winner == permission.DecisionOnce && err != nil {
 			t.Fatalf("the answer that won was %q but Ask = %v", winner, err)
 		}
-		if winner == permission.DecideReject && !errors.Is(err, permission.ErrDenied) {
+		if winner == permission.DecisionReject && !errors.Is(err, permission.ErrDenied) {
 			t.Fatalf("the answer that won was %q but Ask = %v", winner, err)
 		}
 	}
@@ -115,8 +116,139 @@ func TestAPendingPromptEndsWithTheRequestsContext(t *testing.T) {
 		t.Errorf("Ask reported the cancelled turn as a refusal: %v", err)
 	}
 
-	if svc.Resolve(req.CallID, permission.DecideAlways) {
+	if svc.Resolve(req.CallID, permission.DecisionAlways) {
 		t.Errorf("an answer arriving after the prompt was abandoned reported deciding it")
+	}
+}
+
+// TestAnAnswerThatBeatsACancellationKeepsItsGrant covers the one place two ready
+// select cases meet: the user answers as the turn is cancelled. Which branch Go
+// picks is random, so the grant has to survive either — Resolve has already told
+// the user their answer decided the prompt.
+func TestAnAnswerThatBeatsACancellationKeepsItsGrant(t *testing.T) {
+	req := permission.Request{
+		CallID: "call-1",
+		Tool:   "write",
+		Action: permission.ActionWrite,
+		Path:   "/foo/a.go",
+	}
+
+	// Repeated because the branch is chosen at random: one run proves nothing
+	// about the other half of the coin.
+	for range 50 {
+		h := newHarness(t, permission.DecisionAlways)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel() // both cases are ready by the time the select runs
+
+		if err := h.Ask(ctx, req); err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("Ask = %v, want the call allowed or the turn reported cancelled", err)
+		}
+
+		h.forget()
+		h.answers(permission.DecisionReject)
+		if err := h.Ask(t.Context(), req); err != nil {
+			t.Fatalf("Ask after answering always = %v, want the grant to answer", err)
+		}
+	}
+}
+
+// TestTwoPromptsAreAnsweredIndependently is the shape a parallel batch produces:
+// several calls in flight, a prompt open for each, and answers arriving in an
+// order nobody chose. An answer belongs to the call it names, and a prompt
+// closing does not disturb its siblings (design §6).
+func TestTwoPromptsAreAnsweredIndependently(t *testing.T) {
+	first := permission.Request{
+		CallID: "call-1",
+		Tool:   "write",
+		Action: permission.ActionWrite,
+		Path:   "/foo/a.go",
+	}
+	second := permission.Request{
+		CallID:  "call-2",
+		Tool:    "bash",
+		Action:  permission.ActionExecute,
+		Command: "go build ./...",
+	}
+
+	ui := &blocking{asked: make(chan permission.Request, 2)}
+	svc := permission.New(ui)
+
+	firstErr, secondErr := make(chan error, 1), make(chan error, 1)
+	go func() { firstErr <- svc.Ask(t.Context(), first) }()
+	go func() { secondErr <- svc.Ask(t.Context(), second) }()
+
+	open := map[string]bool{}
+	for range 2 {
+		open[(<-ui.asked).CallID] = true
+	}
+	if !open[first.CallID] || !open[second.CallID] {
+		t.Fatalf("prompts open for %v, want one for each call", open)
+	}
+
+	// Answered back to front, which is the order this exists to allow.
+	if !svc.Resolve(second.CallID, permission.DecisionReject) {
+		t.Fatalf("%s took no answer while its prompt was open", second.CallID)
+	}
+	if err := <-secondErr; !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("Ask for %s = %v, want the refusal it was answered with", second.CallID, err)
+	}
+
+	if !svc.Resolve(first.CallID, permission.DecisionOnce) {
+		t.Fatalf("%s took no answer after its sibling closed", first.CallID)
+	}
+	if err := <-firstErr; err != nil {
+		t.Errorf("Ask for %s = %v, want the yes it was answered with", first.CallID, err)
+	}
+}
+
+// TestAnAnswerThePackageDoesNotKnowIsANoWithoutBlamingTheUser fails closed on a
+// Decision that is none of the three, and says what happened: a transcript that
+// reported it as a refusal would assert one the user never made.
+func TestAnAnswerThePackageDoesNotKnowIsANoWithoutBlamingTheUser(t *testing.T) {
+	req := permission.Request{
+		CallID: "call-1",
+		Tool:   "write",
+		Action: permission.ActionWrite,
+		Path:   "/foo/a.go",
+	}
+
+	ui := newBlocking()
+	svc := permission.New(ui)
+
+	asked := make(chan error, 1)
+	go func() { asked <- svc.Ask(t.Context(), req) }()
+	<-ui.asked
+
+	if !svc.Resolve(req.CallID, permission.Decision("go on then")) {
+		t.Fatalf("the prompt took no answer")
+	}
+
+	err := <-asked
+	if !errors.Is(err, permission.ErrDenied) {
+		t.Fatalf("Ask = %v, want an answer nobody recognises to fail closed", err)
+	}
+	if strings.Contains(err.Error(), "rejected") {
+		t.Errorf("Ask = %v, want it not to report the user as having refused", err)
+	}
+}
+
+// TestARequestWithNoCallIDIsNeverPublished keeps the id an answerable handle:
+// two id-less requests would share one registry entry, and the second would be
+// turned away over a prompt it cannot see.
+func TestARequestWithNoCallIDIsNeverPublished(t *testing.T) {
+	h := newHarness(t, permission.DecisionOnce)
+
+	err := h.Ask(t.Context(), permission.Request{
+		Tool:   "write",
+		Action: permission.ActionWrite,
+		Path:   "/foo/a.go",
+	})
+	if !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("Ask for a request with no call id = %v, want ErrDenied", err)
+	}
+	if len(h.prompts()) > 0 {
+		t.Errorf("a request with no call id was put to the user anyway")
 	}
 }
 
@@ -130,14 +262,14 @@ func TestAnswerToAPromptThatIsNotOpenIsANoOp(t *testing.T) {
 		Path:   "/foo/a.go",
 	}
 
-	h := newHarness(permission.DecideOnce)
+	h := newHarness(t, permission.DecisionOnce)
 	if err := h.Ask(t.Context(), req); err != nil {
 		t.Fatalf("Ask = %v, want the call allowed", err)
 	}
-	if h.Resolve(req.CallID, permission.DecideAlways) {
+	if h.Resolve(req.CallID, permission.DecisionAlways) {
 		t.Errorf("answering an already-answered prompt reported deciding it")
 	}
-	if h.Resolve("a call that never asked", permission.DecideOnce) {
+	if h.Resolve("a call that never asked", permission.DecisionOnce) {
 		t.Errorf("answering a prompt that was never opened reported deciding it")
 	}
 }
@@ -173,7 +305,7 @@ func (r *reentrant) Prompt(req permission.Request) {
 	if r.depth == 1 {
 		r.inner = r.svc.Ask(r.ctx, req)
 	}
-	r.svc.Resolve(req.CallID, permission.DecideOnce)
+	r.svc.Resolve(req.CallID, permission.DecisionOnce)
 }
 
 // TestASecondPromptForOneCallIsRefused keeps the call id an unambiguous handle.

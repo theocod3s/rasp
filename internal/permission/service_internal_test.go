@@ -17,13 +17,9 @@ func (r *recordingRules) Resolve(Request) Rule {
 	return r.rule
 }
 
-// TestYoloAnswersBeforeEveryOtherRung holds design §7.7's reason for making the
-// bypass a field rather than a preset that allows everything: under yolo no
-// pattern is consulted, so no pattern can deny.
-//
-// Nothing turns the field on outside this package yet, which is why the test is
-// in it — the flag and the command that will are their own work, and the
-// ordering is what had to be right first.
+// TestYoloAnswersBeforeEveryOtherRung asserts the claim the field carries in
+// service.go: under yolo no pattern is consulted. It is an in-package test
+// because nothing outside can set the field yet.
 func TestYoloAnswersBeforeEveryOtherRung(t *testing.T) {
 	req := Request{CallID: "call-1", Tool: "bash", Action: ActionExecute, Command: "rm -rf /"}
 
@@ -72,7 +68,7 @@ func TestAnAbandonedPromptTakesNoAnswer(t *testing.T) {
 	p := &pending{reply: make(chan Decision, 1)}
 	p.abandon()
 
-	if p.answer(DecideOnce) {
+	if p.answer(DecisionOnce) {
 		t.Errorf("an answer to an abandoned prompt reported deciding it")
 	}
 }

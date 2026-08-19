@@ -35,54 +35,54 @@ func TestTheLadderAnswersInTheDocumentedOrder(t *testing.T) {
 		{
 			name:        "rung 1 allows, and no rung below is consulted",
 			rule:        permission.RuleAllow,
-			answer:      permission.DecideReject,
+			answer:      permission.DecisionReject,
 			wantAllowed: true,
 		},
 		{
 			name:        "rung 2 denies over an allow-list that would say yes",
 			rule:        permission.RuleDeny,
 			allowTool:   true,
-			answer:      permission.DecideOnce,
+			answer:      permission.DecisionOnce,
 			wantAllowed: false,
 		},
 		{
 			name:        "rung 2 denies over a session grant that would say yes",
 			rule:        permission.RuleDeny,
 			granted:     true,
-			answer:      permission.DecideOnce,
+			answer:      permission.DecisionOnce,
 			wantAllowed: false,
 		},
 		{
 			name:        "rung 3 allows before the user is asked",
 			rule:        permission.RuleAsk,
 			allowTool:   true,
-			answer:      permission.DecideReject,
+			answer:      permission.DecisionReject,
 			wantAllowed: true,
 		},
 		{
 			name:        "rung 4 allows before the user is asked",
 			rule:        permission.RuleAsk,
 			granted:     true,
-			answer:      permission.DecideReject,
+			answer:      permission.DecisionReject,
 			wantAllowed: true,
 		},
 		{
 			name:         "rung 5 asks when nothing above has answered",
 			rule:         permission.RuleAsk,
-			answer:       permission.DecideOnce,
+			answer:       permission.DecisionOnce,
 			wantAllowed:  true,
 			wantPrompted: true,
 		},
 		{
 			name:         "rung 5 refuses when the user does",
 			rule:         permission.RuleAsk,
-			answer:       permission.DecideReject,
+			answer:       permission.DecisionReject,
 			wantAllowed:  false,
 			wantPrompted: true,
 		},
 		{
 			name:         "with no preset installed the question reaches the user",
-			answer:       permission.DecideOnce,
+			answer:       permission.DecisionOnce,
 			wantAllowed:  true,
 			wantPrompted: true,
 		},
@@ -90,11 +90,11 @@ func TestTheLadderAnswersInTheDocumentedOrder(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			var allowed []string
+			var allowTools []string
 			if tc.allowTool {
-				allowed = []string{req.Tool}
+				allowTools = []string{req.Tool}
 			}
-			h := newHarness(tc.answer, allowed...)
+			h := newHarness(t, tc.answer, allowTools...)
 
 			// The grant is recorded before the preset is installed: a preset that
 			// denies would refuse the grant itself.
@@ -185,9 +185,9 @@ func TestAGrantCoversTheCallItWasGivenForAndNothingElse(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newHarness("")
+			h := newHarness(t, "")
 			grantOnce(t, h, tc.granted)
-			h.answers(permission.DecideReject)
+			h.answers(permission.DecisionReject)
 
 			err := h.Ask(t.Context(), tc.next)
 			prompted := len(h.prompts()) > 0
@@ -222,12 +222,12 @@ func TestGrantsDoNotOutliveTheService(t *testing.T) {
 		Path:   "/foo/a.go",
 	}
 
-	h := newHarness("")
+	h := newHarness(t, "")
 	grantOnce(t, h, req)
 
 	// The grant is real on the service that took it — without this the test
 	// below would pass just as well against a Service that records nothing.
-	h.answers(permission.DecideReject)
+	h.answers(permission.DecisionReject)
 	if err := h.Ask(t.Context(), req); err != nil {
 		t.Fatalf("Ask on the granting service = %v, want the grant to answer", err)
 	}
@@ -235,11 +235,36 @@ func TestGrantsDoNotOutliveTheService(t *testing.T) {
 		t.Fatalf("the granting service asked again, so there is no grant to outlive anything")
 	}
 
-	restarted := newHarness(permission.DecideReject)
+	restarted := newHarness(t, permission.DecisionReject)
 	if err := restarted.Ask(t.Context(), req); !errors.Is(err, permission.ErrDenied) {
 		t.Errorf("Ask after a restart = %v, want the question asked again", err)
 	}
 	if len(restarted.prompts()) != 1 {
 		t.Errorf("the restarted service asked %d times, want 1", len(restarted.prompts()))
+	}
+}
+
+// TestClearingGrantsEndsTheirSession is the other boundary a grant must not
+// cross: one process serves several sessions, and an approval given in the one
+// the user just left has no standing in the next.
+func TestClearingGrantsEndsTheirSession(t *testing.T) {
+	req := permission.Request{
+		CallID: "call-1",
+		Tool:   "bash",
+		Action: permission.ActionExecute,
+
+		Command: "rm -rf dist",
+	}
+
+	h := newHarness(t, "")
+	grantOnce(t, h, req)
+	h.answers(permission.DecisionReject)
+
+	h.ClearGrants()
+	if err := h.Ask(t.Context(), req); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("Ask in the next session = %v, want the question asked again", err)
+	}
+	if len(h.prompts()) != 1 {
+		t.Errorf("the user was asked %d times after the grants were cleared, want 1", len(h.prompts()))
 	}
 }

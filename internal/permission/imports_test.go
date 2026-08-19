@@ -17,7 +17,7 @@ import (
 // leave a file behind that answers for the user before rasp has drawn anything.
 //
 // Adding to this list is that decision, made deliberately.
-var allowed = []string{
+var allowedImports = []string{
 	"context",
 	"errors",
 	"fmt",
@@ -49,7 +49,7 @@ func TestGrantsHaveNowhereToPersistTo(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: cannot read the import path %s: %v", name, spec.Path.Value, err)
 			}
-			if !slices.Contains(allowed, path) {
+			if !slices.Contains(allowedImports, path) {
 				t.Errorf("%s imports %q, which is not on this test's allowlist. Add it once you have "+
 					"decided it cannot outlast the process — a grant that survives a restart is one "+
 					"the user is never asked about again", name, path)

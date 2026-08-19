@@ -60,12 +60,10 @@ func (r Request) String() string {
 	}
 }
 
-// grant is what "always, for this session" remembers.
-//
-// It holds everything that identified the approved call rather than the tool
+// grant holds everything that identified the approved call rather than the tool
 // alone: a grant for `/foo` must not quietly cover `/bar` (prd §6.6), and one
-// that ignored the command would turn a single approved `rm -rf dist` into
-// every command bash is ever handed.
+// that ignored the command would turn a single approved `rm -rf dist` into every
+// command bash is ever handed.
 type grant struct {
 	tool    string
 	action  Action

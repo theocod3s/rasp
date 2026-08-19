@@ -13,9 +13,9 @@ import (
 type Decision string
 
 const (
-	DecideOnce   Decision = "once"
-	DecideAlways Decision = "always"
-	DecideReject Decision = "reject"
+	DecisionOnce   Decision = "once"
+	DecisionAlways Decision = "always"
+	DecisionReject Decision = "reject"
 )
 
 // Rules answers rungs 1 and 2: what the active mode's preset, with the user's
@@ -47,8 +47,9 @@ var ErrDenied = errors.New("permission denied")
 type Service struct {
 	// yolo is rung 0, loaded before any map is touched: a field rather than a
 	// preset that allows everything, because a preset can be overridden into
-	// denying and this cannot — under yolo no pattern is consulted at all. What
-	// turns it on is not built yet; the ordering it depends on is.
+	// denying and this cannot. Whatever comes to turn it on has to set it and
+	// install the preset in one call (design §7.4) — two setters leave a window
+	// where the bypass and the mode disagree about which is in force.
 	yolo atomic.Bool
 
 	rules atomic.Pointer[Rules]
@@ -62,10 +63,12 @@ type Service struct {
 
 // New returns a Service that prompts p when nothing above rung 5 has answered.
 //
-// allowed is rung 3, the config allow-list: a tool named there is allowed
-// outright. It sits below the mode rules, so a mode that denies still denies —
-// an allow-list widens what a mode would have asked about, it does not overrule
-// what a mode refuses.
+// allowed is rung 3, the config allow-list. It sits below the mode rules, so a
+// mode that denies still denies: an allow-list widens what a mode would have
+// asked about, it does not overrule what a mode refuses. A name here allows
+// every call that tool can make, so "bash" is every command — a rule about one
+// command belongs in the mode's patterns, matched against the command line
+// (design §7.3).
 //
 // A nil Prompter denies at rung 5: a request nobody can answer is a no, not a
 // yes and not a wait.
@@ -88,6 +91,11 @@ func (s *Service) SetRules(r Rules) {
 	}
 	s.rules.Store(&r)
 }
+
+// ClearGrants drops every grant taken so far. Grants belong to the session that
+// gave them (prd §6.6) and one process outlives a session: starting a new one
+// carries the transcript away, and has to carry the approvals with it.
+func (s *Service) ClearGrants() { s.grants.Clear() }
 
 // Ask walks the ladder and returns nil when the call may proceed. Every no is
 // ErrDenied wrapped with what was refused; a cancelled or expired context comes
@@ -126,6 +134,13 @@ func (s *Service) ask(ctx context.Context, req Request) error {
 	if s.prompter == nil {
 		return fmt.Errorf("%w: there is nothing here that can ask about %s", ErrDenied, req)
 	}
+	// Refused rather than left to collide: two id-less requests would share one
+	// entry below, and which of them was turned away would depend on whether the
+	// batch happened to run them together.
+	if req.CallID == "" {
+		return fmt.Errorf("%w: %s carries no call id, so an answer could not be routed "+
+			"back to it", ErrDenied, req)
+	}
 
 	p := &pending{reply: make(chan Decision, 1)}
 	if _, open := s.pending.LoadOrStore(req.CallID, p); open {
@@ -139,18 +154,33 @@ func (s *Service) ask(ctx context.Context, req Request) error {
 	select {
 	case d := <-p.reply:
 		switch d {
-		case DecideAlways:
+		case DecisionAlways:
 			s.grants.Store(req.grant(), struct{}{})
 			return nil
-		case DecideOnce:
+		case DecisionOnce:
 			return nil
-		default:
-			// Every answer that is not one of the two yeses is a no, so a
-			// Decision this package has never heard of cannot approve anything.
+		case DecisionReject:
 			return fmt.Errorf("%w: the user rejected %s", ErrDenied, req)
+		default:
+			// Fail closed, and say what happened rather than "the user rejected
+			// it": the transcript would otherwise assert a refusal nobody made.
+			return fmt.Errorf("%w: %s was answered %q, which is not one of the answers "+
+				"a prompt takes", ErrDenied, req, d)
 		}
 	case <-ctx.Done():
 		p.abandon()
+		// An answer can win the race and still lose the select, which picks at
+		// random between two ready cases. Its grant is honoured — the user did
+		// answer, and Resolve has already told them so — while the turn is still
+		// reported as cancelled, because it was. Nothing is missed: abandon's Do
+		// blocks until an answer already inside the once has been delivered.
+		select {
+		case d := <-p.reply:
+			if d == DecisionAlways {
+				s.grants.Store(req.grant(), struct{}{})
+			}
+		default:
+		}
 		return ctx.Err()
 	}
 }
@@ -167,18 +197,17 @@ func (s *Service) Resolve(callID string, d Decision) bool {
 	return p.(*pending).answer(d)
 }
 
-// pending is one open prompt. The reply channel is buffered so that the answer
-// that wins never blocks on an asker who has already given up on a cancelled
-// context — a UI goroutine parked on that would take the frontend with it.
+// pending is one open prompt. Its reply is buffered so the answer that wins
+// never blocks on an asker who has already given up on a cancelled context — a
+// UI goroutine parked there would take the frontend with it.
 type pending struct {
 	once  sync.Once
 	reply chan Decision
 }
 
-// answer delivers d and reports whether this call decided the prompt. sync.Once
-// is what makes every later answer a no-op: the answers that race each other go
-// through it, and so does abandon, which closes the prompt when the asker's
-// context ends.
+// answer reports whether this call is the one that decided. sync.Once is what
+// makes every later answer a no-op: the answers racing each other go through it,
+// and so does abandon.
 func (p *pending) answer(d Decision) bool {
 	decided := false
 	p.once.Do(func() {
