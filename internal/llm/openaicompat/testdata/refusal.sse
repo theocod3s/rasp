@@ -1,0 +1,8 @@
+data: {"id":"gen-refusal","object":"chat.completion.chunk","created":1787108071,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":null,"refusal":"I'm sorry, ","role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"gen-refusal","object":"chat.completion.chunk","created":1787108071,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":null,"refusal":"I can't help with that.","role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"gen-refusal","object":"chat.completion.chunk","created":1787108071,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":null,"role":"assistant"},"finish_reason":"content_filter"}]}
+
+data: [DONE]
+

@@ -11,6 +11,7 @@ import (
 	"github.com/theocod3s/rasp/internal/headless"
 	"github.com/theocod3s/rasp/internal/llm"
 	"github.com/theocod3s/rasp/internal/llm/anthropic"
+	"github.com/theocod3s/rasp/internal/llm/openaicompat"
 )
 
 const promptFlag = "prompt"
@@ -62,6 +63,10 @@ func newRunCmd() *cobra.Command {
 // and the id that adapter puts on the wire. A model id carries its provider —
 // `anthropic/claude-opus-5` — which is why there is no --provider flag to
 // contradict it (design §10).
+//
+// The cut is at the FIRST slash and the rest is the model as its own API knows it,
+// which is what lets `openrouter/anthropic/claude-sonnet-4.5` name a provider whose
+// model ids have slashes of their own.
 func buildProvider(ctx context.Context, res *config.Result) (llm.Provider, string, error) {
 	cfg := res.Config
 
@@ -69,10 +74,6 @@ func buildProvider(ctx context.Context, res *config.Result) (llm.Provider, strin
 	if !ok || name == "" || model == "" {
 		return nil, "", fmt.Errorf("model %q is not provider/id, so there is nothing saying which "+
 			"API to call; anthropic/claude-opus-5 is the shape", cfg.Model)
-	}
-	if name != anthropic.ProviderID {
-		return nil, "", fmt.Errorf("no adapter for provider %q; rasp speaks %q so far",
-			name, anthropic.ProviderID)
 	}
 
 	// What the file holds is a recipe — `$(op read …)`, `${VAR}` — and the resolver
@@ -105,5 +106,18 @@ func buildProvider(ctx context.Context, res *config.Result) (llm.Provider, strin
 		}
 		baseURL = expanded
 	}
-	return anthropic.New(anthropic.Config{APIKey: key, BaseURL: baseURL}), model, nil
+
+	// Anthropic is the one API with an adapter of its own; every other name is an
+	// OpenAI-compatible endpoint, which is what the second adapter exists to be
+	// (design §2). Nothing here checks the name against a list, because the list
+	// would be the set of endpoints anyone has told us about — and the point of a
+	// swappable base URL is that it is not one.
+	if name == anthropic.ProviderID {
+		return anthropic.New(anthropic.Config{APIKey: key, BaseURL: baseURL}), model, nil
+	}
+	return openaicompat.New(openaicompat.Config{
+		ProviderID: name,
+		APIKey:     key,
+		BaseURL:    baseURL,
+	}), model, nil
 }

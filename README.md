@@ -94,6 +94,28 @@ should mean a green pipeline. If you would rather not install anything, the reci
 shell commands — read them off the [justfile](justfile) and run them by hand. `just snapshot`
 is the only one that reaches past the Go toolchain, and what it reaches for is `goreleaser`.
 
+### Checking the provider adapters against real endpoints
+
+`just ci` replays recorded responses, which proves the adapters still handle what those
+endpoints *sent*, not what they send now. One recipe closes that gap for the
+OpenAI-compatible adapter by talking to two live endpoints — a paid gateway that reports token
+usage, and a local server that is the awkward dialect:
+
+```sh
+export OPENROUTER_API_KEY=...          # a key from https://openrouter.ai/keys
+brew services start ollama             # or: ollama serve
+ollama pull qwen2.5-coder:1.5b         # small on purpose: this checks the protocol, not the model
+
+just verify-openaicompat
+```
+
+It costs a fraction of a cent per run, so it is not part of `just ci` and never runs
+unattended. Without `OPENROUTER_API_KEY` or a reachable Ollama the live checks **fail** rather
+than skipping — a check that quietly skips reports green having talked to nothing.
+
+If you keep the key in a secret manager, wrap the recipe rather than exporting it —
+`doppler run -- just verify-openaicompat`, or the equivalent for yours.
+
 ## Name
 
 `rasp` — a small tool that shapes things by taking material away. Unrelated to Runtime

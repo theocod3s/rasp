@@ -1,0 +1,6 @@
+data: {"id":"gen-choices","object":"chat.completion.chunk","created":1787108071,"model":"openai/gpt-4o-mini","choices":[{"index":1,"delta":{"content":"The second candidate.","role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"gen-choices","object":"chat.completion.chunk","created":1787108071,"model":"openai/gpt-4o-mini","choices":[{"index":1,"delta":{"content":"","role":"assistant"},"finish_reason":"stop"}]}
+
+data: [DONE]
+

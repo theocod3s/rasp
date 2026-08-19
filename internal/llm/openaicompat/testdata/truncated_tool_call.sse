@@ -1,0 +1,10 @@
+data: {"id":"gen-cut","object":"chat.completion.chunk","created":1787108100,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":"Writing it now.","role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"gen-cut","object":"chat.completion.chunk","created":1787108100,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"id":"call_cut","type":"function","function":{"name":"write","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"gen-cut","object":"chat.completion.chunk","created":1787108100,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":"{\"path\": \"main.go\", \"content\": \"package m"}}]},"finish_reason":null}]}
+
+data: {"id":"gen-cut","object":"chat.completion.chunk","created":1787108100,"model":"openai/gpt-4o-mini","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"length"}]}
+
+data: [DONE]
+
