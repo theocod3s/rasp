@@ -57,11 +57,11 @@ type Service struct {
 	prompter Prompter
 	allowed  map[string]bool
 
-	// session counts the sessions this Service has served, and guards the
-	// grants map with it: an approval is recorded only if the session that
-	// asked for it is still the current one. Holding both under one lock is
-	// what makes that check hold — an answer landing as the user starts a new
-	// session would otherwise be stored just after the clear.
+	// session counts the sessions this Service has served: an approval is
+	// recorded only if the one that asked for it is still current. The counter
+	// and the map are under a single lock so that check cannot be overtaken by
+	// the clear it is checking for — an answer landing as a new session starts
+	// would otherwise be stored just after it.
 	mu      sync.Mutex
 	session uint64
 	grants  map[grant]bool
