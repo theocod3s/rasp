@@ -23,15 +23,18 @@ type Message struct {
 
 func (m Message) Finished() bool { return m.Done }
 
+// Render draws a reply as markdown and a prompt as the characters the user
+// typed: a prompt is not a document, and running one through a markdown
+// renderer would eat the punctuation they meant literally.
 func (m Message) Render(width int) string {
 	text := spoken(m.Content)
 	if text == "" {
 		return ""
 	}
 	if m.Content.Role == llm.RoleUser {
-		text = Caret + text
+		return wrap(Caret+text, width)
 	}
-	return wrap(text, width)
+	return md.render(text, width)
 }
 
 // spoken is the part of a message a reader is meant to see. Thinking is left

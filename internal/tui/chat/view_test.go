@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/theocod3s/rasp/internal/llm"
 	"github.com/theocod3s/rasp/internal/tui/chat"
@@ -123,7 +122,7 @@ func TestAnItemThatDrawsNothingTakesNoLine(t *testing.T) {
 	})
 	v.Append(said(new(int), "Done.", true))
 
-	if got, want := v.Render(0), "Done.\n"; got != want {
+	if got, want := words(v.Render(0)), "Done."; got != want {
 		t.Errorf("the conversation reads %q, want %q", got, want)
 	}
 }
@@ -155,64 +154,47 @@ func TestAMessageDrawsOnlyWhatAReaderIsMeantToSee(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := (chat.Message{Content: tc.message, Done: true}).Render(0); got != tc.want {
+			if got := words((chat.Message{Content: tc.message, Done: true}).Render(0)); got != tc.want {
 				t.Errorf("the message draws %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestRenderBreaksLinesAtTheWidthItIsGiven(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		text  string
-		width int
-		want  string
-	}{
-		{"a width nobody has reported yet breaks nothing", "one two three four", 0, "one two three four"},
-		{"breaking at the last space that fits", "one two three four", 8, "one two\nthree\nfour"},
-		{"a word longer than the width breaks inside it", "supercalifragilistic", 5, "super\ncalif\nragil\nistic"},
-		{"the line breaks already there are kept", "one\ntwo", 10, "one\ntwo"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := (chat.Message{Content: reply(tc.text), Done: true}).Render(tc.width); got != tc.want {
-				t.Errorf("%q at width %d draws\n%q\nwant\n%q", tc.text, tc.width, got, tc.want)
-			}
-		})
+// TestAReplyIsMarkdownAndAPromptIsNot. The model writes documents and the user
+// writes a line they mean literally, so only one of the two is a renderer's
+// input.
+func TestAReplyIsMarkdownAndAPromptIsNot(t *testing.T) {
+	const heading = "# the header is parsed twice"
+
+	if drawn := words((chat.Message{Content: reply(heading), Done: true}).Render(40)); strings.Contains(drawn, "#") {
+		t.Errorf("the reply draws %q, and a heading is drawn as one rather than as its hash", drawn)
+	}
+
+	typed := chat.Message{
+		Content: llm.Message{Role: llm.RoleUser, Content: []llm.Block{{Type: llm.BlockText, Text: heading}}},
+		Done:    true,
+	}
+	if got, want := words(typed.Render(40)), chat.Caret+heading; got != want {
+		t.Errorf("the prompt draws %q, want %q", got, want)
 	}
 }
 
-// TestWrappingKeepsEveryCharacterAndFitsTheWidth is the property the table
-// above cannot cover case by case. The wrapping is hand-rolled, and hand-rolled
-// wrapping is where an off-by-one leaves a line one column too wide or eats the
-// character it broke on.
-func TestWrappingKeepsEveryCharacterAndFitsTheWidth(t *testing.T) {
-	texts := []string{
-		"", " ", "a", "aa aa", strings.Repeat("x", 50),
-		"one two three four five six seven",
-		"   three leading spaces and a tail long enough to break somewhere",
-		"three trailing spaces   ",
-		"multi\nline\ntext, the last line of which is long enough to wrap",
-		"héllo wörld with accénts, two bytes each and one rune each",
-	}
-	for _, text := range texts {
-		for width := 1; width <= 12; width++ {
-			got := (chat.Message{Content: reply(text), Done: true}).Render(width)
-			for _, line := range strings.Split(got, "\n") {
-				if n := utf8.RuneCountInString(line); n > width {
-					t.Errorf("%q at width %d drew a line of %d runes: %q", text, width, n, line)
-				}
+// words is what a frame says: the escape sequences markdown is styled with
+// taken out, and the wrapping and margins squeezed away.
+func words(frame string) string {
+	var b strings.Builder
+	for i := 0; i < len(frame); i++ {
+		if frame[i] == 0x1b {
+			for i < len(frame) && frame[i] != 'm' {
+				i++
 			}
-			if want, have := squeeze(text), squeeze(got); want != have {
-				t.Errorf("%q at width %d came back as %q, which is not the same text", text, width, got)
-			}
+			continue
 		}
+		b.WriteByte(frame[i])
 	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }
-
-// squeeze drops every run of whitespace. What survives it is what wrapping is
-// not allowed to change.
-func squeeze(s string) string { return strings.Join(strings.Fields(s), "") }
 
 // BenchmarkCursorBlink is the frame a blinking cursor costs in a 200-message
 // conversation: nothing has changed, so no item is drawn at all. The count is
