@@ -284,6 +284,34 @@ func TestAGateThatAsksNothingLeavesTheBatchWhole(t *testing.T) {
 	}
 }
 
+// TestARefusalThatAsksNobodyLeavesTheBatchWhole: only a question splits a batch,
+// because only a question needs the terminal to itself. A mode that refuses
+// asks nobody, and plan mode is exactly this batch — reads that are allowed with
+// a write that is denied among them — so splitting there would cost the
+// parallelism of every batch the mode refuses anything in.
+func TestARefusalThatAsksNobodyLeavesTheBatchWhole(t *testing.T) {
+	names := []string{"read1", "denied", "read2"}
+
+	m := newMeeting(2, neverWaited)
+	g := &gate{refuses: map[string]bool{"denied": true}}
+	a := newAgent(t, agent.Config{
+		Provider: fake.New(batch(names...)...),
+		Tools:    registry(m.attendee("read1"), echoStub("denied"), m.attendee("read2")),
+		Approver: g,
+	})
+	if err := a.Send(context.Background(), "go"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	if peak, waited, _ := m.peaked(); peak != 2 || waited != 0 {
+		t.Errorf("the two allowed calls peaked at %d at once and %d waited out the barrier alone; "+
+			"the refusal between them is not a boundary they have to run either side of", peak, waited)
+	}
+	if got := answers(t, a.Messages())[1]; !got.IsError {
+		t.Errorf("the refused call was answered with %q and no error flag", got.Content)
+	}
+}
+
 // TestANameTheSnapshotDoesNotHoldIsNeverPutToTheUser: the call is resolved
 // before it is gated (design §4 step 7), so a tool the model invented is
 // answered by the loop rather than turned into a question about nothing — and
@@ -317,9 +345,8 @@ func TestANameTheSnapshotDoesNotHoldIsNeverPutToTheUser(t *testing.T) {
 // result naming the reason and the rest of the batch carries on (design §3.4).
 func TestACallTheGateRefusesIsAnsweredWithoutRunning(t *testing.T) {
 	// The refusal that asked nobody comes last, behind a call still waiting for a
-	// partition to run in: a refusal is announced the moment it is decided, and
-	// the events below are the check that "the moment" is not ahead of the calls
-	// the model asked for first.
+	// partition to run in, which is the batch where the announcement below arrives
+	// before the call the model asked for first.
 	names := []string{"refused", "allowed", "denied"}
 
 	stubs := make([]*stub, len(names))
@@ -363,16 +390,20 @@ func TestACallTheGateRefusesIsAnsweredWithoutRunning(t *testing.T) {
 		}
 	}
 
-	// A refusal nothing draws reads as the tool having quietly done nothing, so
-	// it is announced as the call it was (design §7.8).
+	// A refusal nothing draws reads as the tool having quietly done nothing, so it
+	// is announced as the call it was (design §7.8). Sorted, not compared in
+	// place: events arrive in the order things happened, and a batch's calls
+	// happen at once.
+	want := slices.Sorted(slices.Values(names))
 	for _, kind := range []agent.EventKind{agent.EventToolStart, agent.EventToolEnd} {
 		var emitted []string
 		for _, ev := range rec.of(kind) {
 			emitted = append(emitted, ev.Tool)
 		}
-		if !slices.Equal(emitted, names) {
+		slices.Sort(emitted)
+		if !slices.Equal(emitted, want) {
 			t.Errorf("%s was emitted for %v, want %v; a refused call is still a card in the UI",
-				kind, emitted, names)
+				kind, emitted, want)
 		}
 	}
 }

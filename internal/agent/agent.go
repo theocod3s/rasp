@@ -69,6 +69,13 @@ type Config struct {
 	// own. What it does need is to be quick: blocking in here stalls the turn,
 	// and during a batch it stalls every other tool's events behind it. nil
 	// discards them.
+	//
+	// They arrive in the order things happened, which is not the order the model
+	// asked for them: a batch's calls run at once, one it was refused is answered
+	// the moment that is decided, and one nothing ran emits nothing at all. A
+	// consumer that wants the model's order has it on EventAssistantEnd, whose
+	// message holds every tool_use block before the first of them runs — and the
+	// transcript is written in that order whatever this stream did.
 	Events func(Event)
 }
 

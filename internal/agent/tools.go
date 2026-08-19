@@ -113,10 +113,6 @@ func (t *turn) dispatch(ctx context.Context, calls []pendingCall, results []*too
 			if ctx.Err() != nil {
 				break
 			}
-			// Flushed for the announcement rather than for the refusal: what the
-			// model asked for first has to report first, and a refusal drawn while
-			// the calls ahead of it have not started puts its card above theirs.
-			flush()
 			results[i] = t.refuse(call, err)
 			continue
 		}
