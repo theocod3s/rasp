@@ -30,7 +30,7 @@ func TestStreamingIntoARunningProgramMutatesOnlyInUpdate(t *testing.T) {
 	for i := range chunks {
 		chunks[i] = "word "
 	}
-	want := strings.Repeat("word ", len(chunks))
+	want := words(strings.Repeat("word ", len(chunks)))
 
 	provider := fake.New(
 		fake.Text(chunks...),
@@ -57,7 +57,7 @@ func TestStreamingIntoARunningProgramMutatesOnlyInUpdate(t *testing.T) {
 		// longest of any would count the finished one and pass on a UI that never
 		// saw a delta at all.
 		if root, ok := model.(Model); ok {
-			if drawn := len(strings.TrimSuffix(root.chat.Render(0), "\n")); drawn < len(want) {
+			if drawn := len(words(root.chat.Render(0))); drawn < len(want) {
 				streamed = max(streamed, drawn)
 			}
 		}
@@ -128,7 +128,7 @@ func TestStreamingIntoARunningProgramMutatesOnlyInUpdate(t *testing.T) {
 	if final.chat.Len() != 1 {
 		t.Fatalf("the conversation holds %d item(s) and the turn produced one reply", final.chat.Len())
 	}
-	if got := strings.TrimSuffix(final.chat.Render(0), "\n"); got != want {
+	if got := words(final.chat.Render(0)); got != want {
 		t.Fatalf("the UI drew a reply of %d characters and the model streamed %d", len(got), len(want))
 	}
 	if final.busy {

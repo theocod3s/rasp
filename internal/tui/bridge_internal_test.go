@@ -240,7 +240,7 @@ func TestDetachCopiesTheAccumulationAnEventCarries(t *testing.T) {
 	live.Content[0].Text += "ing at it."
 	live.Content = append(live.Content, llm.Block{Type: llm.BlockText, Text: " And more."})
 
-	if got := (chat.Message{Content: *ev.Message}).Render(0); got != "Look" {
+	if got := words((chat.Message{Content: *ev.Message}).Render(0)); got != "Look" {
 		t.Errorf("the detached message reads %q after the provider went on writing; it read %q when "+
 			"it was taken", got, "Look")
 	}

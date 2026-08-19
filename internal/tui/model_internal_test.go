@@ -32,7 +32,7 @@ func TestUpdateDrawsWhatATurnProduced(t *testing.T) {
 		m, _ = m.Update(agentMsg{event: ev})
 	}
 
-	frame := m.View().Content
+	frame := words(m.View().Content)
 	for _, want := range []string{"Reading it now.", "read: running", "write: failed", "working…"} {
 		if !strings.Contains(frame, want) {
 			t.Errorf("the frame does not mention %q:\n%s", want, frame)
@@ -47,7 +47,7 @@ func TestUpdateDrawsWhatATurnProduced(t *testing.T) {
 	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventError, Err: errors.New("the stream broke")}})
 	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventTurnEnd}})
 
-	frame = m.View().Content
+	frame = words(m.View().Content)
 	if !strings.Contains(frame, "the stream broke") {
 		t.Errorf("the frame does not carry the turn's error:\n%s", frame)
 	}
@@ -81,7 +81,7 @@ func TestEachStepsReplyIsAnItemOfItsOwn(t *testing.T) {
 		m, _ = m.Update(agentMsg{event: ev})
 	}
 
-	frame := m.View().Content
+	frame := words(m.View().Content)
 	for _, want := range []string{"Reading it now.", "read: done", "The header is parsed twice."} {
 		if !strings.Contains(frame, want) {
 			t.Errorf("the frame does not mention %q:\n%s", want, frame)
@@ -110,7 +110,7 @@ func TestATurnThatEndedMidReplyLeavesNothingOpen(t *testing.T) {
 	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventAssistantDelta, Message: reply("Found it.")}})
 	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventAssistantEnd, Message: reply("Found it.")}})
 
-	frame := m.View().Content
+	frame := words(m.View().Content)
 	if !strings.Contains(frame, "Reading it n") {
 		t.Errorf("the interrupted turn's reply is gone; the turn after it took its place:\n%s", frame)
 	}
@@ -130,4 +130,22 @@ func reply(text string) *llm.Message {
 		Role:    llm.RoleAssistant,
 		Content: []llm.Block{{Type: llm.BlockText, Text: text}},
 	}
+}
+
+// words is a frame reduced to what it says. A reply is drawn as markdown, so
+// the words a test looks for arrive split across styled spans, set in from the
+// left margin and broken wherever the width fell — none of which is what these
+// tests are about.
+func words(frame string) string {
+	var b strings.Builder
+	for i := 0; i < len(frame); i++ {
+		if frame[i] == 0x1b {
+			for i < len(frame) && frame[i] != 'm' {
+				i++
+			}
+			continue
+		}
+		b.WriteByte(frame[i])
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }
