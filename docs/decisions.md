@@ -296,3 +296,25 @@ Nothing errors and nothing is corrupt — one of two edits the model asked for i
 missing, so it reads as a model that changed its mind.
 
 *Settled in M1-21, the work that added the lock.*
+
+---
+
+## A version is an annotated tag on main, minor per milestone
+
+Versioning starts at `v0.1.0`, which marks M0 and M1 together — tagging began after both had
+shipped, so they share the tag. From M2 on, each milestone exit gets `v0.<milestone>.0` on the
+squash commit that closed it, and a fix that ships between milestones takes the next patch
+number. `v1.0.0` is not the milestone counter reaching ten: it is M5's dogfood-week verdict,
+declared deliberately or not at all.
+
+The tag is the only place a version lives. `git describe` feeds the justfile's `-X main.version`
+stamp, and M5's release pipeline triggers on the same tags — a `VERSION` file or a constant in
+`main.go` beyond the `dev` fallback would be a second source, and two sources drift until the
+binary lies about itself.
+
+**Reversing it looks like:** nothing — a skipped tag just means `rasp --version` reports a bare
+commit hash again, a bug report names a build nobody can map to a milestone, and the release
+pipeline arrives in M5 with no convention to trigger on, so one gets invented under ship
+pressure.
+
+*Settled at the M2 kickoff, before any M2 ticket.*
