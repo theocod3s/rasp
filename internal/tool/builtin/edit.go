@@ -44,7 +44,7 @@ func Edit(ws *workspace.Workspace) tool.Tool {
 
 		replacement, err := edit.Apply(string(before), in.OldString, in.NewString, in.ReplaceAll)
 		if err != nil {
-			return editRefusal(path, err), nil
+			return editRefusal(path, in, err), nil
 		}
 
 		// Diffing before writing keeps a failure here from being a file already
@@ -66,11 +66,20 @@ func Edit(ws *workspace.Workspace) tool.Tool {
 		if replacement.Count == 1 {
 			noun = "replacement"
 		}
+		content := fmt.Sprintf("Edited %s: %d %s, +%d -%d.",
+			path, replacement.Count, noun, details.Additions, details.Deletions)
+		if replacement.Rung != edit.Exact {
+			// Details.Fuzzy says the same thing to the UI, and never to the model —
+			// so the model learns its copy of the file is stale here or not at all,
+			// and the next edit it builds from that copy is the one that fails.
+			content += fmt.Sprintf(" old_string did not match byte for byte: it was found by"+
+				" ignoring the whitespace at the ends of whole lines, and new_string was"+
+				" re-indented to the file. Read %s again before editing it further.", path)
+		}
 		return tool.Result{
 			// The diff itself stays in Details: it is what the UI draws, and sending
 			// it to the model too would charge tokens for text it just wrote.
-			Content: fmt.Sprintf("Edited %s: %d %s, +%d -%d.",
-				path, replacement.Count, noun, details.Additions, details.Deletions),
+			Content: content,
 			Title:   fmt.Sprintf("%s +%d -%d", path, details.Additions, details.Deletions),
 			Details: details,
 		}, nil
@@ -104,19 +113,32 @@ func diffDetails(path, before, after string, fuzzy bool) (*tool.DiffDetails, err
 // default arm matters more than the ones above it: a rung added later reaches the
 // model with its own words rather than being swallowed by a switch that has not
 // heard of it.
-func editRefusal(path string, err error) tool.Result {
+func editRefusal(path string, in EditInput, err error) tool.Result {
 	var ambiguous *edit.AmbiguousError
+	var notFound *edit.NotFoundError
 	switch {
 	case errors.As(err, &ambiguous):
 		return editError("old_string appears %d times in %s. Add the surrounding lines that tell "+
 			"one occurrence from the others until it matches exactly one, or set replace_all to "+
 			"change every one of them.", ambiguous.Count, path)
+	case errors.As(err, &notFound) && notFound.Line > 0:
+		// The file's own bytes, rather than a second way of saying "not found":
+		// what the model cannot see is precisely the whitespace, so telling it to
+		// look again without showing it buys another identical guess.
+		return editError("old_string is not in %s. The file comes closest at line %d, where it "+
+			"actually holds:\n\n%s\n%s stands for a tab and %s for a space above. Copy old_string "+
+			"from there, or read the file again.",
+			path, notFound.Line, notFound.Actual, edit.TabGlyph, edit.SpaceGlyph)
 	case errors.Is(err, edit.ErrNotFound):
-		return editError("old_string is not in %s. Read the file and copy old_string out of it, "+
-			"whitespace and indentation included.", path)
-	case errors.Is(err, edit.ErrUnchanged):
+		return editError("old_string is not in %s, and no line of it matches a line of the file. "+
+			"Read the file and copy old_string out of it, whitespace and indentation included.", path)
+	case errors.Is(err, edit.ErrUnchanged) && in.OldString == in.NewString:
 		return editError("old_string and new_string are identical, so this edit would leave %s "+
 			"exactly as it is.", path)
+	case errors.Is(err, edit.ErrUnchanged):
+		return editError("old_string and new_string differ only in the whitespace the match "+
+			"ignored, so %s already reads the way new_string asks for and this edit would leave "+
+			"it exactly as it is.", path)
 	case errors.Is(err, edit.ErrEmpty):
 		return editError("old_string is empty, so there is nothing to look for in %s. Give the "+
 			"text to be replaced, or use write to create a file.", path)
