@@ -33,14 +33,14 @@ func TestUpdateDrawsWhatATurnProduced(t *testing.T) {
 	}
 
 	frame := words(m.View().Content)
-	for _, want := range []string{"Reading it now.", "read: running", "write: failed", "working…"} {
+	for _, want := range []string{"Reading it now.", "read running", "write failed", "working…"} {
 		if !strings.Contains(frame, want) {
 			t.Errorf("the frame does not mention %q:\n%s", want, frame)
 		}
 	}
 	// A call that ended is drawn where it started rather than at the end of the
 	// conversation, which is what makes a transcript readable a step later.
-	if running, failed := strings.Index(frame, "read: running"), strings.Index(frame, "write: failed"); running > failed {
+	if running, failed := strings.Index(frame, "read running"), strings.Index(frame, "write failed"); running > failed {
 		t.Errorf("the call that finished jumped ahead of the one still running:\n%s", frame)
 	}
 
@@ -82,7 +82,7 @@ func TestEachStepsReplyIsAnItemOfItsOwn(t *testing.T) {
 	}
 
 	frame := words(m.View().Content)
-	for _, want := range []string{"Reading it now.", "read: done", "The header is parsed twice."} {
+	for _, want := range []string{"Reading it now.", "read done", "The header is parsed twice."} {
 		if !strings.Contains(frame, want) {
 			t.Errorf("the frame does not mention %q:\n%s", want, frame)
 		}
