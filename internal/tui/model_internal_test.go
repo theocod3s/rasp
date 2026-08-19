@@ -93,6 +93,38 @@ func TestEachStepsReplyIsAnItemOfItsOwn(t *testing.T) {
 	}
 }
 
+// TestATurnThatEndedMidReplyLeavesNothingOpen. An interrupted or failed step
+// never reaches its assistant_end (agent/step.go), so the reply on screen is one
+// nothing will finish: every frame draws it again, and the next turn's first
+// delta lands on its key — putting the new reply above the prompt that asked for
+// it, and losing the fragment the interruption left behind.
+func TestATurnThatEndedMidReplyLeavesNothingOpen(t *testing.T) {
+	var m tea.Model = Model{}
+	for _, ev := range []agent.Event{
+		{Kind: agent.EventAssistantDelta, Message: reply("Reading it n")},
+		{Kind: agent.EventTurnEnd},
+	} {
+		m, _ = m.Update(agentMsg{event: ev})
+	}
+
+	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventAssistantDelta, Message: reply("Found it.")}})
+	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventAssistantEnd, Message: reply("Found it.")}})
+
+	frame := m.View().Content
+	if !strings.Contains(frame, "Reading it n") {
+		t.Errorf("the interrupted turn's reply is gone; the turn after it took its place:\n%s", frame)
+	}
+	if stopped, next := strings.Index(frame, "Reading it n"), strings.Index(frame, "Found it."); stopped > next {
+		t.Errorf("the next turn's reply is drawn above the one that was interrupted:\n%s", frame)
+	}
+	if root, held := m.(Model), 2; root.chat.Len() != held {
+		t.Errorf("the conversation holds %d item(s), and the two turns produced %d", root.chat.Len(), held)
+	}
+	if root := m.(Model); root.streaming != nil {
+		t.Error("a reply is still marked as arriving after the turn carrying it ended")
+	}
+}
+
 func reply(text string) *llm.Message {
 	return &llm.Message{
 		Role:    llm.RoleAssistant,

@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/theocod3s/rasp/internal/agent"
+	"github.com/theocod3s/rasp/internal/llm"
 	"github.com/theocod3s/rasp/internal/tui/chat"
 )
 
@@ -43,6 +44,12 @@ type Model struct {
 	// one still arriving: every delta of a step replaces the same item, and the
 	// next step's deltas start a new one.
 	replies int
+
+	// streaming is the reply the current step is still receiving, kept because
+	// the turn may end without one: an interrupted or failed step never reaches
+	// its assistant_end (agent/step.go), and settle needs what the user is
+	// already looking at.
+	streaming *llm.Message
 
 	busy bool
 	err  error
@@ -109,6 +116,7 @@ func (m Model) apply(ev agent.Event) Model {
 	case agent.EventAssistantDelta:
 		m.busy = true
 		if ev.Message != nil {
+			m.streaming = ev.Message
 			m.chat.Set(replyKey(m.replies), chat.Message{Content: *ev.Message})
 		}
 
@@ -116,6 +124,7 @@ func (m Model) apply(ev agent.Event) Model {
 		if ev.Message != nil {
 			m.chat.Set(replyKey(m.replies), chat.Message{Content: *ev.Message, Done: true})
 		}
+		m.streaming = nil
 		m.replies++
 
 	case agent.EventToolStart:
@@ -133,7 +142,27 @@ func (m Model) apply(ev agent.Event) Model {
 
 	case agent.EventTurnEnd:
 		m.busy = false
+		m = m.settle()
 	}
+	return m
+}
+
+// settle closes off a reply the turn ended in the middle of. Two things go
+// wrong otherwise: the item is never finished, so every frame draws it again
+// for the rest of the session, and its key stays live, so the next turn's first
+// delta lands on it — drawing the new reply above the prompt that asked for it.
+//
+// On the turn's end and nowhere else. It is the last event a turn emits, where
+// turnDone is a separate route into Update that can arrive before the events
+// still in the pump; settling there would freeze a fragment and leave the real
+// assistant_end to draw the reply a second time.
+func (m Model) settle() Model {
+	if m.streaming == nil {
+		return m
+	}
+	m.chat.Set(replyKey(m.replies), chat.Message{Content: *m.streaming, Done: true})
+	m.streaming = nil
+	m.replies++
 	return m
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/theocod3s/rasp/internal/llm"
 	"github.com/theocod3s/rasp/internal/tui/chat"
@@ -180,6 +181,38 @@ func TestRenderBreaksLinesAtTheWidthItIsGiven(t *testing.T) {
 		})
 	}
 }
+
+// TestWrappingKeepsEveryCharacterAndFitsTheWidth is the property the table
+// above cannot cover case by case. The wrapping is hand-rolled, and hand-rolled
+// wrapping is where an off-by-one leaves a line one column too wide or eats the
+// character it broke on.
+func TestWrappingKeepsEveryCharacterAndFitsTheWidth(t *testing.T) {
+	texts := []string{
+		"", " ", "a", "aa aa", strings.Repeat("x", 50),
+		"one two three four five six seven",
+		"   three leading spaces and a tail long enough to break somewhere",
+		"three trailing spaces   ",
+		"multi\nline\ntext, the last line of which is long enough to wrap",
+		"héllo wörld with accénts, two bytes each and one rune each",
+	}
+	for _, text := range texts {
+		for width := 1; width <= 12; width++ {
+			got := (chat.Message{Content: reply(text), Done: true}).Render(width)
+			for _, line := range strings.Split(got, "\n") {
+				if n := utf8.RuneCountInString(line); n > width {
+					t.Errorf("%q at width %d drew a line of %d runes: %q", text, width, n, line)
+				}
+			}
+			if want, have := squeeze(text), squeeze(got); want != have {
+				t.Errorf("%q at width %d came back as %q, which is not the same text", text, width, got)
+			}
+		}
+	}
+}
+
+// squeeze drops every run of whitespace. What survives it is what wrapping is
+// not allowed to change.
+func squeeze(s string) string { return strings.Join(strings.Fields(s), "") }
 
 // BenchmarkCursorBlink is the frame a blinking cursor costs in a 200-message
 // conversation: nothing has changed, so no item is drawn at all. The count is

@@ -20,9 +20,10 @@ type Item interface {
 // the last string it rendered to. The zero View is empty and ready.
 //
 // A value rather than a pointer, because the Bubble Tea model is one: Update
-// takes a copy and returns it. The cache survives that copy because the items
-// live in a slice the copies share, so a frame rendered from one warms the
-// other.
+// takes a copy and returns it. Copies share their items, which is what carries
+// a warm cache across an Update — and why only the model Update returned goes
+// on: two copies that each grow the conversation disagree about where an item
+// is.
 type View struct {
 	items []cell
 
