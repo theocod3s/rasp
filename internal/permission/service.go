@@ -145,15 +145,35 @@ func (s *Service) remember(session uint64, req Request) {
 // interrupted is not mistaken for one the user refused; the rungs above the
 // prompt answer from state alone and do not consult it.
 func (s *Service) Ask(ctx context.Context, req Request) error {
+	if answer, settled := s.settled(req); settled {
+		return answer
+	}
+	return s.ask(ctx, req)
+}
+
+// Prompts reports whether Ask would have to put req to the user, which is what
+// lets a dispatcher split its batch where the questions are (design §6 rule 5).
+//
+// It reserves nothing, so the mode can change before the Ask it precedes: a
+// caller that must never have two prompts open serialises the Ask itself rather
+// than trusting this to have been right.
+func (s *Service) Prompts(req Request) bool {
+	_, settled := s.settled(req)
+	return !settled
+}
+
+// settled walks every rung that answers from state alone, which is all of them
+// bar the prompt, and reports whether one did.
+func (s *Service) settled(req Request) (error, bool) {
 	if s.yolo.Load() {
-		return nil
+		return nil, true
 	}
 
 	switch rule := s.resolve(req); rule {
 	case RuleAllow:
-		return nil
+		return nil, true
 	case RuleDeny:
-		return fmt.Errorf("%w: the active mode does not allow %s", ErrDenied, req)
+		return fmt.Errorf("%w: the active mode does not allow %s", ErrDenied, req), true
 	case RuleAsk:
 		// Down to the rungs below.
 	default:
@@ -161,16 +181,30 @@ func (s *Service) Ask(ctx context.Context, req Request) error {
 		// below it allow: falling through would turn a misspelled deny into a
 		// call the allow-list waves past.
 		return fmt.Errorf("%w: the active mode answers %q for %s, which is not a rule",
-			ErrDenied, rule, req)
+			ErrDenied, rule, req), true
 	}
 
 	if s.allowed[req.Tool] {
-		return nil
+		return nil, true
 	}
 	if s.granted(req) {
-		return nil
+		return nil, true
 	}
-	return s.ask(ctx, req)
+
+	// A prompt that cannot be delivered is a refusal decided from state like any
+	// other, and it is answered here rather than inside ask so that nothing
+	// partitions its work around a question that is never coming.
+	if s.prompter == nil {
+		return fmt.Errorf("%w: there is nothing here that can ask about %s", ErrDenied, req), true
+	}
+	// Refused rather than left to collide: two id-less requests would share one
+	// pending entry, and which of them was turned away would depend on whether
+	// the batch happened to run them together.
+	if req.CallID == "" {
+		return fmt.Errorf("%w: %s carries no call id, so an answer could not be routed "+
+			"back to it", ErrDenied, req), true
+	}
+	return nil, false
 }
 
 func (s *Service) resolve(req Request) Rule {
@@ -182,17 +216,6 @@ func (s *Service) resolve(req Request) Rule {
 }
 
 func (s *Service) ask(ctx context.Context, req Request) error {
-	if s.prompter == nil {
-		return fmt.Errorf("%w: there is nothing here that can ask about %s", ErrDenied, req)
-	}
-	// Refused rather than left to collide: two id-less requests would share one
-	// entry below, and which of them was turned away would depend on whether the
-	// batch happened to run them together.
-	if req.CallID == "" {
-		return fmt.Errorf("%w: %s carries no call id, so an answer could not be routed "+
-			"back to it", ErrDenied, req)
-	}
-
 	session := s.currentSession()
 
 	p := &pending{reply: make(chan Decision, 1)}

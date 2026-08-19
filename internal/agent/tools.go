@@ -19,6 +19,14 @@ type pendingCall struct {
 	ready bool
 }
 
+func (c pendingCall) toolCall() llm.ToolCall {
+	return llm.ToolCall{ID: c.id, Name: c.name, Input: c.input}
+}
+
+func (c pendingCall) event(kind EventKind, res *tool.Result) Event {
+	return Event{Kind: kind, CallID: c.id, Tool: c.name, Input: c.input, Result: res}
+}
+
 // toolUses pairs the message's tool_use blocks with the calls the stream
 // announced, in block order.
 //
@@ -50,33 +58,83 @@ func toolUses(msg *llm.Message, announced []llm.ToolCall) []pendingCall {
 // goroutines against a slow filesystem is its own failure mode (design §6 rule 4).
 const MaxParallelTools = 8
 
+// Approver gates a call before it runs, and is the whole of what the loop knows
+// about permissions. What decides the answer — modes, presets, allow-lists,
+// grants — stays behind this interface, which is what keeps the loop free of a
+// branch on any of it (design §1, §7).
+type Approver interface {
+	// Prompts reports whether approving this call would put a question to the
+	// user. It answers from state alone and asks nothing.
+	Prompts(call llm.ToolCall) bool
+
+	// Approve returns nil when the call may run, and otherwise the reason the
+	// model is given for a call that did not. A context that ends while it waits
+	// comes back as the context's own error: a turn the user stopped is not a
+	// call the user refused, and the two are answered differently.
+	Approve(ctx context.Context, call llm.ToolCall) error
+}
+
 // dispatch runs the calls, writing each result at its own index in a slice sized
 // up front. Writing by index rather than appending on completion is what keeps
 // tool_result order matched to tool_use order, and every provider rejects a
 // request where the two disagree (design §6 rule 6).
 //
+// The batch is walked in request order and partitioned at every call the user
+// has to be asked about: what precedes it runs concurrently and finishes, then
+// the question is put, then that call runs on its own (design §6 rule 5). Every
+// approval happens here, on the one goroutine driving the batch — which is what
+// makes two prompts racing for one terminal impossible rather than unlikely, and
+// what leaves a stale Prompts costing a partition boundary and nothing else.
+//
 // A call nothing ran is left nil for commit to answer, which is what makes a
 // cancellation mid-batch a shorter batch rather than a broken transcript.
 func (t *turn) dispatch(ctx context.Context, calls []pendingCall, results []*tool.Result) {
-	if serial(t.tools, calls) {
-		for i, call := range calls {
-			if !call.ready {
-				continue
-			}
-			if ctx.Err() != nil {
-				return
-			}
-			results[i] = t.invoke(ctx, call)
+	oneAtATime := serial(t.tools, calls)
+
+	var group []int
+	flush := func() {
+		t.runGroup(ctx, calls, group, results)
+		group = group[:0]
+	}
+
+	for i, call := range calls {
+		if !call.ready {
+			continue
 		}
+		if ctx.Err() != nil {
+			break
+		}
+
+		asked := t.asks(call)
+		if asked {
+			flush()
+		}
+		if err := t.approve(ctx, call); err != nil {
+			if ctx.Err() != nil {
+				break
+			}
+			results[i] = t.refuse(call, err)
+			continue
+		}
+
+		group = append(group, i)
+		if asked || oneAtATime {
+			flush()
+		}
+	}
+	flush()
+}
+
+// runGroup runs one partition of the batch, all of it at once and no more than
+// the cap of it at a time.
+func (t *turn) runGroup(ctx context.Context, calls []pendingCall, group []int, results []*tool.Result) {
+	if len(group) == 0 || ctx.Err() != nil {
 		return
 	}
 
 	sem := make(chan struct{}, MaxParallelTools)
 	var wg sync.WaitGroup
-	for i, call := range calls {
-		if !call.ready {
-			continue
-		}
+	for _, i := range group {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -92,10 +150,47 @@ func (t *turn) dispatch(ctx context.Context, calls []pendingCall, results []*too
 			if ctx.Err() != nil {
 				return
 			}
-			results[i] = t.invoke(ctx, call)
+			results[i] = t.invoke(ctx, calls[i])
 		}()
 	}
 	wg.Wait()
+}
+
+// gated reports whether the approver decides this call at all. Resolving the
+// name comes first (design §4 step 7): one the snapshot does not hold runs
+// nothing whatever the answer is, so putting it to the user is a question about
+// nothing — and a barrier the rest of the batch would wait behind.
+func (t *turn) gated(call pendingCall) bool {
+	if t.agent.approver == nil {
+		return false
+	}
+	_, known := t.tools.Get(call.name)
+	return known
+}
+
+func (t *turn) asks(call pendingCall) bool {
+	return t.gated(call) && t.agent.approver.Prompts(call.toolCall())
+}
+
+func (t *turn) approve(ctx context.Context, call pendingCall) error {
+	if !t.gated(call) {
+		return nil
+	}
+	return t.agent.approver.Approve(ctx, call.toolCall())
+}
+
+// refuse answers a call the gate turned down, and announces it as one that
+// started and ended: a frontend builds its card out of that pair, and a refusal
+// nothing draws reads as the tool having quietly done nothing (design §7.8).
+func (t *turn) refuse(call pendingCall, err error) *tool.Result {
+	res := &tool.Result{
+		IsError: true,
+		Content: fmt.Sprintf("%s was not run: %v. Retrying it unchanged does not change what refused "+
+			"it — say what it was needed for, or take an approach that does not need it.", call.name, err),
+	}
+	t.emit(call.event(EventToolStart, nil))
+	t.emit(call.event(EventToolEnd, res))
+	return res
 }
 
 // serial reports whether any call in the batch forces the whole of it sequential.
@@ -121,9 +216,9 @@ func serial(tools *tool.Set, calls []pendingCall) bool {
 }
 
 func (t *turn) invoke(ctx context.Context, call pendingCall) *tool.Result {
-	t.emit(Event{Kind: EventToolStart, CallID: call.id, Tool: call.name, Input: call.input})
+	t.emit(call.event(EventToolStart, nil))
 	res := runCall(ctx, t.tools, call)
-	t.emit(Event{Kind: EventToolEnd, CallID: call.id, Tool: call.name, Input: call.input, Result: res})
+	t.emit(call.event(EventToolEnd, res))
 	return res
 }
 
