@@ -105,7 +105,14 @@ func (s *shape) project(msg *llm.Message, acc *sdk.ChatCompletionAccumulator, ch
 			}
 			at = len(msg.Content)
 			s.tools[index] = at
-			msg.Content = append(msg.Content, llm.Block{Type: llm.BlockToolUse, ID: call.ID, Name: call.Function.Name})
+			msg.Content = append(msg.Content, llm.Block{Type: llm.BlockToolUse})
+		}
+		// Re-read rather than taken once: the SDK's accumulator *concatenates* a
+		// call's function name across fragments, so a name split in two would be
+		// committed as its first half. Safe after the announcement freezes the block,
+		// because a call the accumulator called finished receives no more fragments.
+		msg.Content[at].ID, msg.Content[at].Name = call.ID, call.Function.Name
+		if !open {
 			if !yield(llm.Event{Type: llm.EventToolInputStart, Partial: msg}) {
 				return true, nil
 			}

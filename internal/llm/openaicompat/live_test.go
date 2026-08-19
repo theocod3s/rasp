@@ -83,6 +83,34 @@ func TestLiveOpenRouter(t *testing.T) {
 		t.Errorf("usage = %+v; this endpoint reports counts when stream_options.include_usage is set, "+
 			"and Message.Usage is what context estimation trusts", usage)
 	}
+
+	// The send side, which no recorded response can check: the block model carries a
+	// turn's calls and their results in two messages, this API wants an assistant
+	// message with tool_calls followed by one `tool` message each, and getting that
+	// wrong is a 400 on this request and on every one built from the transcript
+	// afterwards (design §4 invariant 1).
+	next := req
+	next.Messages = append(next.Messages, *end.Partial)
+	answers := llm.Message{Role: llm.RoleUser}
+	for _, ev := range events {
+		if ev.Type == llm.EventToolCall {
+			answers.Content = append(answers.Content, llm.Block{
+				Type:      llm.BlockToolResult,
+				ToolUseID: ev.ToolCall.ID,
+				Content:   "package main",
+			})
+		}
+	}
+	next.Messages = append(next.Messages, answers)
+
+	replayed, err := llm.CheckStream(client.Stream(ctx, next))
+	transcribe(t, replayed)
+	if err != nil {
+		t.Fatalf("replaying the tool turn: %v", err)
+	}
+	if got := last(t, replayed); got.Type != llm.EventDone {
+		t.Fatalf("replaying the tool turn ended %s: %v", got.Type, got.Err)
+	}
 }
 
 // TestLiveOllama is the local endpoint, and protocol verification rather than

@@ -136,6 +136,26 @@ func TestStreamAnnouncesACallOnlyTheSweepCatches(t *testing.T) {
 	}
 }
 
+// TestStreamToolCallNameArrivesInPieces: the SDK's accumulator concatenates a
+// call's function name across fragments, which is only worth doing if a name can
+// arrive split. Taking the name once, when the block opens, commits its first half
+// — and `multi` resolves to nothing in the registry, so the turn fails naming a
+// tool the model never asked for.
+func TestStreamToolCallNameArrivesInPieces(t *testing.T) {
+	events, err := llm.CheckStream(replay(t, "tool_call_split_name.sse").
+		Stream(context.Background(), askWithTools()))
+	if err != nil {
+		t.Fatalf("CheckStream: %v", err)
+	}
+	call := announcement(t, events, "call_split")
+	if call.Name != "multi_edit" {
+		t.Errorf("announced call names %q, want the whole name", call.Name)
+	}
+	if got := last(t, events).Partial.Content[0].Name; got != "multi_edit" {
+		t.Errorf("committed block names %q, want the whole name", got)
+	}
+}
+
 // TestStreamToolCallWithNoArguments: this wire opens a call's arguments with an
 // empty string, and a call that takes none never sends another fragment — so the
 // finished payload and the not-yet-started one are the same bytes. The call still
