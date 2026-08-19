@@ -337,6 +337,20 @@ func (g *grepTool) searchGo(ctx context.Context, rel string, isDir bool, re *reg
 		return nil
 	}
 
+	return walkFiles(ctx, fsys, rel, func(p string) error {
+		file, err := searchGrepFile(fsys, p, re)
+		if err != nil {
+			return err
+		}
+		c.addFile(file)
+		return nil
+	})
+}
+
+// walkFiles visits every regular file under rel that a .gitignore in the tree
+// does not exclude. grep and find share it, which is what makes the files find
+// lists exactly the files grep searches.
+func walkFiles(ctx context.Context, fsys fs.FS, rel string, visit func(p string) error) error {
 	ig := newIgnorer(rel)
 	return fs.WalkDir(fsys, rel, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -349,7 +363,7 @@ func (g *grepTool) searchGo(ctx context.Context, rel string, isDir bool, re *reg
 			return err
 		}
 		switch {
-		// The object store is not source, and --hidden would otherwise walk it.
+		// The object store is not source, and nothing else here skips a dotfile.
 		case p != rel && d.Name() == ".git":
 			if d.IsDir() {
 				return fs.SkipDir
@@ -370,13 +384,7 @@ func (g *grepTool) searchGo(ctx context.Context, rel string, isDir bool, re *reg
 		case ig.ignored(p, false):
 			return nil
 		}
-
-		file, err := searchGrepFile(fsys, p, re)
-		if err != nil {
-			return err
-		}
-		c.addFile(file)
-		return nil
+		return visit(p)
 	})
 }
 
