@@ -14,6 +14,10 @@ build:
 binary:
     CGO_ENABLED=0 go build -trimpath -ldflags '-s -w -X main.version={{version}}' -o rasp ./cmd/rasp
 
+# Install the rasp binary into $(go env GOPATH)/bin, shaped like a release build
+install:
+    CGO_ENABLED=0 go build -trimpath -ldflags '-s -w -X main.version={{version}}' -o "$(go env GOPATH)/bin/rasp" ./cmd/rasp
+
 # Run the tests
 test:
     go test ./...
