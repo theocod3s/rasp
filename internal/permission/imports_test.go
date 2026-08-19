@@ -11,7 +11,7 @@ import (
 )
 
 // allowed is every package the ladder's own sources may import. A grant is
-// session-scoped and in-memory (prd §6.6), and the cheapest way for that to stop
+// session-scoped and in-memory (design §7.7), and the cheapest way for that to stop
 // being true is a well-meant "remember my answers" that reaches for os or
 // encoding/json — a change that would look like a feature in review and would
 // leave a file behind that answers for the user before rasp has drawn anything.
@@ -57,9 +57,10 @@ func TestGrantsHaveNowhereToPersistTo(t *testing.T) {
 		}
 	}
 
-	// Inspecting nothing is the quietest pass there is, and a renamed file is
-	// all it takes.
-	if inspected < 2 {
-		t.Fatalf("inspected %d non-test file(s); this package has more than that", inspected)
+	// Inspecting nothing is the quietest pass there is, and a renamed file — or
+	// one moved into a subdirectory, which this walk does not follow — is all it
+	// takes. The count is every non-test file the package has.
+	if inspected < 3 {
+		t.Fatalf("inspected %d non-test file(s); this package has three", inspected)
 	}
 }

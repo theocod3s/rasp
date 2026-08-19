@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 )
 
-// Decision is the user's answer, in the three shapes the prompt offers
-// (prd §6.3): once, always for this session, no.
+// Decision is the user's answer, in the three shapes a prompt offers: once,
+// always for this session, no.
 type Decision string
 
 const (
@@ -57,7 +57,15 @@ type Service struct {
 	prompter Prompter
 	allowed  map[string]bool
 
-	grants  sync.Map // grant → struct{}
+	// session counts the sessions this Service has served, and guards the
+	// grants map with it: an approval is recorded only if the session that
+	// asked for it is still the current one. Holding both under one lock is
+	// what makes that check hold — an answer landing as the user starts a new
+	// session would otherwise be stored just after the clear.
+	mu      sync.Mutex
+	session uint64
+	grants  map[grant]bool
+
 	pending sync.Map // call id → *pending
 }
 
@@ -73,7 +81,11 @@ type Service struct {
 // A nil Prompter denies at rung 5: a request nobody can answer is a no, not a
 // yes and not a wait.
 func New(p Prompter, allowed ...string) *Service {
-	s := &Service{prompter: p, allowed: make(map[string]bool, len(allowed))}
+	s := &Service{
+		prompter: p,
+		allowed:  make(map[string]bool, len(allowed)),
+		grants:   make(map[grant]bool),
+	}
 	for _, name := range allowed {
 		s.allowed[name] = true
 	}
@@ -92,10 +104,42 @@ func (s *Service) SetRules(r Rules) {
 	s.rules.Store(&r)
 }
 
-// ClearGrants drops every grant taken so far. Grants belong to the session that
-// gave them (prd §6.6) and one process outlives a session: starting a new one
-// carries the transcript away, and has to carry the approvals with it.
-func (s *Service) ClearGrants() { s.grants.Clear() }
+// ClearGrants drops every grant taken so far, and ends the session they were
+// given in: an answer still on its way from a prompt that is open now records
+// nothing. A grant belongs to the session that gave it, and one process outlives
+// a session — starting a new one carries the transcript away and has to carry
+// the approvals with it.
+func (s *Service) ClearGrants() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.session++
+	clear(s.grants)
+}
+
+func (s *Service) granted(req Request) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.grants[req.grant()]
+}
+
+func (s *Service) currentSession() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.session
+}
+
+func (s *Service) remember(session uint64, req Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if session != s.session {
+		return
+	}
+	s.grants[req.grant()] = true
+}
 
 // Ask walks the ladder and returns nil when the call may proceed. Every no is
 // ErrDenied wrapped with what was refused; a cancelled or expired context comes
@@ -116,7 +160,7 @@ func (s *Service) Ask(ctx context.Context, req Request) error {
 	if s.allowed[req.Tool] {
 		return nil
 	}
-	if _, granted := s.grants.Load(req.grant()); granted {
+	if s.granted(req) {
 		return nil
 	}
 	return s.ask(ctx, req)
@@ -142,6 +186,8 @@ func (s *Service) ask(ctx context.Context, req Request) error {
 			"back to it", ErrDenied, req)
 	}
 
+	session := s.currentSession()
+
 	p := &pending{reply: make(chan Decision, 1)}
 	if _, open := s.pending.LoadOrStore(req.CallID, p); open {
 		return fmt.Errorf("%w: call %s already has a prompt open, and an answer meant for "+
@@ -155,7 +201,7 @@ func (s *Service) ask(ctx context.Context, req Request) error {
 	case d := <-p.reply:
 		switch d {
 		case DecisionAlways:
-			s.grants.Store(req.grant(), struct{}{})
+			s.remember(session, req)
 			return nil
 		case DecisionOnce:
 			return nil
@@ -177,7 +223,7 @@ func (s *Service) ask(ctx context.Context, req Request) error {
 		select {
 		case d := <-p.reply:
 			if d == DecisionAlways {
-				s.grants.Store(req.grant(), struct{}{})
+				s.remember(session, req)
 			}
 		default:
 		}

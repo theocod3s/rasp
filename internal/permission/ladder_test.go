@@ -121,7 +121,7 @@ func TestTheLadderAnswersInTheDocumentedOrder(t *testing.T) {
 }
 
 // TestAGrantCoversTheCallItWasGivenForAndNothingElse is the rule that keeps
-// "always allow writes in /foo" from covering ~/.ssh (prd §6.6). Each case
+// "always allow writes in /foo" from covering ~/.ssh (design §7.7). Each case
 // changes exactly one component of the key, so a component dropped from it
 // fails here and nowhere else.
 func TestAGrantCoversTheCallItWasGivenForAndNothingElse(t *testing.T) {
@@ -213,7 +213,7 @@ func TestAGrantCoversTheCallItWasGivenForAndNothingElse(t *testing.T) {
 
 // TestGrantsDoNotOutliveTheService is the in-memory half of the rule: a grant
 // lives on the Service that recorded it, so the next process starts with none
-// and asks again (prd §6.6). imports_test.go holds the structural half.
+// and asks again (design §7.7). imports_test.go holds the structural half.
 func TestGrantsDoNotOutliveTheService(t *testing.T) {
 	req := permission.Request{
 		CallID: "call-1",
@@ -241,6 +241,59 @@ func TestGrantsDoNotOutliveTheService(t *testing.T) {
 	}
 	if len(restarted.prompts()) != 1 {
 		t.Errorf("the restarted service asked %d times, want 1", len(restarted.prompts()))
+	}
+}
+
+// switcher ends the session while the first prompt is open, then answers it —
+// the order a keystroke racing a new session produces.
+type switcher struct {
+	svc     *permission.Service
+	prompts int
+}
+
+func (s *switcher) Prompt(req permission.Request) {
+	s.prompts++
+	if s.prompts == 1 {
+		s.svc.ClearGrants()
+	}
+	s.svc.Resolve(req.CallID, permission.DecisionAlways)
+}
+
+// TestAnAnswerFromTheSessionThatEndedGrantsNothing is the half of the boundary a
+// clear cannot enforce on its own: the answer is given before the session ends
+// and recorded after it, so the new session would start holding an approval
+// nobody asked its user for.
+func TestAnAnswerFromTheSessionThatEndedGrantsNothing(t *testing.T) {
+	req := permission.Request{
+		CallID: "call-1",
+		Tool:   "write",
+		Action: permission.ActionWrite,
+		Path:   "/foo/a.go",
+	}
+
+	ui := &switcher{}
+	ui.svc = permission.New(ui)
+
+	if err := ui.svc.Ask(t.Context(), req); err != nil {
+		t.Fatalf("Ask = %v, want the answer honoured for the call that asked", err)
+	}
+
+	req.CallID = "call-2"
+	if err := ui.svc.Ask(t.Context(), req); err != nil {
+		t.Fatalf("Ask in the next session = %v, want it asked and answered", err)
+	}
+	if ui.prompts != 2 {
+		t.Fatalf("the user was asked %d times, want 2: the cleared grant answered anyway", ui.prompts)
+	}
+
+	// The control: this session's own grant does stand, so the assertion above
+	// is about the session boundary and not about grants never being recorded.
+	req.CallID = "call-3"
+	if err := ui.svc.Ask(t.Context(), req); err != nil {
+		t.Fatalf("Ask = %v, want this session's own grant to answer", err)
+	}
+	if ui.prompts != 2 {
+		t.Errorf("the user was asked %d times, want 2: the grant given in this session did not stand", ui.prompts)
 	}
 }
 

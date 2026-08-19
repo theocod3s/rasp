@@ -121,10 +121,9 @@ func TestAPendingPromptEndsWithTheRequestsContext(t *testing.T) {
 	}
 }
 
-// TestAnAnswerThatBeatsACancellationKeepsItsGrant covers the one place two ready
-// select cases meet: the user answers as the turn is cancelled. Which branch Go
-// picks is random, so the grant has to survive either — Resolve has already told
-// the user their answer decided the prompt.
+// TestAnAnswerThatBeatsACancellationKeepsItsGrant covers the user answering as
+// the turn is cancelled: the grant has to survive whichever branch the select
+// takes, because Resolve has already told the user their answer decided it.
 func TestAnAnswerThatBeatsACancellationKeepsItsGrant(t *testing.T) {
 	req := permission.Request{
 		CallID: "call-1",
@@ -153,10 +152,11 @@ func TestAnAnswerThatBeatsACancellationKeepsItsGrant(t *testing.T) {
 	}
 }
 
-// TestTwoPromptsAreAnsweredIndependently is the shape a parallel batch produces:
-// several calls in flight, a prompt open for each, and answers arriving in an
-// order nobody chose. An answer belongs to the call it names, and a prompt
-// closing does not disturb its siblings (design §6).
+// TestTwoPromptsAreAnsweredIndependently pins the routing when two prompts are
+// open at once. Nothing here stops that happening — the dispatcher is what keeps
+// approvals one at a time (design §6 rule 5) — so this is what the service owes
+// if a barrier upstream ever lets two through: an answer reaches the call it
+// names, and a prompt closing does not disturb its siblings.
 func TestTwoPromptsAreAnsweredIndependently(t *testing.T) {
 	first := permission.Request{
 		CallID: "call-1",
@@ -203,8 +203,7 @@ func TestTwoPromptsAreAnsweredIndependently(t *testing.T) {
 }
 
 // TestAnAnswerThePackageDoesNotKnowIsANoWithoutBlamingTheUser fails closed on a
-// Decision that is none of the three, and says what happened: a transcript that
-// reported it as a refusal would assert one the user never made.
+// Decision that is none of the three, and asserts which denial it is.
 func TestAnAnswerThePackageDoesNotKnowIsANoWithoutBlamingTheUser(t *testing.T) {
 	req := permission.Request{
 		CallID: "call-1",
