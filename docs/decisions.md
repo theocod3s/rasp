@@ -380,3 +380,26 @@ tidying, followed by a `switch` on tool name to work out the action — the mode
 exists to keep out of the loop, arriving by way of a type.
 
 *Settled in M2-15, the work that made approval a serial barrier.*
+
+---
+
+## A config override merges into the preset as data, and the result compiles once
+
+`permission.Merge` lays a user's `modes.<name>` onto the built-in `PermissionSet`, and
+`permission.Compile` turns the single merged set into one `Rules`. Nothing wraps a compiled
+`Rules` in another that answers first.
+
+The wrapper is the obvious shape — two layers, ask the override, fall back to the preset — and it
+breaks two things that no test of its own would notice. `Rules` has an optional companion,
+`Explainer` (design §7.3a): a set that refused for a reason it can name says so, and a wrapper
+that forwards `Resolve` without `Explain` still denies, so the only thing lost is the sentence
+telling the model what to do instead. And resolving in two passes abandons design §7.3's
+specificity ordering *across* the layers: a broad `"go *": "allow"` in a config would answer
+before the preset's narrower `"go test*": "ask"` ever ran, which is precisely the carve-back plan
+mode is built on.
+
+**Reversing it looks like:** a small `type overlay struct{ over, base Rules }` added to "layer the
+user's config on top of the preset". It reads as composition, it compiles, and both losses are
+invisible from a green run.
+
+*Settled in M2-16, the work that made the modes data.*

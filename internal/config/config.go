@@ -99,6 +99,18 @@ const (
 // Whether a given layer may select one is validate.go's business.
 var modeNames = []string{ModePlan, ModeManual, ModeAuto, ModeYolo}
 
+// Permission rules, as a config file writes them, repeated here for the reason
+// the mode names are. permission.Compile refuses an unreadable one too; this
+// side checks as well because it is the only one that still knows which file
+// wrote it.
+const (
+	ruleAllow = "allow"
+	ruleAsk   = "ask"
+	ruleDeny  = "deny"
+)
+
+var ruleNames = []string{ruleAllow, ruleAsk, ruleDeny}
+
 // Defaults are the built-in values, the lowest layer of the precedence chain. A
 // tree, because the merge has to see all five layers the same way.
 //
