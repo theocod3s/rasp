@@ -211,6 +211,55 @@ func TestAGrantCoversTheCallItWasGivenForAndNothingElse(t *testing.T) {
 	}
 }
 
+// TestARuleTheLadderCannotReadIsADenial covers a preset compiled from a config
+// rule nobody validated. The rungs below the mode include two that allow, so
+// falling through is not a neutral act: the allow-list would wave past the call
+// a misspelled "deny" was written to stop.
+func TestARuleTheLadderCannotReadIsADenial(t *testing.T) {
+	req := permission.Request{
+		CallID: "call-1",
+		Tool:   "write",
+		Action: permission.ActionWrite,
+		Path:   "/foo/a.go",
+	}
+
+	h := newHarness(t, permission.DecisionOnce, req.Tool)
+	h.SetRules(fixed(permission.Rule("Deny")))
+
+	if err := h.Ask(t.Context(), req); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("Ask = %v, want a rule the ladder cannot read to fail closed", err)
+	}
+	if len(h.prompts()) > 0 {
+		t.Errorf("the user was asked about a call the mode was written to refuse")
+	}
+}
+
+// TestAnAnswerOfOnceLeavesNothingBehind is the difference between the prompt's
+// two yeses: "once" approves the call in front of the user and nothing else, so
+// the next call like it is a question again.
+func TestAnAnswerOfOnceLeavesNothingBehind(t *testing.T) {
+	req := permission.Request{
+		CallID: "call-1",
+		Tool:   "write",
+		Action: permission.ActionWrite,
+		Path:   "/foo/a.go",
+	}
+
+	h := newHarness(t, permission.DecisionOnce)
+	if err := h.Ask(t.Context(), req); err != nil {
+		t.Fatalf("Ask = %v, want the call allowed", err)
+	}
+
+	req.CallID = "call-2"
+	if err := h.Ask(t.Context(), req); err != nil {
+		t.Fatalf("Ask = %v, want the call allowed", err)
+	}
+	if len(h.prompts()) != 2 {
+		t.Errorf("the user was asked %d times, want 2: answering once left a grant behind",
+			len(h.prompts()))
+	}
+}
+
 // TestGrantsDoNotOutliveTheService is the in-memory half of the rule: a grant
 // lives on the Service that recorded it, so the next process starts with none
 // and asks again (design §7.7). imports_test.go holds the structural half.

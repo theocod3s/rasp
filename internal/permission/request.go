@@ -51,6 +51,8 @@ type Request struct {
 // asked for it.
 func (r Request) String() string {
 	switch {
+	case r.Command != "" && r.Path != "":
+		return fmt.Sprintf("%s on %s: %s", r.Tool, r.Path, r.Command)
 	case r.Command != "":
 		return fmt.Sprintf("%s: %s", r.Tool, r.Command)
 	case r.Path != "":

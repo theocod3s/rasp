@@ -232,6 +232,33 @@ func TestAnAnswerThePackageDoesNotKnowIsANoWithoutBlamingTheUser(t *testing.T) {
 	}
 }
 
+// TestADenialNamesEverythingTheCallWasRefusedFor is what the model reads when a
+// call is refused, and it is all it gets: a bash denial that named the command
+// but not the file would send the model back at the same file.
+func TestADenialNamesEverythingTheCallWasRefusedFor(t *testing.T) {
+	// The command names the file the way the model wrote it and the path names it
+	// the way the grant key holds it, so neither string contains the other — a
+	// message that dropped one would otherwise still read as naming both.
+	req := permission.Request{
+		CallID:  "call-1",
+		Tool:    "bash",
+		Action:  permission.ActionExecute,
+		Path:    "/work/internal/a.go",
+		Command: "sed -i s/x/y/ internal/a.go",
+	}
+
+	h := newHarness(t, permission.DecisionReject)
+	err := h.Ask(t.Context(), req)
+	if err == nil {
+		t.Fatalf("Ask = nil, want the refusal the user gave")
+	}
+	for _, want := range []string{req.Tool, req.Path, req.Command} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Ask = %v, want it to name %q", err, want)
+		}
+	}
+}
+
 // TestARequestWithNoCallIDIsNeverPublished keeps the id an answerable handle:
 // two id-less requests would share one registry entry, and the second would be
 // turned away over a prompt it cannot see.

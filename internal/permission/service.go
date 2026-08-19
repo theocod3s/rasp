@@ -71,12 +71,11 @@ type Service struct {
 
 // New returns a Service that prompts p when nothing above rung 5 has answered.
 //
-// allowed is rung 3, the config allow-list. It sits below the mode rules, so a
-// mode that denies still denies: an allow-list widens what a mode would have
-// asked about, it does not overrule what a mode refuses. A name here allows
-// every call that tool can make, so "bash" is every command — a rule about one
-// command belongs in the mode's patterns, matched against the command line
-// (design §7.3).
+// allowed is rung 3, the config allow-list. It sits below the mode rules, so an
+// allow-list widens what a mode would have asked about and never overrules what
+// a mode refuses. A name here allows every call that tool can make, so "bash" is
+// every command — a rule about one command belongs in the mode's patterns, which
+// are matched against the command line (design §7.3).
 //
 // A nil Prompter denies at rung 5: a request nobody can answer is a no, not a
 // yes and not a wait.
@@ -104,11 +103,10 @@ func (s *Service) SetRules(r Rules) {
 	s.rules.Store(&r)
 }
 
-// ClearGrants drops every grant taken so far, and ends the session they were
-// given in: an answer still on its way from a prompt that is open now records
-// nothing. A grant belongs to the session that gave it, and one process outlives
-// a session — starting a new one carries the transcript away and has to carry
-// the approvals with it.
+// ClearGrants drops every grant taken so far and ends the session they were
+// given in, so an answer still on its way from a prompt open now records
+// nothing. One process outlives a session, and an approval given in the one the
+// user just left has no standing in the next.
 func (s *Service) ClearGrants() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -142,19 +140,28 @@ func (s *Service) remember(session uint64, req Request) {
 }
 
 // Ask walks the ladder and returns nil when the call may proceed. Every no is
-// ErrDenied wrapped with what was refused; a cancelled or expired context comes
-// back as ctx.Err() instead, so a turn the user interrupted is not mistaken for
-// one the user refused.
+// ErrDenied wrapped with what was refused. A context that ends while Ask is
+// waiting on an answer comes back as ctx.Err() instead, so a turn the user
+// interrupted is not mistaken for one the user refused; the rungs above the
+// prompt answer from state alone and do not consult it.
 func (s *Service) Ask(ctx context.Context, req Request) error {
 	if s.yolo.Load() {
 		return nil
 	}
 
-	switch s.resolve(req) {
+	switch rule := s.resolve(req); rule {
 	case RuleAllow:
 		return nil
 	case RuleDeny:
 		return fmt.Errorf("%w: the active mode does not allow %s", ErrDenied, req)
+	case RuleAsk:
+		// Down to the rungs below.
+	default:
+		// A rule the ladder cannot read is a broken preset, and two of the rungs
+		// below it allow: falling through would turn a misspelled deny into a
+		// call the allow-list waves past.
+		return fmt.Errorf("%w: the active mode answers %q for %s, which is not a rule",
+			ErrDenied, rule, req)
 	}
 
 	if s.allowed[req.Tool] {
@@ -251,9 +258,8 @@ type pending struct {
 	reply chan Decision
 }
 
-// answer reports whether this call is the one that decided. sync.Once is what
-// makes every later answer a no-op: the answers racing each other go through it,
-// and so does abandon.
+// answer runs through the same sync.Once as abandon, which is what makes every
+// answer after the first a no-op rather than a second decision.
 func (p *pending) answer(d Decision) bool {
 	decided := false
 	p.once.Do(func() {
