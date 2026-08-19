@@ -147,38 +147,70 @@ func (h *handrolled) Stream(context.Context, llm.Request) llm.StreamResponse {
 	}
 }
 
-// TestATruncatedReplyRunsNoneOfItsCalls is design §4 invariant 2. Arguments cut
-// off at the output limit can parse and validate while meaning something else,
-// so the guard is on the reply and not on whether the JSON looks whole.
+// TestATruncatedReplyRunsNoneOfItsCalls is design §4 invariant 2. The guard is on
+// the stop reason and on nothing else: arguments cut off at the output limit can
+// parse and validate while meaning something other than they say, and a write
+// whose content was cut destroys the file it lands in.
 func TestATruncatedReplyRunsNoneOfItsCalls(t *testing.T) {
-	write := &stub{name: "write"}
+	cases := []struct {
+		name  string
+		calls []fake.Step
+	}{
+		// Announced in full, and arguments any schema accepts: nothing below the
+		// stop reason has anything to object to, and the call is refused anyway.
+		{"arguments that parse", []fake.Step{
+			fake.ToolCall("write", `{"path":"a.go","content":"package main"}`),
+		}},
 
-	p := fake.New(
-		fake.ToolCall("write", `{"path":"a.go","content":"package main"}`),
-		fake.Done(llm.StopMaxTokens),
+		{"arguments cut mid-value", []fake.Step{
+			fake.UnfinishedToolCall("write", `{"path":"a.go","content":"packa`),
+		}},
 
-		fake.Text("let me try that again"),
-		fake.Done(llm.StopEndTurn),
-	)
-
-	a := newAgent(t, agent.Config{Provider: p, Tools: registry(write)})
-	if err := a.Send(context.Background(), "write it"); err != nil {
-		t.Fatalf("Send: %v", err)
+		// The limit landed on the second call and the first is as whole as a call
+		// ever gets. Both are refused, because the guard is over the message.
+		{"one whole call and one cut short", []fake.Step{
+			fake.ToolCall("write", `{"path":"a.go","content":"package main"}`),
+			fake.UnfinishedToolCall("write", `{"path":"b.go","content":"packa`),
+		}},
 	}
 
-	if len(write.calls) != 0 {
-		t.Errorf("write ran %d time(s) from a truncated reply; a truncated replacement destroys the "+
-			"file it lands in", len(write.calls))
-	}
-	msgs := a.Messages()
-	wantPaired(t, msgs, 1)
-	if result := msgs[2].Content[0]; !result.IsError || strings.Contains(result.Content, "interrupted") {
-		t.Errorf("the call was answered with %q (error: %t); the model needs to see it did not run, and "+
-			"nothing interrupted this turn", result.Content, result.IsError)
-	}
-	if len(p.Requests()) != 2 {
-		t.Errorf("the provider was called %d time(s); the model is told its calls failed and takes "+
-			"another step", len(p.Requests()))
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			write := &stub{name: "write"}
+			p := fake.New(append(c.calls,
+				fake.Done(llm.StopMaxTokens),
+
+				fake.Text("let me try that again"),
+				fake.Done(llm.StopEndTurn),
+			)...)
+
+			a := newAgent(t, agent.Config{Provider: p, Tools: registry(write)})
+			if err := a.Send(context.Background(), "write it"); err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+
+			if len(write.calls) != 0 {
+				t.Errorf("write ran %d time(s) from a truncated reply, on %s", len(write.calls), write.calls)
+			}
+			wantPaired(t, a.Messages(), len(c.calls))
+
+			// Read off the request rather than the transcript: what the model is told
+			// is the criterion, and a result committed but never sent is silence.
+			sent := p.Requests()
+			if len(sent) != 2 {
+				t.Fatalf("the provider was called %d time(s); the model is told its calls failed and "+
+					"takes another step", len(sent))
+			}
+			for i, block := range answers(t, sent[1].Messages) {
+				if !block.IsError || !strings.Contains(block.Content, "output limit") {
+					t.Errorf("call %d was answered with %q (error: %t); the model has to read why it was "+
+						"refused, or it repeats the call that cannot work", i, block.Content, block.IsError)
+				}
+				if strings.Contains(block.Content, "interrupted") {
+					t.Errorf("call %d was answered with %q; nothing interrupted this turn", i, block.Content)
+				}
+			}
+		})
 	}
 }
 
@@ -196,30 +228,6 @@ func TestATruncatedReplyWithNothingPendingIsAFinishedTurn(t *testing.T) {
 	if got := msgs[len(msgs)-1].StopReason; got != llm.StopMaxTokens {
 		t.Errorf("the committed reply stopped for %q; a consumer warns off that field", got)
 	}
-}
-
-// TestAToolUseStreamedWithNoArgumentsIsStillAnswered covers the shape a stream
-// that broke off mid-arguments leaves behind: a tool_use block nothing announced.
-// Committing it unanswered bricks the session.
-func TestAToolUseStreamedWithNoArgumentsIsStillAnswered(t *testing.T) {
-	write := &stub{name: "write"}
-
-	p := fake.New(
-		fake.UnfinishedToolCall("write", `{"path":"a.go","content":"packa`),
-		fake.Done(llm.StopMaxTokens),
-
-		fake.Text("let me try that again"),
-		fake.Done(llm.StopEndTurn),
-	)
-
-	a := newAgent(t, agent.Config{Provider: p, Tools: registry(write)})
-	if err := a.Send(context.Background(), "write it"); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-	if len(write.calls) != 0 {
-		t.Errorf("write ran %d time(s) on arguments that never finished arriving", len(write.calls))
-	}
-	wantPaired(t, a.Messages(), 1)
 }
 
 // TestTheFuseStopsARunawayTurn scripts one more turn than the fuse allows, so a

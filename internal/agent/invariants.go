@@ -13,6 +13,12 @@ import (
 const (
 	interrupted = "this tool call was interrupted and did not produce a result; ask for it again if you still need it."
 	unanswered  = "this tool call did not run and produced no result; ask for it again if you still need it."
+
+	// The same call again is the one move that cannot work here, so this one says
+	// what has to change rather than only that nothing ran.
+	truncated = "this tool call did not run: the reply reached its output limit part way through, so the " +
+		"arguments of every call in it may be cut off mid-value and mean something other than they say. " +
+		"Ask again with less in one reply — fewer calls, or the work split into smaller pieces."
 )
 
 // commit writes the step: the assistant message, and the message answering every
@@ -65,8 +71,15 @@ func resultFor(id string, calls []pendingCall, results []*tool.Result) *tool.Res
 // unrun is what this step's unanswered calls say. A turn the user stopped is the
 // one case the model can act on differently, and it is the wording design §4's
 // prevent-on-write sketch and internals §2.4's repair-on-read one both carry.
+//
+// Truncation is asked first because it is why nothing ran whatever else is true:
+// the guard refuses the batch on the stop reason alone, before a cancellation
+// arriving in the same window could have skipped it (design §4 invariant 2).
 func unrun(ctx context.Context, stop llm.StopReason) string {
-	if stop == llm.StopAborted || ctx.Err() != nil {
+	switch {
+	case stop == llm.StopMaxTokens:
+		return truncated
+	case stop == llm.StopAborted || ctx.Err() != nil:
 		return interrupted
 	}
 	return unanswered
