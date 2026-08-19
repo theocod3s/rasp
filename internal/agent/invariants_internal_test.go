@@ -74,9 +74,17 @@ func TestUnrunTellsTheModelWhichKindOfNothingHappened(t *testing.T) {
 	if got := unrun(ctx, llm.StopAborted); got != interrupted {
 		t.Errorf("a call on a turn the model reported aborted says %q", got)
 	}
+	if got := unrun(ctx, llm.StopMaxTokens); got != truncated {
+		t.Errorf("a call from a reply the output limit cut short says %q", got)
+	}
 
 	cancel()
 	if got := unrun(ctx, llm.StopToolUse); got != interrupted {
 		t.Errorf("a call skipped because the turn was cancelled says %q", got)
+	}
+	if got := unrun(ctx, llm.StopMaxTokens); got != truncated {
+		t.Errorf("a truncated reply's call on a cancelled turn says %q; the guard refused the batch "+
+			"before the cancellation could have skipped it, and repeating the call is still the one "+
+			"thing that cannot work", got)
 	}
 }
