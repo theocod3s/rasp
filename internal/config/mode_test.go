@@ -2,7 +2,9 @@ package config_test
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -165,5 +167,133 @@ func TestModesYoloWarnsAndIsDropped(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("modes.yolo was dropped without a warning; got %v", res.Warnings)
+	}
+}
+
+// TestAModeOverrideMergesPerPattern is the config half of design §7.2's presets:
+// an override says only what it changes, and two files can each change something
+// different about the same mode.
+func TestAModeOverrideMergesPerPattern(t *testing.T) {
+	res := load(t, config.Sources{
+		GlobalPath: global(t, `{"modes": {"manual": {"write": "allow", "bash": {"go test*": "allow"}}}}`),
+		ProjectDir: project(t, `{"modes": {"manual": {"bash": {"go build*": "allow"}}}}`),
+	})
+
+	manual := res.Config.Modes[config.ModeManual]
+	if manual.Write != "allow" {
+		t.Errorf("modes.manual.write = %q, want the global file's answer", manual.Write)
+	}
+	if got := manual.Bash["go test*"]; got != "allow" {
+		t.Errorf("modes.manual.bash[go test*] = %q, want the global file's pattern to survive "+
+			"the project file's", got)
+	}
+	if got := manual.Bash["go build*"]; got != "allow" {
+		t.Errorf("modes.manual.bash[go build*] = %q, want the project file's pattern", got)
+	}
+	if manual.Edit != "" {
+		t.Errorf("modes.manual.edit = %q, want an override to say nothing about what it "+
+			"did not mention", manual.Edit)
+	}
+}
+
+// TestAnUnreadablePermissionRuleIsRejected. permission.Compile turns one away
+// too, but the mode is all it can name by then — so the check that knows which
+// file wrote it has to be the one that runs first.
+func TestAnUnreadablePermissionRuleIsRejected(t *testing.T) {
+	globalPath := global(t, `{"modes": {"plan": {"bash": {"go test*": "alow"}}}}`)
+
+	_, err := config.Load(config.Sources{
+		GlobalPath: globalPath,
+		ProjectDir: t.TempDir(),
+		Getenv:     env{}.lookup,
+	})
+	if err == nil {
+		t.Fatal(`Load accepted "alow" as a permission rule`)
+	}
+
+	invalid, ok := errors.AsType[*config.InvalidError](err)
+	if !ok {
+		t.Fatalf("error is %T, want *config.InvalidError", err)
+	}
+	if want := "modes.plan.bash.go test*"; invalid.Key != want {
+		t.Errorf("error names key %q, want %q", invalid.Key, want)
+	}
+	for _, want := range []string{globalPath, "alow", "allow, ask, deny"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q:\n%s", want, err)
+		}
+	}
+}
+
+// TestEveryRuleInAModeOverrideIsChecked walks ModePermissions rather than naming
+// its fields, so a field added to it without a line in validate.go fails here
+// instead of loading clean and being refused later by a message that names no
+// file.
+func TestEveryRuleInAModeOverrideIsChecked(t *testing.T) {
+	typ := reflect.TypeFor[config.ModePermissions]()
+	if typ.NumField() == 0 {
+		t.Fatal("ModePermissions has no fields, so this test checked nothing")
+	}
+
+	for field := range typ.Fields() {
+		key, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		t.Run(key, func(t *testing.T) {
+			var contents, wantKey string
+			switch field.Type.Kind() {
+			case reflect.String:
+				contents = fmt.Sprintf(`{"modes": {"manual": {%q: "aslow"}}}`, key)
+				wantKey = "modes.manual." + key
+			case reflect.Map:
+				contents = fmt.Sprintf(`{"modes": {"manual": {%q: {"ls*": "aslow"}}}}`, key)
+				wantKey = "modes.manual." + key + ".ls*"
+			default:
+				t.Fatalf("%s is a %s, which this test cannot write into a config file — so it "+
+					"is not checking that field", field.Name, field.Type.Kind())
+			}
+
+			_, err := config.Load(config.Sources{
+				GlobalPath: global(t, contents),
+				ProjectDir: t.TempDir(),
+				Getenv:     env{}.lookup,
+			})
+			if err == nil {
+				t.Fatalf("Load accepted an unreadable rule at %s", wantKey)
+			}
+			invalid, ok := errors.AsType[*config.InvalidError](err)
+			if !ok {
+				t.Fatalf("error is %T, want *config.InvalidError: %v", err, err)
+			}
+			if invalid.Key != wantKey {
+				t.Errorf("error names key %q, want %q", invalid.Key, wantKey)
+			}
+		})
+	}
+}
+
+// TestAnEmptyPatternIsRejected: it matches an empty command and nothing else, so
+// it is always a `*` that lost its star.
+func TestAnEmptyPatternIsRejected(t *testing.T) {
+	_, err := config.Load(config.Sources{
+		GlobalPath: global(t, `{"modes": {"auto": {"bash": {"": "deny"}}}}`),
+		ProjectDir: t.TempDir(),
+		Getenv:     env{}.lookup,
+	})
+	if err == nil {
+		t.Fatal("Load accepted an empty bash pattern")
+	}
+	if !strings.Contains(err.Error(), `"*"`) {
+		t.Errorf("error does not say what to write instead:\n%s", err)
+	}
+}
+
+// TestABrokenRuleUnderModesYoloIsStillOnlyAWarning. The whole block is dropped,
+// so refusing to start over a typo inside it would be refusing over something
+// nothing reads.
+func TestABrokenRuleUnderModesYoloIsStillOnlyAWarning(t *testing.T) {
+	res := load(t, config.Sources{
+		GlobalPath: global(t, `{"modes": {"yolo": {"bash": {"rm -rf*": "dney"}}}}`),
+	})
+	if _, ok := res.Config.Modes["yolo"]; ok {
+		t.Error("modes.yolo survived into the resolved config")
 	}
 }

@@ -48,7 +48,90 @@ func validate(t tree, origin Origin) ([]Warning, error) {
 		})
 	}
 
+	if err := checkModeRules(t, origin); err != nil {
+		return nil, err
+	}
+
 	return warnings, nil
+}
+
+// ruleKeys are the answers a mode override gives directly, and patternKeys the
+// two it gives through a table of globs. Both mirror ModePermissions, and a
+// field added there without a line here goes unchecked — which is what
+// TestEveryRuleInAModeOverrideIsChecked walks the struct to catch.
+var (
+	ruleKeys    = []string{"read", "write", "edit", "fetch"}
+	patternKeys = []string{"bash", "mcp"}
+)
+
+// checkModeRules refuses a permission rule rasp cannot read, before the layer
+// that wrote it is merged away. permission.Compile refuses one as well, but by
+// then the only thing left to name is the mode, and the answer to "which of my
+// config files said that" is gone.
+//
+// An error rather than a warning, for the reason a misspelled mode is one: an
+// override that loads clean and is never consulted reads to its author as a
+// constraint that is being enforced.
+func checkModeRules(t tree, origin Origin) error {
+	for _, mode := range modeNames {
+		// modes.yolo is dropped whole and warned about above; refusing to start
+		// over a typo inside it would be refusing over something nobody reads.
+		if mode == ModeYolo {
+			continue
+		}
+		set, ok := lookupPath(t, "modes", mode)
+		if !ok {
+			continue
+		}
+		// A mode override that is not an object at all is left to the shape
+		// check after the merge, which names it with this same origin.
+		byKey, ok := set.(tree)
+		if !ok {
+			continue
+		}
+
+		for _, key := range ruleKeys {
+			if err := checkRule(byKey[key], origin, "modes", mode, key); err != nil {
+				return err
+			}
+		}
+		for _, key := range patternKeys {
+			patterns, ok := byKey[key].(tree)
+			if !ok {
+				continue
+			}
+			for _, pattern := range sortedKeys(patterns) {
+				path := []string{"modes", mode, key, pattern}
+				if pattern == "" {
+					return &InvalidError{
+						Origin: origin,
+						Key:    joinPath(path),
+						Reason: "the empty pattern matches an empty command and nothing else; " +
+							`write "*" for a catch-all`,
+					}
+				}
+				if err := checkRule(patterns[pattern], origin, path...); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// checkRule accepts a value that is not a string: what arrived instead is the
+// shape check's to name, and it names it with the same origin.
+func checkRule(val any, origin Origin, path ...string) error {
+	rule, ok := val.(string)
+	if !ok || slices.Contains(ruleNames, rule) {
+		return nil
+	}
+	return &InvalidError{
+		Origin: origin,
+		Key:    joinPath(path),
+		Reason: fmt.Sprintf("unknown permission rule %q; want one of %s",
+			rule, strings.Join(ruleNames, ", ")),
+	}
 }
 
 const keyMaxOutputTokens = "max_output_tokens"
