@@ -2,6 +2,7 @@ package chat
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"testing"
 )
@@ -9,17 +10,18 @@ import (
 // corpus is a set of replies of the shape an assistant actually sends, chosen
 // for the constructs whose meaning is not settled until a later line arrives.
 var corpus = map[string]string{
-	"fenced code between prose": "Here's the fix:\n\n```go\nfunc Check(ctx context.Context) error {\n\treturn nil\n}\n```\n\nNow the caller.\n",
-	"headings and a setext one": "Result\n======\n\nThe parse succeeded.\n\n## Next\n\nRun it again.\n",
-	"a list that turns loose":   "Two things:\n\n- the header\n- the body\n\n- and the trailer, which arrived late\n\nThat is all.\n",
-	"an ordered list":           "Steps:\n\n1. read the file\n2. edit it\n3. run the tests\n\nDone.\n",
-	"a table":                   "| field | kind |\n|---|---|\n| id | int |\n| name | string |\n\nAfter the table.\n",
-	"a quote then prose":        "> The parser reorders them.\n> Every time.\n\nSo the fix is upstream.\n",
-	"indented code with a gap":  "Like so:\n\n    first line\n\n    second line\n\nBack to prose.\n",
-	"pipes and backticks":       "Run `ls | wc -l` first. A pipe in prose | is not a table.\n\nThen `sed -n '1,5p'`.\n",
-	"a link reference":          "See [the notes][n] for why.\n\n[n]: https://example.invalid/notes\n\nAnd the fix.\n",
-	"an html block with a gap":  "<details>\n<summary>trace</summary>\n\nthe stack\n\n</details>\n\nAfter it.\n",
-	"nested list and code":      "- outer\n  - inner\n\n    ```sh\n    go test ./...\n    ```\n\n- second\n\nEnd.\n",
+	"fenced code between prose":  "Here's the fix:\n\n```go\nfunc Check(ctx context.Context) error {\n\treturn nil\n}\n```\n\nNow the caller.\n",
+	"headings and a setext one":  "Result\n======\n\nThe parse succeeded.\n\n## Next\n\nRun it again.\n",
+	"a list that turns loose":    "Two things:\n\n- the header\n- the body\n\n- and the trailer, which arrived late\n\nThat is all.\n",
+	"an ordered list":            "Steps:\n\n1. read the file\n2. edit it\n3. run the tests\n\nDone.\n",
+	"a table":                    "| field | kind |\n|---|---|\n| id | int |\n| name | string |\n\nAfter the table.\n",
+	"a quote then prose":         "> The parser reorders them.\n> Every time.\n\nSo the fix is upstream.\n",
+	"indented code with a gap":   "Like so:\n\n    first line\n\n    second line\n\nBack to prose.\n",
+	"pipes and backticks":        "Run `ls | wc -l` first. A pipe in prose | is not a table.\n\nThen `sed -n '1,5p'`.\n",
+	"a link reference":           "See [the notes][n] for why.\n\n[n]: https://example.invalid/notes\n\nAnd the fix.\n",
+	"an html block with a gap":   "<details>\n<summary>trace</summary>\n\nthe stack\n\n</details>\n\nAfter it.\n",
+	"nested list and code":       "- outer\n  - inner\n\n    ```sh\n    go test ./...\n    ```\n\n- second\n\nEnd.\n",
+	"a fence inside a list item": "1. read it\n\n   ```sh\n   cat main.go\n   ```\n\n2. edit it\n\nEnd.\n",
 }
 
 // TestEveryPrefixOfAReplyRendersAsThoughItWereWhole is the boundary detector's
@@ -45,6 +47,60 @@ func TestEveryPrefixOfAReplyRendersAsThoughItWereWhole(t *testing.T) {
 	}
 }
 
+// blocks are the pieces the generated replies below are built from, one of each
+// construct that has ever had to be reasoned about — including the ones that
+// only go wrong nested inside another.
+var blocks = []string{
+	"A paragraph about the parser and the header it reads.\n\n",
+	"# A heading\n\n",
+	"Setext\n======\n\n",
+	"```go\nfunc Check(ctx context.Context) error { return nil }\n```\n\n",
+	"- one\n- two\n\n",
+	"1. first\n2. second\n\n",
+	"- item\n\n  ```sh\n  go test ./...\n  ```\n\n",
+	"- outer\n  - inner\n    - deepest\n\n",
+	"> quoted text\n> and more of it\n\n",
+	"| field | kind |\n|---|---|\n| id | int |\n\n",
+	"    indented code\n\n    and more of it\n\n",
+	"<details>\n<summary>trace</summary>\n\nthe stack\n\n</details>\n\n",
+	"See [the notes][n].\n\n[n]: https://example.invalid\n\n",
+	"term\n\n: what it means\n\n",
+	"Text with `a | b` in it and a - dash.\n\n",
+	"***\n\n",
+}
+
+// TestBlocksInAnyOrderStillRenderAsOneDocument is the corpus above without the
+// hand-picking. Nesting is where the proof has actually been wrong — a fence
+// closing inside a list item read as closing the list — and that only shows up
+// in a combination nobody thought to write down.
+func TestBlocksInAnyOrderStillRenderAsOneDocument(t *testing.T) {
+	const width = 60
+	rng := rand.New(rand.NewPCG(1, 2))
+
+	for reply := range 24 {
+		var b strings.Builder
+		for range 5 {
+			b.WriteString(blocks[rng.IntN(len(blocks))])
+		}
+		doc := b.String()
+
+		m := &markdown{draw: glamourBlock}
+		for at := strings.IndexByte(doc, '\n'); at >= 0 && at < len(doc); {
+			got := visible(m.render(doc[:at+1], width))
+			want := visible(glamourBlock(doc[:at+1], width))
+			if got != want {
+				t.Fatalf("reply %d cut at %d bytes draws\n%s\nand one render of the same text draws\n%s\nfrom\n%q",
+					reply, at+1, indent(got), indent(want), doc[:at+1])
+			}
+			next := strings.IndexByte(doc[at+1:], '\n')
+			if next < 0 {
+				break
+			}
+			at += next + 1
+		}
+	}
+}
+
 // TestABoundaryIsOnlyClaimedWhereNothingIsOpen names the constructs the
 // detector has to see through. Each case is a message caught mid-construct, and
 // the answer that keeps the frame correct is the whole of it (0) or a boundary
@@ -60,6 +116,7 @@ func TestABoundaryIsOnlyClaimedWhereNothingIsOpen(t *testing.T) {
 		{"a fence still open", "Fixed it:\n\n```go\nfunc Check() {\n\n", 11},
 		{"a fence that closed", "Fixed it:\n\n```go\nfunc Check() {}\n```\n\nNow the caller", 38},
 		{"a list that may still turn loose", "Two:\n\n- one\n\n", 6},
+		{"a fence closing inside a list item", "1. read it\n\n   ```sh\n   cat main.go\n   ```\n\n", 0},
 		{"a list closed by a paragraph", "Two:\n\n- one\n- two\n\ntext\n\n", 25},
 		{"a table mid-row", "| a | b |\n|---|---|\n| 1 | 2 |\n\n", 0},
 		{"a quote", "> quoted\n\n", 0},
@@ -67,8 +124,7 @@ func TestABoundaryIsOnlyClaimedWhereNothingIsOpen(t *testing.T) {
 		{"indented code that may resume", "Like so:\n\n    code\n\n", 10},
 		{"a link reference anywhere in the message", "text\n\nmore\n\n[n]: https://example.invalid\n\n", 0},
 		{"a definition list marker", "term\n\n: what it means\n\n", 0},
-		{"an html block that may swallow the gap", "<details>\n\nthe stack\n\n", 0},
-		{"an html block below a settled paragraph", "text\n\n<details>\n\nthe stack\n\n", 6},
+		{"raw html anywhere in the message", "text\n\n<details>\n\nthe stack\n\n", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := stableBoundary(tc.src); got != tc.want {

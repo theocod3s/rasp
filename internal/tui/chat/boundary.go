@@ -10,11 +10,11 @@ const codeIndent = 4
 // come out exactly as they would at the head of the finished message, or 0 when
 // no such prefix can be proven.
 //
-// A boundary sits after a blank line with nothing open above it: no fence, list,
-// table, quote or paragraph that a later line could still reach back into and
-// re-read (internals §4.4). The scan is deliberately one-sided — it proves the
-// prefix safe or says nothing — so every construct it does not understand ends
-// up rendered whole, which is slow and never wrong.
+// A boundary sits after a blank line with nothing open above it: no fence,
+// list, table, quote, indented code or paragraph that a later line could still
+// reach back into and re-read (internals §4.4). The scan is deliberately
+// one-sided — it proves a prefix safe or says nothing — so every construct it
+// does not understand ends up rendered whole, which is slow and never wrong.
 func stableBoundary(src string) int {
 	var (
 		boundary int
@@ -23,7 +23,6 @@ func stableBoundary(src string) int {
 		// a list turns loose when another item arrives, an indented code block
 		// resumes across blank lines. Neither may sit at the end of a prefix.
 		carry     bool
-		html      bool // an HTML block, whose end this scan does not try to find
 		prevBlank = true
 	)
 
@@ -37,58 +36,67 @@ func stableBoundary(src string) int {
 
 		if fence != "" {
 			if closesFence(line, fence) {
-				fence, carry = "", false
+				fence = ""
 			}
 			continue
 		}
 
 		body := strings.TrimLeft(line, " \t")
 		if body == "" {
-			if !carry && !html {
+			if !carry {
 				boundary = off
 			}
 			prevBlank = true
 			continue
 		}
 
-		open := opensFence(body)
 		switch {
 		case indentOf(line) >= codeIndent:
 			// Four columns in after a blank line starts an indented code block or
 			// continues the list item above; without one it continues whatever the
 			// line above was, and changes nothing.
 			carry = carry || prevBlank
-		case reachesBack(body):
+		case unsplittable(body):
 			return 0
-		case open != "":
-			fence = open
-		case body[0] == '<':
-			// An HTML block of the <pre>/<script> family runs to its closing tag
-			// and swallows blank lines on the way, so no later blank line is a
-			// boundary. Earlier ones stand: HTML changes nothing above it.
-			html = true
 		case isQuote(body), isListItem(body), isTableRule(body):
 			carry = true
-		case prevBlank && indentOf(line) == 0:
+		default:
 			// A block hard against the left margin after a blank line cannot be a
 			// continuation of anything above it, so whatever was open is closed.
-			carry = false
+			// A fence three columns in is a different matter: it can be a list
+			// item's own code, and the list is still open around it.
+			if prevBlank && indentOf(line) == 0 {
+				carry = false
+			}
+			fence = opensFence(body)
 		}
 		prevBlank = false
 	}
 	return boundary
 }
 
-// reachesBack reports a line whose meaning is not confined to itself. A link
-// reference or footnote definition turns brackets *earlier* in the message into
-// links, and a definition-list marker turns the paragraph above it into a term —
-// so a prefix rendered before either arrives is rendered wrong, whatever the
-// boundary said. The whole message goes through one render instead.
-func reachesBack(body string) bool {
-	if body[0] == '[' {
+// unsplittable reports a line that no boundary in the message can survive, so
+// that the whole of it goes through one render.
+//
+// A link reference or footnote definition turns brackets *earlier* in the
+// message into links, and a definition-list marker turns the paragraph above it
+// into a term: both make a prefix render differently once they arrive, whatever
+// the boundary said when it was taken. Raw HTML is a different failure — glamour
+// draws it with none of the spacing it puts between blocks, so a seam in front
+// of one is a blank line the whole document does not have.
+//
+// All three are rare in a reply, and the cost of meeting one is a render rather
+// than a wrong frame.
+func unsplittable(body string) bool {
+	switch body[0] {
+	case '<':
+		return true
+	case '[':
 		return strings.Contains(body, "]:")
+	case ':':
+		return len(body) == 1 || body[1] == ' ' || body[1] == '\t'
 	}
-	return body[0] == ':' && (len(body) == 1 || body[1] == ' ' || body[1] == '\t')
+	return false
 }
 
 func isQuote(body string) bool { return body[0] == '>' }
