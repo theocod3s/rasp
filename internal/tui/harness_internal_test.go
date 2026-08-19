@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
@@ -16,6 +17,7 @@ import (
 	teatest "github.com/charmbracelet/x/exp/teatest/v2"
 
 	"github.com/theocod3s/rasp/internal/agent"
+	"github.com/theocod3s/rasp/internal/llm"
 	"github.com/theocod3s/rasp/internal/tool"
 )
 
@@ -24,12 +26,17 @@ import (
 // differs on every line and says nothing about the change that caused it.
 const goldenWidth, goldenHeight = 80, 24
 
+// goldenNow is the instant every frame here is drawn at. Any instant will do —
+// it is never printed — as long as it is one the machine does not choose.
+var goldenNow = time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+
 // snapshot is one state of the UI worth freezing: the prompt that starts a turn,
-// and the events the loop then emits into it.
+// the events the loop then emits into it, and anything the user typed after.
 type snapshot struct {
 	name   string
 	prompt string
 	events []agent.Event
+	keys   []tea.KeyPressMsg
 }
 
 // snapshots are the states a golden is kept for. Deliberately few: every ticket
@@ -40,9 +47,36 @@ func snapshots() []snapshot {
 	const prompt = "fix the failing auth test"
 
 	fragment := reply("Reading `auth_test.go` now. The header is parsed")
-	explained := reply("Reading `auth_test.go` now. The header is parsed **twice**.\n\n" +
-		"- once in the middleware\n- once in the handler\n")
+	explained := asking(reply("Reading `auth_test.go` now. The header is parsed **twice**.\n\n"+
+		"- once in the middleware\n- once in the handler\n"),
+		llm.Block{Type: llm.BlockToolUse, ID: "call_1", Name: "read"},
+		llm.Block{Type: llm.BlockToolUse, ID: "call_2", Name: "edit"})
 	fixed := reply("Both call sites read the parsed header instead of parsing it again.")
+
+	read := &tool.Result{
+		Title:   "read auth_test.go (2 lines)",
+		Content: "1\tfunc TestParsesTheHeaderOnce(t *testing.T) {\n2\t\treq := request(t)",
+	}
+	refused := &tool.Result{
+		IsError: true,
+		Content: "Cannot edit auth.go: it has not been read this session, so old_string would be matched " +
+			"against a file rasp has not seen. Read it first.",
+	}
+
+	// A batch of two, started and finished in the reverse of the order the model
+	// asked for them, which is what a batch running its calls at once does. The
+	// cards still have to read in the order of the tool_use blocks above.
+	tools := []agent.Event{
+		{Kind: agent.EventAssistantDelta, Message: explained},
+		{Kind: agent.EventAssistantEnd, Message: explained},
+		{Kind: agent.EventToolStart, CallID: "call_2", Tool: "edit"},
+		{Kind: agent.EventToolStart, CallID: "call_1", Tool: "read"},
+		{Kind: agent.EventToolEnd, CallID: "call_2", Tool: "edit", Result: refused},
+		{Kind: agent.EventToolEnd, CallID: "call_1", Tool: "read", Result: read},
+		{Kind: agent.EventAssistantDelta, Message: fixed},
+		{Kind: agent.EventAssistantEnd, Message: fixed},
+		{Kind: agent.EventTurnEnd},
+	}
 
 	return []snapshot{
 		{name: "empty"},
@@ -50,18 +84,17 @@ func snapshots() []snapshot {
 		{name: "streaming", prompt: prompt, events: []agent.Event{
 			{Kind: agent.EventAssistantDelta, Message: fragment},
 		}},
-		// Two calls in flight at once, finishing out of order, one of them failed:
-		// the transcript has to keep each where it started (design §6 rule 6).
-		{name: "tools", prompt: prompt, events: []agent.Event{
+		{name: "tools", prompt: prompt, events: tools},
+		// The same conversation with every card opened, which is the only state
+		// that draws what a tool actually returned.
+		{name: "expanded", prompt: prompt, events: tools, keys: []tea.KeyPressMsg{expandKey}},
+		// A batch part way through: the second call is running and the first has
+		// not started, so the frame is the one that would reorder itself if the
+		// cards were built from tool_start rather than from the message above.
+		{name: "working", prompt: prompt, events: []agent.Event{
 			{Kind: agent.EventAssistantDelta, Message: explained},
 			{Kind: agent.EventAssistantEnd, Message: explained},
-			{Kind: agent.EventToolStart, CallID: "call_1", Tool: "read"},
 			{Kind: agent.EventToolStart, CallID: "call_2", Tool: "edit"},
-			{Kind: agent.EventToolEnd, CallID: "call_2", Tool: "edit", Result: &tool.Result{IsError: true}},
-			{Kind: agent.EventToolEnd, CallID: "call_1", Tool: "read", Result: &tool.Result{}},
-			{Kind: agent.EventAssistantDelta, Message: fixed},
-			{Kind: agent.EventAssistantEnd, Message: fixed},
-			{Kind: agent.EventTurnEnd},
 		}},
 		// A step that failed mid-reply: the fragment is settled rather than left
 		// open, and the failure is drawn under it.
@@ -71,6 +104,13 @@ func snapshots() []snapshot {
 			{Kind: agent.EventTurnEnd},
 		}},
 	}
+}
+
+// asking is a reply that also asked for tools, the blocks in the order the
+// model wrote them.
+func asking(msg *llm.Message, calls ...llm.Block) *llm.Message {
+	msg.Content = append(msg.Content, calls...)
+	return msg
 }
 
 // TestViewGoldens freezes the frame each state draws, so a change to any of the
@@ -154,6 +194,9 @@ func draw(t *testing.T, state snapshot) string {
 	for _, ev := range state.events {
 		tm.Send(agentMsg{event: ev})
 	}
+	for _, key := range state.keys {
+		tm.Send(key)
+	}
 
 	return quit(t, tm).View().Content
 }
@@ -168,7 +211,15 @@ func program(t *testing.T) (*teatest.TestModel, *turner) {
 	t.Helper()
 
 	turner := newTurner(agent.ErrInterrupted)
-	return teatest.NewTestModel(t, newModel(t.Context(), turner),
+	m := newModel(t.Context(), turner)
+	// A stopped clock, so no card shows an elapsed time. Real time would put a
+	// duration into the frames that depends on how fast the machine drained the
+	// queue, and a beat firing between two sends would move it again. What a
+	// card draws for an elapsed time is asserted against a clock a test names
+	// instead (cards_internal_test.go).
+	m.now = func() time.Time { return goldenNow }
+
+	return teatest.NewTestModel(t, m,
 		teatest.WithInitialTermSize(goldenWidth, goldenHeight),
 		teatest.WithProgramOptions(tea.WithoutRenderer()),
 	), turner

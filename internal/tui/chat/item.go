@@ -49,26 +49,6 @@ func spoken(msg llm.Message) string {
 	return b.String()
 }
 
-// Call is one tool call: its name, and how far it has got.
-type Call struct {
-	Name   string
-	Done   bool
-	Failed bool
-}
-
-func (c Call) Finished() bool { return c.Done }
-
-func (c Call) Render(width int) string {
-	state := "running"
-	switch {
-	case c.Failed:
-		state = "failed"
-	case c.Done:
-		state = "done"
-	}
-	return wrap(c.Name+": "+state, width)
-}
-
 // wrap breaks text so no line runs past width, at the last space that fits and
 // inside a word only when no space does. A width of zero or less is a size
 // nobody has reported yet, and nothing is broken.

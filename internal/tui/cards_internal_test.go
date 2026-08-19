@@ -1,0 +1,190 @@
+package tui
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+
+	"github.com/theocod3s/rasp/internal/agent"
+	"github.com/theocod3s/rasp/internal/llm"
+	"github.com/theocod3s/rasp/internal/tool"
+)
+
+// TestCardsAreDrawnInTheOrderTheModelAskedFor. A batch runs its calls at once,
+// so tool_start arrives in whatever order the scheduler got to them — and a
+// card list built from those alone puts the transcript in an order the model
+// never asked for. The starts below arrive backwards for exactly that reason.
+func TestCardsAreDrawnInTheOrderTheModelAskedFor(t *testing.T) {
+	asked := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+		{Type: llm.BlockText, Text: "Reading, then editing."},
+		{Type: llm.BlockToolUse, ID: "call_1", Name: "read"},
+		{Type: llm.BlockToolUse, ID: "call_2", Name: "edit"},
+		{Type: llm.BlockToolUse, ID: "call_3", Name: "grep"},
+	}}
+
+	var m tea.Model = Model{}
+	for _, ev := range []agent.Event{
+		{Kind: agent.EventAssistantDelta, Message: asked},
+		{Kind: agent.EventAssistantEnd, Message: asked},
+		{Kind: agent.EventToolStart, CallID: "call_3", Tool: "grep"},
+		{Kind: agent.EventToolStart, CallID: "call_2", Tool: "edit"},
+		{Kind: agent.EventToolEnd, CallID: "call_2", Tool: "edit", Result: &tool.Result{Title: "auth.go +3 -1"}},
+		{Kind: agent.EventToolStart, CallID: "call_1", Tool: "read"},
+	} {
+		m, _ = m.Update(agentMsg{event: ev})
+	}
+
+	frame := words(m.View().Content)
+	read, edit, grep := strings.Index(frame, "read running"),
+		strings.Index(frame, "edit auth.go"),
+		strings.Index(frame, "grep running")
+	switch {
+	case read < 0 || edit < 0 || grep < 0:
+		t.Fatalf("one of the three calls never reached the conversation:\n%s", frame)
+	case !(read < edit && edit < grep):
+		t.Errorf("the cards read in the order the calls were scheduled rather than the order the model "+
+			"asked for them:\n%s", frame)
+	}
+
+	// Four items: the reply, and one card per call — the announcement creates
+	// each card once, and the start and end of a call update it where it stands.
+	if root, held := m.(Model), 4; root.chat.Len() != held {
+		t.Errorf("the conversation holds %d items, and one reply with three calls is %d", root.chat.Len(), held)
+	}
+}
+
+// TestACallAnnouncedAndNeverStartedIsStillDrawn. Nothing runs a call the batch
+// was cancelled before reaching, and a card that quietly vanished would leave
+// the reader believing the model never asked for it.
+func TestACallAnnouncedAndNeverStartedIsStillDrawn(t *testing.T) {
+	asked := &llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+		{Type: llm.BlockToolUse, ID: "call_1", Name: "read"},
+		{Type: llm.BlockToolUse, ID: "call_2", Name: "bash"},
+	}}
+
+	var m tea.Model = Model{}
+	for _, ev := range []agent.Event{
+		{Kind: agent.EventAssistantEnd, Message: asked},
+		{Kind: agent.EventToolStart, CallID: "call_1", Tool: "read"},
+		{Kind: agent.EventTurnEnd},
+	} {
+		m, _ = m.Update(agentMsg{event: ev})
+	}
+
+	if frame, want := words(m.View().Content), "bash queued"; !strings.Contains(frame, want) {
+		t.Errorf("the frame does not mention %q, so the call the turn ended before is gone:\n%s", want, frame)
+	}
+}
+
+// TestATickMovesTheRunningCardAndLeavesTheFinishedOnesAlone is internals §4.5's
+// freeze under a clock: the beat exists to redraw a call still running, and a
+// beat that wrote back every card would drop the whole conversation's cache
+// ten times a second. A finished card carries the time its call took, so one
+// redrawn here says a longer time on the next frame and this test says so.
+func TestATickMovesTheRunningCardAndLeavesTheFinishedOnesAlone(t *testing.T) {
+	const finished = "read auth.go (42 lines) 2s"
+
+	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	var m tea.Model = Model{now: func() time.Time { return now }}
+
+	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventToolStart, CallID: "call_1", Tool: "read"}})
+	now = now.Add(2 * time.Second)
+	m, _ = m.Update(agentMsg{event: agent.Event{
+		Kind: agent.EventToolEnd, CallID: "call_1", Tool: "read",
+		Result: &tool.Result{Title: "read auth.go (42 lines)"},
+	}})
+	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventToolStart, CallID: "call_2", Tool: "bash"}})
+	started := now
+
+	if frame := words(m.View().Content); !strings.Contains(frame, finished) {
+		t.Fatalf("the frame does not read %q, so nothing below can tell it apart from one that moved:\n%s",
+			finished, frame)
+	}
+
+	for _, tc := range []struct {
+		after   time.Duration
+		running string
+	}{
+		{after: 1500 * time.Millisecond, running: "bash running 1.5s"},
+		{after: 7 * time.Second, running: "bash running 7s"},
+	} {
+		now = started.Add(tc.after)
+		m, _ = m.Update(tickMsg{})
+
+		frame := words(m.View().Content)
+		if !strings.Contains(frame, tc.running) {
+			t.Errorf("the frame does not read %q, so the beat did not move the running call:\n%s", tc.running, frame)
+		}
+		if !strings.Contains(frame, finished) {
+			t.Errorf("the frame no longer reads %q, so the beat redrew a card that had already "+
+				"finished — and dropped its frozen render with it:\n%s", finished, frame)
+		}
+	}
+
+	// And the beat stops once nothing is running, rather than waking the program
+	// for the rest of the session.
+	m, _ = m.Update(agentMsg{event: agent.Event{
+		Kind: agent.EventToolEnd, CallID: "call_2", Tool: "bash", Result: &tool.Result{Title: "go test"},
+	}})
+	if _, cmd := m.(Model).beat(); cmd != nil {
+		t.Error("the beat scheduled another with no call left running")
+	}
+}
+
+// TestATickIsScheduledOnceHoweverManyCallsStart. Four calls start at once in a
+// batch, and a timer for each would leave four of them running for the rest of
+// the session, every one rescheduling itself.
+func TestATickIsScheduledOnceHoweverManyCallsStart(t *testing.T) {
+	var m tea.Model = Model{}
+
+	var scheduled int
+	for _, id := range []string{"call_1", "call_2", "call_3", "call_4"} {
+		var cmd tea.Cmd
+		m, cmd = m.Update(agentMsg{event: agent.Event{Kind: agent.EventToolStart, CallID: id, Tool: "read"}})
+		if cmd != nil {
+			scheduled++
+		}
+	}
+
+	if scheduled != 1 {
+		t.Errorf("four calls starting scheduled %d beats, want 1", scheduled)
+	}
+}
+
+// TestExpandingShowsWhatEveryCallProduced. The whole conversation rather than
+// one card, because nothing selects one: there is no cursor over the transcript
+// for "this card" to mean.
+func TestExpandingShowsWhatEveryCallProduced(t *testing.T) {
+	const output = "PASS ok github.com/theocod3s/rasp/internal/auth"
+
+	var m tea.Model = Model{}
+	for _, ev := range []agent.Event{
+		{Kind: agent.EventToolStart, CallID: "call_1", Tool: "bash"},
+		{Kind: agent.EventToolEnd, CallID: "call_1", Tool: "bash", Result: &tool.Result{
+			Title:   "go test ./...",
+			Content: output,
+		}},
+	} {
+		m, _ = m.Update(agentMsg{event: ev})
+	}
+
+	if frame := words(m.View().Content); strings.Contains(frame, output) {
+		t.Fatalf("the card is open before anyone asked:\n%s", frame)
+	}
+
+	m, _ = m.Update(expandKey)
+	if frame := words(m.View().Content); !strings.Contains(frame, output) {
+		t.Errorf("the card did not open:\n%s", frame)
+	}
+
+	m, _ = m.Update(expandKey)
+	if frame := words(m.View().Content); strings.Contains(frame, output) {
+		t.Errorf("the card did not close again:\n%s", frame)
+	}
+}
+
+// expandKey is the binding that opens every card. Ctrl rather than a bare
+// letter because the input line takes every printable key.
+var expandKey = tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl}

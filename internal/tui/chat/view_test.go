@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/theocod3s/rasp/internal/llm"
+	"github.com/theocod3s/rasp/internal/tool"
 	"github.com/theocod3s/rasp/internal/tui/chat"
 )
 
@@ -82,12 +83,12 @@ func TestAResizeRendersAgainRatherThanServingTheOldWidth(t *testing.T) {
 // the key: something put under a key already holding a finished item is drawn.
 func TestReplacingAFrozenItemDrawsTheNewOne(t *testing.T) {
 	var v chat.View
-	v.Set("call", chat.Call{Name: "read", Done: true})
+	v.Set("call", chat.Call{Name: "read", State: chat.CallDone})
 	v.Render(80)
 
-	v.Set("call", chat.Call{Name: "read", Done: true, Failed: true})
+	v.Set("call", chat.Call{Name: "read", State: chat.CallDone, Result: &tool.Result{IsError: true}})
 
-	if got := v.Render(80); !strings.Contains(got, "read: failed") {
+	if got := v.Render(80); !strings.Contains(got, "read failed") {
 		t.Errorf("the frame reads %q; the freeze outlived the item it was taken from", got)
 	}
 }
@@ -96,11 +97,11 @@ func TestReplacingAFrozenItemDrawsTheNewOne(t *testing.T) {
 // beside the reply that asked for it, not jump to the end of the conversation.
 func TestSetKeepsAnItemWhereItFirstAppeared(t *testing.T) {
 	var v chat.View
-	v.Set("first", chat.Call{Name: "read"})
-	v.Set("second", chat.Call{Name: "write"})
-	v.Set("first", chat.Call{Name: "read", Done: true})
+	v.Set("first", chat.Call{Name: "read", State: chat.CallRunning})
+	v.Set("second", chat.Call{Name: "write", State: chat.CallRunning})
+	v.Set("first", chat.Call{Name: "read", State: chat.CallDone})
 
-	if got, want := v.Render(80), "read: done\nwrite: running\n"; got != want {
+	if got, want := v.Render(80), "  read done\n  write running\n"; got != want {
 		t.Errorf("the conversation reads\n%q\nwant\n%q", got, want)
 	}
 	if v.Len() != 2 {
