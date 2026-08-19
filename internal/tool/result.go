@@ -39,7 +39,7 @@ type DiffDetails struct {
 
 	// Fuzzy records that the text was found by a whitespace-normalized rung of
 	// the edit ladder rather than byte for byte, so the UI can say so: the model
-	// asked for one thing and got a match on another, and prd §6.2 requires it be
-	// told rather than left to assume the file now reads as it wrote it.
+	// asked for one thing and got a match on another, and it must be told rather
+	// than left to assume the file now reads as it wrote it.
 	Fuzzy bool
 }

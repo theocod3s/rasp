@@ -3,8 +3,7 @@ package edit_test
 import "github.com/theocod3s/rasp/internal/tool/edit"
 
 // corpus is the golden edit corpus: the ladder's regression suite, and the
-// signal a system-prompt change is measured against rather than judged by feel
-// (prd §8, S4).
+// signal a system-prompt change is measured against rather than judged by feel.
 //
 // A Go table rather than files under testdata, because the corpus is made of
 // bytes no text pipeline can be trusted with — trailing spaces, CRLF, tabs

@@ -30,8 +30,7 @@ guess which one was meant.`
 
 // Edit returns the edit tool, reading and writing through ws. reads is the
 // session's read-before-edit tracker: an edit of a file this session has not
-// read through it, or has read at a since-superseded mtime, is refused (prd
-// §6.6).
+// read through it, or has read at a since-superseded mtime, is refused.
 func Edit(ws *workspace.Workspace, reads *workspace.Tracker) tool.Tool {
 	switch {
 	case ws == nil:

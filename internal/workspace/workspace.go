@@ -174,7 +174,7 @@ func (w *Workspace) resolve(op, name string) (string, error) {
 
 	// Lexical cleaning only decides paths whose escape is visible in the string.
 	// A symlink out of the root is invisible here and gets refused by os.Root at
-	// the point of use, which is the guarantee prd §6.6 asks for.
+	// the point of use — the runtime half of the confinement guarantee (design §2).
 	rel = filepath.ToSlash(filepath.Clean(rel))
 	if rel == ".." || strings.HasPrefix(rel, "../") {
 		return "", &PathError{Op: op, Path: name, Root: w.dir, Err: ErrOutside}

@@ -132,7 +132,7 @@ func RipgrepPath() string {
 // NewGrep returns the grep tool. It searches with the ripgrep binary at rg, or
 // with the pure-Go engine when that is empty — passed in rather than looked up
 // here so a test can exercise either engine on a host that happens to have or
-// lack ripgrep (design §14, prd §6.2).
+// lack ripgrep (design §14).
 func NewGrep(ws grepFS, rg string) tool.Tool {
 	if ws == nil {
 		panic("builtin: grep needs a workspace, which is the only route a file tool has to the filesystem")

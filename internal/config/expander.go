@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	// commandTTL is how long a `$(command)` result is reused. prd §6.1 wants
-	// credentials re-resolved on every model call, but `$(op read …)` forks a
+	// commandTTL is how long a `$(command)` result is reused. The ideal is a
+	// credential re-resolved on every model call, but `$(op read …)` forks a
 	// process and can take a third of a second; half a minute still picks up a
 	// rotated credential without a restart.
 	commandTTL = 30 * time.Second

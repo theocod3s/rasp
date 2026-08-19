@@ -120,7 +120,7 @@ func Defaults() map[string]any {
 		},
 		"context": map[string]any{
 			// AGENTS.md is the name rasp discovers; CLAUDE.md is accepted
-			// (prd §6.5), and this is the order they are tried.
+			// (internals §5.1), and this is the order they are tried.
 			"files":          []any{"AGENTS.md", "CLAUDE.md"},
 			"reserve_tokens": jsonNumber(16384),
 		},

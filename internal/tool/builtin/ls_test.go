@@ -385,7 +385,7 @@ func TestLsSchemaAsksForNothingItDoesNotNeed(t *testing.T) {
 	f := newLsFixture(t)
 
 	if name := f.subject.Name(); name != "ls" {
-		t.Errorf("the tool is named %q; prd §6.2 names it ls, and the session log records that name", name)
+		t.Errorf("the tool is named %q; it ships as ls, and the session log records that name", name)
 	}
 
 	schema := f.subject.Schema()

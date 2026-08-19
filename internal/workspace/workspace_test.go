@@ -99,7 +99,7 @@ func TestDotDotEscapeIsRejected(t *testing.T) {
 
 // TestSymlinkOutOfTheWorkspaceIsRejected is the case lexical path checking cannot
 // see: nothing in "escape-abs" says it leaves the root. os.Root refuses it while
-// resolving, which is what prd §6.6 means by leaving this to the runtime.
+// resolving — the runtime half of the confinement guarantee (design §2).
 func TestSymlinkOutOfTheWorkspaceIsRejected(t *testing.T) {
 	f := newFixture(t)
 
