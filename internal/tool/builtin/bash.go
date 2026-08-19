@@ -31,7 +31,8 @@ const (
 	bashMaxOutput = 50 << 10
 )
 
-const bashDescription = `Run a command with bash, in the directory rasp was started in.
+const bashDescription = `Run a command with bash, from the workspace root — the same directory a relative path
+in the file tools is resolved against.
 
 Output is stdout and stderr together, in the order the command wrote them. A non-zero exit is
 reported back rather than hidden: read the output and decide what it means. On a timeout or an
@@ -59,14 +60,28 @@ type BashDetails struct {
 	SpillPath string // the whole output, when Truncated and it could be saved
 }
 
-// Bash runs shell commands. It does not implement Sequential: built-in tools are
-// parallel because we audited them (design §6 rule 4), and the commands that
-// warrant serializing are the ones the permission gate stops on anyway, which is
-// already a serial barrier (§6 rule 5). Declaring it here instead would degrade
-// every batch holding a shell call — `go test` beside three reads — to serial.
-var Bash = tool.New("bash", bashDescription, runBash)
+// NewBash returns the bash tool, running every command in dir — the workspace
+// root, which is what the file tools resolve a relative path against. Left to
+// the process's own working directory, `read config.go` and `cat config.go` name
+// different files, and the shell command a model writes to check the edit it
+// just made inspects something else entirely.
+//
+// It does not implement Sequential: built-in tools are parallel because we
+// audited them (design §6 rule 4), and the commands that warrant serializing are
+// the ones the permission gate stops on anyway, which is already a serial
+// barrier (§6 rule 5). Declaring it here instead would degrade every batch
+// holding a shell call — `go test` beside three reads — to serial.
+func NewBash(dir string) tool.Tool {
+	if dir == "" {
+		panic("builtin: bash needs the directory to run commands in, and the workspace root is it; " +
+			"an empty one leaves every relative path meaning whatever rasp's own working directory makes it")
+	}
+	return tool.New("bash", bashDescription, func(ctx context.Context, in BashInput) (tool.Result, error) {
+		return runBash(ctx, dir, in)
+	})
+}
 
-func runBash(ctx context.Context, in BashInput) (tool.Result, error) {
+func runBash(ctx context.Context, dir string, in BashInput) (tool.Result, error) {
 	if strings.TrimSpace(in.Command) == "" {
 		return tool.Result{IsError: true, Content: "bash was called with no command to run."}, nil
 	}
@@ -77,6 +92,7 @@ func runBash(ctx context.Context, in BashInput) (tool.Result, error) {
 
 	out := &lockedBuffer{}
 	cmd := exec.CommandContext(runCtx, "bash", "-c", in.Command)
+	cmd.Dir = dir
 	// One writer for both streams. The two file descriptors then name one pipe, so
 	// the OS interleaves them in the order the command wrote — a compiler error
 	// stays beside the file it came from. Draining two pipes separately gives all

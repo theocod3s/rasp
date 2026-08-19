@@ -44,6 +44,12 @@ type Config struct {
 	// turn runs; the running turn keeps the list it started with (design §3.3).
 	Tools *tool.Registry
 
+	// System is the system prompt as ordered blocks, from internal/prompt. Built
+	// once and sent on every request: it carries the cache breakpoint, so a caller
+	// that rebuilds it per turn re-bills the whole prefix (design §11). nil sends
+	// no system prompt.
+	System []llm.SystemBlock
+
 	// Model is the provider's own identifier, with no `provider/` prefix.
 	Model string
 
@@ -66,6 +72,7 @@ type Config struct {
 type Agent struct {
 	provider  llm.Provider
 	tools     *tool.Registry
+	system    []llm.SystemBlock
 	model     string
 	maxTokens int
 	maxSteps  int
@@ -106,6 +113,7 @@ func New(cfg Config) (*Agent, error) {
 	return &Agent{
 		provider:  cfg.Provider,
 		tools:     cfg.Tools,
+		system:    slices.Clone(cfg.System),
 		model:     cfg.Model,
 		maxTokens: cfg.MaxTokens,
 		maxSteps:  steps,

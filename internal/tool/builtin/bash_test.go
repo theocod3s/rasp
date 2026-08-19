@@ -62,6 +62,36 @@ func TestBashSaysSoWhenACommandPrintsNothing(t *testing.T) {
 	}
 }
 
+// A relative path has to mean the same file to bash as it does to read, edit and
+// the rest, and nothing but this test says so: every other bash test here names
+// its files absolutely, so the tool ran in rasp's own working directory for as
+// long as they were the only ones asking.
+func TestBashRunsCommandsInTheDirectoryItWasGiven(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "marker.txt"), []byte("inside the workspace\n"), 0o644); err != nil {
+		t.Fatalf("seeding the directory bash should run in: %v", err)
+	}
+
+	res := callBashIn(t, t.Context(), dir, BashInput{Command: "cat marker.txt"})
+
+	if res.IsError {
+		t.Fatalf("bash could not read a file sitting beside it in %s: %q", dir, res.Content)
+	}
+	if want := "inside the workspace\n"; res.Content != want {
+		t.Errorf("bash returned %q, want %q: a relative path is resolved against the directory the tool was built for", res.Content, want)
+	}
+}
+
+func TestBashRefusesTheDirectoryItCannotResolveRelativePathsAgainst(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("NewBash(\"\") returned a tool; a bash whose commands land wherever rasp was started " +
+				"disagrees with every file tool about what a relative path means")
+		}
+	}()
+	NewBash("")
+}
+
 func TestBashRefusesAnEmptyCommand(t *testing.T) {
 	res := callBash(t, t.Context(), BashInput{Command: "   \n"})
 
@@ -130,7 +160,7 @@ func TestBashTimeoutHasADefaultAndACeiling(t *testing.T) {
 // them from the constants the tool applies, so they can drift into telling the
 // model a limit that is not the one it will hit.
 func TestBashSchemaNamesTheTimeoutItApplies(t *testing.T) {
-	schema := Bash.Schema()
+	schema := NewBash(t.TempDir()).Schema()
 
 	properties, ok := schema["properties"].(map[string]any)
 	if !ok {
@@ -195,6 +225,7 @@ func TestBashCancelKillsTheWholeProcessGroup(t *testing.T) {
 	// group of its own, then the pid of the grandchild that outlives it.
 	command := fmt.Sprintf(`sleep 300 & printf '%%d\n%%d\n' "$$" "$!" > %q; wait`, pidFile)
 	args := bashArgs(t, BashInput{Command: command})
+	bash := NewBash(t.TempDir())
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -205,7 +236,7 @@ func TestBashCancelKillsTheWholeProcessGroup(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		res, err := Bash.Run(ctx, args)
+		res, err := bash.Run(ctx, args)
 		done <- outcome{res, err}
 	}()
 
@@ -459,7 +490,12 @@ func excerpt(s string) string {
 
 func callBash(t *testing.T, ctx context.Context, in BashInput) tool.Result {
 	t.Helper()
-	res, err := Bash.Run(ctx, bashArgs(t, in))
+	return callBashIn(t, ctx, t.TempDir(), in)
+}
+
+func callBashIn(t *testing.T, ctx context.Context, dir string, in BashInput) tool.Result {
+	t.Helper()
+	res, err := NewBash(dir).Run(ctx, bashArgs(t, in))
 	if err != nil {
 		t.Fatalf("bash returned a Go error, which is reserved for a tool that could not run at all: %v", err)
 	}

@@ -83,6 +83,7 @@ func (t *turn) step(ctx context.Context) (bool, error) {
 func (t *turn) call(ctx context.Context) (*llm.Message, []llm.ToolCall, error) {
 	req := llm.Request{
 		Model:     t.agent.model,
+		System:    t.agent.system,
 		Messages:  t.agent.Messages(),
 		Tools:     t.tools.Specs(),
 		MaxTokens: t.agent.maxTokens,

@@ -157,6 +157,35 @@ func TestTheTurnHoldsOneToolSnapshot(t *testing.T) {
 	}
 }
 
+// Every request, not only the first: a provider is sent the whole state each
+// time, so a system prompt that reached the opening call alone would leave the
+// model answering the second step of its own turn without one.
+func TestEveryRequestCarriesTheSystemPrompt(t *testing.T) {
+	system := []llm.SystemBlock{{Text: "you are rasp", Cache: true}, {Text: "Environment:\nPlatform: test"}}
+
+	p := fake.New(
+		fake.ToolCall("noop"),
+		fake.Done(llm.StopToolUse),
+		fake.Text("done"),
+		fake.Done(llm.StopEndTurn),
+	)
+
+	a := newAgent(t, agent.Config{Provider: p, Tools: registry(&stub{name: "noop"}), System: system})
+	if err := a.Send(context.Background(), "go"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	reqs := p.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("the provider was called %d time(s); the script holds two turns", len(reqs))
+	}
+	for i, req := range reqs {
+		if !slices.Equal(req.System, system) {
+			t.Errorf("request %d carries system blocks %v, want %v", i, req.System, system)
+		}
+	}
+}
+
 func TestTurnEndCarriesWhatEveryStepSpent(t *testing.T) {
 	p := fake.New(
 		fake.Usage(llm.Usage{Input: 10, Output: 2, CacheRead: 5}),
