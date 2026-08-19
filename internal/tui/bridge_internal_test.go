@@ -11,6 +11,7 @@ import (
 
 	"github.com/theocod3s/rasp/internal/agent"
 	"github.com/theocod3s/rasp/internal/llm"
+	"github.com/theocod3s/rasp/internal/tui/chat"
 )
 
 // settle is how long a test waits for something that should already have
@@ -239,7 +240,7 @@ func TestDetachCopiesTheAccumulationAnEventCarries(t *testing.T) {
 	live.Content[0].Text += "ing at it."
 	live.Content = append(live.Content, llm.Block{Type: llm.BlockText, Text: " And more."})
 
-	if got := spoken(*ev.Message); got != "Look" {
+	if got := (chat.Message{Content: *ev.Message}).Render(0); got != "Look" {
 		t.Errorf("the detached message reads %q after the provider went on writing; it read %q when "+
 			"it was taken", got, "Look")
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/theocod3s/rasp/internal/agent"
 	"github.com/theocod3s/rasp/internal/llm"
+	"github.com/theocod3s/rasp/internal/tui/chat"
 )
 
 // Turner is the agent as the UI drives it. An interface rather than
@@ -37,9 +38,12 @@ func (m Model) begin() (Model, tea.Cmd) {
 	m.input = ""
 	m.busy = true
 	m.err = nil
-	m.messages = append(m.messages, llm.Message{
-		Role:    llm.RoleUser,
-		Content: []llm.Block{{Type: llm.BlockText, Text: text}},
+	m.chat.Append(chat.Message{
+		Content: llm.Message{
+			Role:    llm.RoleUser,
+			Content: []llm.Block{{Type: llm.BlockText, Text: text}},
+		},
+		Done: true,
 	})
 
 	turner := m.turner
