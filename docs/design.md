@@ -1340,7 +1340,7 @@ last costs those ~60 tokens on every request and invalidates nothing. That trade
 1. mode preset resolves to allow?                    → allow
 2. mode preset resolves to deny?                     → deny (no prompt)
 3. config allow-list matches?                        → allow
-4. session grant for (tool, action, path) exists?    → allow
+4. session grant for (tool, action, path, command) exists? → allow
 5. otherwise → publish EventPermission, block on a channel, ask the user
 ```
 
@@ -1361,8 +1361,10 @@ different *kind* of statement from "auto," and collapsing it into the same mecha
 exactly the bug where a stray config override makes yolo unexpectedly prompt.
 
 Crush's ladder otherwise, plus modes at rungs 1–2 ([findings.md](findings.md)).
-Grants are keyed by path, so "always allow writes in `internal/`" does not silently cover
-`~/.ssh`, and they are session-scoped and in-memory — they do not persist across restarts.
+Grants are keyed by path *and* command, so "always allow writes in `internal/`" does not
+silently cover `~/.ssh` — and one approved `rm -rf dist` does not cover every command bash is
+ever handed, which is what a path-only key would mean for a tool that has no path. They are
+session-scoped and in-memory — they do not persist across restarts.
 
 ### 7.8 TUI
 
