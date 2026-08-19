@@ -1,7 +1,9 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -40,13 +42,26 @@ func project(msg *llm.Message, acc *sdk.Message) error {
 			continue
 		}
 		if at < len(msg.Content) {
-			msg.Content[at] = block
+			msg.Content[at] = keepArguments(msg.Content[at], block)
 		} else {
 			msg.Content = append(msg.Content, block)
 		}
 		at++
 	}
 	return nil
+}
+
+// keepArguments holds on to arguments the SDK threw away. A tool_use block that
+// closes holding JSON the accumulator cannot marshal — a call the output limit cut
+// mid-object — has its input replaced with `{}` so the block stays sendable. rasp
+// wants the fragment: llm.Block.Arguments makes that substitution at the point of
+// sending instead, and taking it here would rewrite content already streamed,
+// which the stream contract refuses because a consumer has drawn it.
+func keepArguments(was, now llm.Block) llm.Block {
+	if now.Type == llm.BlockToolUse && string(now.Input) == "{}" && len(was.Input) > 0 && !json.Valid(was.Input) {
+		now.Input = was.Input
+	}
+	return now
 }
 
 // projectBlock maps one wire block: a value, or false for one deliberately
@@ -73,6 +88,13 @@ func projectBlock(block *sdk.ContentBlockUnion) (llm.Block, bool, error) {
 		return llm.Block{Type: llm.BlockText, Text: block.Text}, true, nil
 	case "thinking":
 		return llm.Block{Type: llm.BlockThinking, Text: block.Thinking}, true, nil
+	case "tool_use":
+		return llm.Block{
+			Type:  llm.BlockToolUse,
+			ID:    block.ID,
+			Name:  block.Name,
+			Input: block.Input,
+		}, true, nil
 	case "redacted_thinking":
 		// Encrypted reasoning. Dropped rather than refused because it is known to
 		// carry nothing drawable — the one type where silence loses nothing.
@@ -87,15 +109,79 @@ func neutralEvent(event sdk.MessageStreamEventUnion) (llm.Event, bool) {
 	switch event.Type {
 	case "message_start":
 		return llm.Event{Type: llm.EventMessageStart}, true
+	case "content_block_start":
+		if event.ContentBlock.Type == "tool_use" {
+			return llm.Event{Type: llm.EventToolInputStart}, true
+		}
 	case "content_block_delta":
 		switch event.Delta.Type {
 		case "text_delta":
 			return llm.Event{Type: llm.EventTextDelta, Delta: event.Delta.Text}, true
 		case "thinking_delta":
 			return llm.Event{Type: llm.EventThinkingDelta, Delta: event.Delta.Thinking}, true
+		case "input_json_delta":
+			return llm.Event{Type: llm.EventToolInputDelta, Delta: event.Delta.PartialJSON}, true
 		}
 	}
 	return llm.Event{}, false
+}
+
+// calls decides when each tool call is announced. Two rules, neither of which the
+// wire gives away on its own.
+//
+// A call is announced once its block has closed AND its arguments parse. Closing
+// is not enough: a turn the output limit cuts mid-arguments closes that block with
+// the same event a finished one gets, and the loop dispatches from the
+// announcement (design §4 invariant 2).
+//
+// Announcements follow BLOCK order, not stop order. The SDK documents stop events
+// interleaving across open blocks and addressing them by index, so block 1 can
+// close first — while results are answered in announcement order and persisted in
+// block order, so the two have to agree.
+type calls struct {
+	stopped map[string]bool // tool_use ids whose block has closed
+	at      int             // how far through Partial announcing has reached
+}
+
+func (c *calls) stop(block sdk.ContentBlockUnion) {
+	if block.Type != "tool_use" || block.ID == "" {
+		return
+	}
+	if c.stopped == nil {
+		c.stopped = map[string]bool{}
+	}
+	c.stopped[block.ID] = true
+}
+
+// ready is the calls whose turn it is to be announced, in block order. It walks
+// forward only: a block already announced, or passed over because its arguments
+// never finished, is never revisited.
+func (c *calls) ready(msg *llm.Message) []*llm.ToolCall {
+	var out []*llm.ToolCall
+	for ; c.at < len(msg.Content); c.at++ {
+		block := msg.Content[c.at]
+		if block.Type != llm.BlockToolUse {
+			continue
+		}
+		if !c.stopped[block.ID] {
+			return out
+		}
+		if !isArguments(block.Input) {
+			continue
+		}
+		// Cloned rather than aliased, for the reason llm.Event.ToolCall gives: each
+		// announcement is its own value, and the arguments are half of one.
+		out = append(out, &llm.ToolCall{ID: block.ID, Name: block.Name, Input: bytes.Clone(block.Input)})
+	}
+	return out
+}
+
+// isArguments reports whether the fragments have finished arriving. An object
+// rather than merely valid JSON, because `null` unmarshals into a struct as a
+// silent no-op and would run a tool with every argument zeroed.
+func isArguments(raw json.RawMessage) bool {
+	var obj map[string]any
+	return json.Unmarshal(raw, &obj) == nil && obj != nil
 }
 
 // terminalEvent ends a stream the server finished.
@@ -125,15 +211,14 @@ func terminalEvent(msg *llm.Message, reason sdk.StopReason) llm.Event {
 
 // stopReasons covers what a request built here can provoke. Everything else takes
 // the unsupported path above rather than a mapping that would read as success:
-// pause_turn needs a server-side tool, model_context_window_exceeded is a failure,
-// and tool_use would be the quietest of the three — projectBlock cannot represent
-// a tool_use block, so the loop would be told the model stopped to call a tool
-// with no call anywhere in the message.
+// pause_turn needs a server-side tool, and model_context_window_exceeded is a
+// failure with a fix the user has to act on.
 var stopReasons = map[sdk.StopReason]llm.StopReason{
 	sdk.StopReasonEndTurn:      llm.StopEndTurn,
 	sdk.StopReasonStopSequence: llm.StopEndTurn,
 	sdk.StopReasonMaxTokens:    llm.StopMaxTokens,
 	sdk.StopReasonRefusal:      llm.StopRefusal,
+	sdk.StopReasonToolUse:      llm.StopToolUse,
 }
 
 // errorEvent ends a stream that failed. Cancellation is separated out because

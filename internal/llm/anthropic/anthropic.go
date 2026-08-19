@@ -75,7 +75,10 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) llm.StreamResponse
 		stream := c.api.Messages.NewStreaming(ctx, params)
 		defer stream.Close()
 
-		var acc sdk.Message
+		var (
+			acc     sdk.Message
+			pending calls
+		)
 		for stream.Next() {
 			event := stream.Current()
 			if err := acc.Accumulate(event); err != nil {
@@ -87,16 +90,26 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) llm.StreamResponse
 				return
 			}
 
-			ev, ok := neutralEvent(event)
-			if !ok {
-				// A wire event with no neutral counterpart: a block opening or
-				// closing, a signature fragment, the stop reason. It moved Partial,
-				// which is all the contract asks of it.
+			// A wire event with no neutral counterpart — a text block opening, a
+			// signature fragment, the stop reason — still moved Partial, which is
+			// all the contract asks of it.
+			if ev, ok := neutralEvent(event); ok {
+				ev.Partial = msg
+				if !yield(ev) {
+					return
+				}
+			}
+			if event.Type != "content_block_stop" {
 				continue
 			}
-			ev.Partial = msg
-			if !yield(ev) {
-				return
+			// Indexed here rather than inside stop: Accumulate rejects a stop event
+			// addressing a block it has not seen, so the line after it returned nil
+			// is the one place the index is known good.
+			pending.stop(acc.Content[event.Index])
+			for _, call := range pending.ready(msg) {
+				if !yield(llm.Event{Type: llm.EventToolCall, ToolCall: call, Partial: msg}) {
+					return
+				}
 			}
 		}
 
