@@ -23,6 +23,18 @@ type PermissionSet struct {
 	Fetch Rule
 	Bash  PatternRules
 	MCP   PatternRules
+
+	// DenyRedirection refuses a command that sends its output into a file — `>`,
+	// `>>`, a pipe into tee — ahead of the pattern table, because a shell writes
+	// files with no write-looking command involved: `echo "package main" >
+	// auth.go` is matched by `echo*` and would otherwise be allowed (design
+	// §7.3a). A deny rather than an ask, since no read-only command needs it.
+	//
+	// It is a speed bump and not a proof, and nothing rasp says about it may
+	// imply otherwise. It reads the command text, so it stops a model reaching
+	// for `>` because that is the shortest way to write a file; it does not stop
+	// one set on getting past it, and enumerating the ways is a losing game.
+	DenyRedirection bool
 }
 
 // Compile checks a set and orders its patterns, once, so that resolving a call
@@ -64,12 +76,13 @@ func Compile(set PermissionSet) (Rules, error) {
 		return nil, err
 	}
 	return &compiledSet{
-		read:  set.Read,
-		write: set.Write,
-		edit:  set.Edit,
-		fetch: set.Fetch,
-		bash:  bash,
-		mcp:   mcp,
+		read:            set.Read,
+		write:           set.Write,
+		edit:            set.Edit,
+		fetch:           set.Fetch,
+		bash:            bash,
+		mcp:             mcp,
+		denyRedirection: set.DenyRedirection,
 	}, nil
 }
 
@@ -78,6 +91,7 @@ func Compile(set PermissionSet) (Rules, error) {
 type compiledSet struct {
 	read, write, edit, fetch Rule
 	bash, mcp                []pattern
+	denyRedirection          bool
 }
 
 // pattern is one glob, its rule, and the key it was sorted on.
@@ -143,6 +157,11 @@ func (c *compiledSet) Resolve(req Request) Rule {
 		// it everywhere else.
 		switch {
 		case req.Command != "":
+			// Ahead of the table, not inside it: the patterns a redirect hides
+			// behind are the ones this mode allows.
+			if _, denied := c.redirectionDenied(req); denied {
+				return RuleDeny
+			}
 			return matchRule(c.bash, req.Command)
 		case req.Tool != "":
 			return matchRule(c.mcp, req.Tool)
@@ -152,6 +171,17 @@ func (c *compiledSet) Resolve(req Request) Rule {
 	// command nor a tool: there is nothing here to match, and the answer to a
 	// question this cannot read is to put it to the user.
 	return RuleAsk
+}
+
+// Explain is the Explainer half of the seam: a set that refused for a reason it
+// can name says so, and one that refused by pattern has nothing to add beyond
+// the request the ladder already reports.
+func (c *compiledSet) Explain(req Request) string {
+	operator, denied := c.redirectionDenied(req)
+	if !denied {
+		return ""
+	}
+	return redirectionDenial(req, operator)
 }
 
 func matchRule(patterns []pattern, s string) Rule {

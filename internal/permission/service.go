@@ -26,6 +26,15 @@ type Rules interface {
 	Resolve(Request) Rule
 }
 
+// Explainer is a Rules that can say why it refused, for the denials where the
+// rule alone teaches nothing: a command turned away by a guard aimed at one
+// mistake has to tell the caller which mistake, and what to do instead. It is
+// consulted on a deny and on nothing else, and an empty string means the set has
+// nothing to add.
+type Explainer interface {
+	Explain(Request) string
+}
+
 // Prompter is the last rung. It publishes a request to whoever draws it and
 // returns immediately; the answer comes back through Resolve, from whichever
 // goroutine the user's keystroke lands on. Blocking inside Prompt holds the
@@ -169,10 +178,14 @@ func (s *Service) settled(req Request) (error, bool) {
 		return nil, true
 	}
 
-	switch rule := s.resolve(req); rule {
+	rule, why := s.resolve(req)
+	switch rule {
 	case RuleAllow:
 		return nil, true
 	case RuleDeny:
+		if why != "" {
+			return fmt.Errorf("%w: %s", ErrDenied, why), true
+		}
 		return fmt.Errorf("%w: the active mode does not allow %s", ErrDenied, req), true
 	case RuleAsk:
 		// Down to the rungs below.
@@ -207,12 +220,21 @@ func (s *Service) settled(req Request) (error, bool) {
 	return nil, false
 }
 
-func (s *Service) resolve(req Request) Rule {
-	rules := s.rules.Load()
-	if rules == nil {
-		return RuleAsk
+// resolve answers rungs 1 and 2, and on a deny the sentence that denial should
+// carry. One load of the pointer serves both, so a mode switched between them
+// cannot leave a refusal explained by the mode that did not make it.
+func (s *Service) resolve(req Request) (Rule, string) {
+	p := s.rules.Load()
+	if p == nil {
+		return RuleAsk, ""
 	}
-	return (*rules).Resolve(req)
+
+	rules := *p
+	rule := rules.Resolve(req)
+	if e, ok := rules.(Explainer); ok && rule == RuleDeny {
+		return rule, e.Explain(req)
+	}
+	return rule, ""
 }
 
 func (s *Service) ask(ctx context.Context, req Request) error {
