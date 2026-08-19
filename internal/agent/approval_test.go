@@ -114,8 +114,6 @@ func echoStub(name string) *stub {
 	}}
 }
 
-// ranTimes is how many times a tool the batch either ran or did not should have
-// been entered.
 func ranTimes(ran bool) int {
 	if ran {
 		return 1
@@ -127,24 +125,27 @@ func ranTimes(ran bool) int {
 // ahead of the call runs concurrently and finishes, then the question is put,
 // then that call runs on its own, then the rest of the batch carries on.
 //
-// The two meetings are what keep the split from being satisfied by running the
-// batch one call at a time: each pair has to overlap, and a dispatcher that
-// serialised everything to avoid the problem leaves both unmet.
+// The notes either side of the approved call are what say it ran alone —
+// everything before it had finished and nothing after it had started — and the
+// two meetings are what stop that being satisfied by running the whole batch one
+// call at a time: each pair has to overlap, and a dispatcher that serialised
+// everything to avoid the problem leaves both unmet.
 func TestAPromptSplitsTheBatchAtTheCallItIsAbout(t *testing.T) {
 	names := []string{"before1", "before2", "gated", "after1", "after2"}
 
 	var log timeline
 	first, second := newMeeting(2, neverWaited), newMeeting(2, neverWaited)
-	alone := newMeeting(1, neverWaited)
 
 	g := &gate{
 		asks: map[string]bool{"gated": true},
 		ask:  func(name string) { log.note(name + " asked") },
 	}
+	// The approved call's own meeting is one wide, so it never waits: what it is
+	// here for is the notes around it.
 	tools := []tool.Tool{
 		noted(&log, first, "before1"),
 		noted(&log, first, "before2"),
-		noted(&log, alone, "gated"),
+		noted(&log, newMeeting(1, neverWaited), "gated"),
 		noted(&log, second, "after1"),
 		noted(&log, second, "after2"),
 	}
@@ -176,10 +177,6 @@ func TestAPromptSplitsTheBatchAtTheCallItIsAbout(t *testing.T) {
 				"a partition runs its calls together, and one call per group is not a split but a "+
 				"serial batch", m.name, peak, waited)
 		}
-	}
-	if peak, _, _ := alone.peaked(); peak != 1 {
-		t.Errorf("%d calls were running while the approved one was; it runs in a partition of its "+
-			"own", peak)
 	}
 
 	if got := g.asked(); !slices.Equal(got, names) {
@@ -288,7 +285,7 @@ func TestAGateThatAsksNothingLeavesTheBatchWhole(t *testing.T) {
 }
 
 // TestANameTheSnapshotDoesNotHoldIsNeverPutToTheUser: the call is resolved
-// before it is gated (design §5 step 7), so a tool the model invented is
+// before it is gated (design §4 step 7), so a tool the model invented is
 // answered by the loop rather than turned into a question about nothing — and
 // into a barrier the rest of the batch waits behind.
 func TestANameTheSnapshotDoesNotHoldIsNeverPutToTheUser(t *testing.T) {
@@ -319,7 +316,11 @@ func TestANameTheSnapshotDoesNotHoldIsNeverPutToTheUser(t *testing.T) {
 // model can act on, not a failure of the turn, so it comes back as an error
 // result naming the reason and the rest of the batch carries on (design §3.4).
 func TestACallTheGateRefusesIsAnsweredWithoutRunning(t *testing.T) {
-	names := []string{"allowed", "refused", "denied"}
+	// The refusal that asked nobody comes last, behind a call still waiting for a
+	// partition to run in: a refusal is announced the moment it is decided, and
+	// the events below are the check that "the moment" is not ahead of the calls
+	// the model asked for first.
+	names := []string{"refused", "allowed", "denied"}
 
 	stubs := make([]*stub, len(names))
 	tools := make([]tool.Tool, len(names))

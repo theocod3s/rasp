@@ -113,6 +113,10 @@ func (t *turn) dispatch(ctx context.Context, calls []pendingCall, results []*too
 			if ctx.Err() != nil {
 				break
 			}
+			// Flushed for the announcement rather than for the refusal: what the
+			// model asked for first has to report first, and a refusal drawn while
+			// the calls ahead of it have not started puts its card above theirs.
+			flush()
 			results[i] = t.refuse(call, err)
 			continue
 		}
@@ -157,7 +161,7 @@ func (t *turn) runGroup(ctx context.Context, calls []pendingCall, group []int, r
 }
 
 // gated reports whether the approver decides this call at all. Resolving the
-// name comes first (design §5 step 7): one the snapshot does not hold runs
+// name comes first (design §4 step 7): one the snapshot does not hold runs
 // nothing whatever the answer is, so putting it to the user is a question about
 // nothing — and a barrier the rest of the batch would wait behind.
 func (t *turn) gated(call pendingCall) bool {
@@ -185,8 +189,8 @@ func (t *turn) approve(ctx context.Context, call pendingCall) error {
 func (t *turn) refuse(call pendingCall, err error) *tool.Result {
 	res := &tool.Result{
 		IsError: true,
-		Content: fmt.Sprintf("%s was not run: %v. The same call again is refused the same way — say "+
-			"what it was needed for, or take an approach that does not need it.", call.name, err),
+		Content: fmt.Sprintf("%s was not run: %v. Retrying it unchanged does not change what refused "+
+			"it — say what it was needed for, or take an approach that does not need it.", call.name, err),
 	}
 	t.emit(call.event(EventToolStart, nil))
 	t.emit(call.event(EventToolEnd, res))
