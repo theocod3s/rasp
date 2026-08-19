@@ -16,6 +16,7 @@ import (
 	"github.com/theocod3s/rasp/internal/llm"
 	"github.com/theocod3s/rasp/internal/llm/fake"
 	"github.com/theocod3s/rasp/internal/tool"
+	"github.com/theocod3s/rasp/internal/tui/chat"
 )
 
 // TestEnterHandsTheTurnToACommandRatherThanRunningIt is design §6 rule 1 at the
@@ -49,7 +50,7 @@ func TestEnterHandsTheTurnToACommandRatherThanRunningIt(t *testing.T) {
 	if m.cancel == nil {
 		t.Error("no cancel func on the model, so an interrupt has nothing to call (design §6 rule 7)")
 	}
-	if frame := m.View().Content; !strings.Contains(frame, caret+"fix the auth test") {
+	if frame := m.View().Content; !strings.Contains(frame, chat.Caret+"fix the auth test") {
 		t.Errorf("the frame does not show the prompt that was just sent:\n%s", frame)
 	}
 
@@ -96,7 +97,7 @@ func TestEscCancelsTheTurnAndTheUIStaysQuietAboutIt(t *testing.T) {
 	}
 	// The prompt survives the interruption: a cancelled turn is part of the
 	// conversation, not something taken back off the screen.
-	if frame := m.View().Content; !strings.Contains(frame, caret+"read every file") {
+	if frame := m.View().Content; !strings.Contains(frame, chat.Caret+"read every file") {
 		t.Errorf("the interrupted turn's prompt is gone from the frame:\n%s", frame)
 	}
 }
@@ -161,14 +162,14 @@ func TestASecondPromptWhileATurnRunsIsNotSent(t *testing.T) {
 	started(t, turner.started)
 
 	m = typed(m, "second")
-	sent := len(m.messages)
+	sent := m.chat.Len()
 	m, second := m.press(key(tea.KeyEnter))
 
 	if second != nil {
 		t.Error("a second turn was started while the first was still running")
 	}
-	if len(m.messages) != sent {
-		t.Errorf("the conversation grew to %d message(s); nothing was sent", len(m.messages))
+	if m.chat.Len() != sent {
+		t.Errorf("the conversation grew to %d item(s); nothing was sent", m.chat.Len())
 	}
 	// And the text is still there to send once the turn ends, rather than eaten
 	// by a keystroke that did nothing.

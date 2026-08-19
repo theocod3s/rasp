@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/theocod3s/rasp/internal/agent"
 	"github.com/theocod3s/rasp/internal/llm"
+	"github.com/theocod3s/rasp/internal/tui/chat"
 )
 
 // Model is the root Bubble Tea model.
@@ -33,28 +35,34 @@ type Model struct {
 	// input is what the user has typed and not yet sent.
 	input string
 
-	// messages is the conversation so far — the user's prompts and the
-	// assistant's finished replies; streaming is the one still arriving, held
-	// apart because it is replaced wholesale on every delta and committed only
-	// when the step ends.
-	messages  []llm.Message
+	// chat is the conversation and its render cache. Items land here as their
+	// events arrive, which is what keeps a reply, the tools it asked for and the
+	// next reply in the order they happened.
+	chat chat.View
+
+	// replies counts the assistant messages that have finished, and so names the
+	// one still arriving: every delta of a step replaces the same item, and the
+	// next step's deltas start a new one.
+	replies int
+
+	// streaming is the reply the current step is still receiving, kept because
+	// the turn may end without one: an interrupted or failed step never reaches
+	// its assistant_end (agent/step.go), and settle needs what the user is
+	// already looking at.
 	streaming *llm.Message
 
-	calls []toolCall
-	busy  bool
-	err   error
+	busy bool
+	err  error
 }
 
 func newModel(ctx context.Context, turner Turner) Model {
 	return Model{ctx: ctx, turner: turner}
 }
 
-type toolCall struct {
-	id     string
-	name   string
-	done   bool
-	failed bool
-}
+// replyKey and callKey are prefixed so that no provider call id can name an
+// assistant message, whatever a server chooses to put in one.
+func replyKey(n int) string    { return "reply/" + strconv.Itoa(n) }
+func callKey(id string) string { return "call/" + id }
 
 func (m Model) Init() tea.Cmd { return nil }
 
@@ -106,72 +114,69 @@ func backspace(s string) string {
 func (m Model) apply(ev agent.Event) Model {
 	switch ev.Kind {
 	case agent.EventAssistantDelta:
-		m.streaming, m.busy = ev.Message, true
+		m.busy = true
+		if ev.Message != nil {
+			m.streaming = ev.Message
+			m.chat.Set(replyKey(m.replies), chat.Message{Content: *ev.Message})
+		}
 
 	case agent.EventAssistantEnd:
-		m.streaming = nil
 		if ev.Message != nil {
-			m.messages = append(m.messages, *ev.Message)
+			m.chat.Set(replyKey(m.replies), chat.Message{Content: *ev.Message, Done: true})
 		}
+		m.streaming = nil
+		m.replies++
 
 	case agent.EventToolStart:
-		m.calls = append(m.calls, toolCall{id: ev.CallID, name: ev.Tool})
+		m.chat.Set(callKey(ev.CallID), chat.Call{Name: ev.Tool})
 
 	case agent.EventToolEnd:
-		for i := range m.calls {
-			if m.calls[i].id == ev.CallID {
-				m.calls[i].done = true
-				m.calls[i].failed = ev.Result != nil && ev.Result.IsError
-			}
-		}
+		m.chat.Set(callKey(ev.CallID), chat.Call{
+			Name:   ev.Tool,
+			Done:   true,
+			Failed: ev.Result != nil && ev.Result.IsError,
+		})
 
 	case agent.EventError:
 		m = m.report(ev.Err)
 
 	case agent.EventTurnEnd:
 		m.busy = false
+		m = m.settle()
 	}
+	return m
+}
+
+// settle closes off a reply the turn ended in the middle of. Two things go
+// wrong otherwise: the item is never finished, so every frame draws it again
+// for the rest of the session, and its key stays live, so the next turn's first
+// delta lands on it — drawing the new reply above the prompt that asked for it.
+//
+// On the turn's end and nowhere else. It is the last event a turn emits, where
+// turnDone is a separate route into Update that can arrive before the events
+// still in the pump; settling there would freeze a fragment and leave the real
+// assistant_end to draw the reply a second time.
+func (m Model) settle() Model {
+	if m.streaming == nil {
+		return m
+	}
+	m.chat.Set(replyKey(m.replies), chat.Message{Content: *m.streaming, Done: true})
+	m.streaming = nil
+	m.replies++
 	return m
 }
 
 func (m Model) View() tea.View {
 	var b strings.Builder
-	for _, msg := range m.messages {
-		line := spoken(msg)
-		if msg.Role == llm.RoleUser && line != "" {
-			line = caret + line
-		}
-		writeLine(&b, line)
-	}
-	if m.streaming != nil {
-		writeLine(&b, spoken(*m.streaming))
-	}
-	for _, call := range m.calls {
-		writeLine(&b, call.line())
-	}
+	b.WriteString(m.chat.Render(m.width))
 	if m.err != nil {
 		writeLine(&b, "error: "+m.err.Error())
 	}
 	if m.busy {
 		writeLine(&b, "working…")
 	}
-	b.WriteString(caret + m.input)
+	b.WriteString(chat.Caret + m.input)
 	return tea.NewView(b.String())
-}
-
-// caret marks the input line and the messages sent from it alike, so a
-// conversation of two speakers reads as one.
-const caret = "› "
-
-func (c toolCall) line() string {
-	switch {
-	case !c.done:
-		return c.name + ": running"
-	case c.failed:
-		return c.name + ": failed"
-	default:
-		return c.name + ": done"
-	}
 }
 
 func writeLine(b *strings.Builder, s string) {
@@ -180,16 +185,4 @@ func writeLine(b *strings.Builder, s string) {
 	}
 	b.WriteString(s)
 	b.WriteString("\n")
-}
-
-// spoken is the part of a message a reader is meant to see. Thinking is left out
-// and tool blocks get a line of their own.
-func spoken(msg llm.Message) string {
-	var b strings.Builder
-	for _, block := range msg.Content {
-		if block.Type == llm.BlockText {
-			b.WriteString(block.Text)
-		}
-	}
-	return b.String()
 }

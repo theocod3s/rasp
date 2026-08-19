@@ -53,8 +53,13 @@ func TestStreamingIntoARunningProgramMutatesOnlyInUpdate(t *testing.T) {
 		streamed int
 	)
 	watch := func(model tea.Model, msg tea.Msg) tea.Msg {
-		if root, ok := model.(Model); ok && root.streaming != nil {
-			streamed = max(streamed, len(spoken(*root.streaming)))
+		// The longest *incomplete* reply the conversation ever drew. Taking the
+		// longest of any would count the finished one and pass on a UI that never
+		// saw a delta at all.
+		if root, ok := model.(Model); ok {
+			if drawn := len(strings.TrimSuffix(root.chat.Render(0), "\n")); drawn < len(want) {
+				streamed = max(streamed, drawn)
+			}
 		}
 		if ev, ok := msg.(agentMsg); ok && ev.event.Kind == agent.EventTurnEnd {
 			close(ended)
@@ -120,11 +125,11 @@ func TestStreamingIntoARunningProgramMutatesOnlyInUpdate(t *testing.T) {
 
 	// Without this the test passes on a bridge that delivers nothing at all,
 	// which is the one outcome that is trivially race-free.
-	if len(final.messages) != 1 {
-		t.Fatalf("the UI holds %d finished reply(s) and the turn produced 1", len(final.messages))
+	if final.chat.Len() != 1 {
+		t.Fatalf("the conversation holds %d item(s) and the turn produced one reply", final.chat.Len())
 	}
-	if got := spoken(final.messages[0]); got != want {
-		t.Fatalf("the UI holds a reply of %d characters and the model streamed %d", len(got), len(want))
+	if got := strings.TrimSuffix(final.chat.Render(0), "\n"); got != want {
+		t.Fatalf("the UI drew a reply of %d characters and the model streamed %d", len(got), len(want))
 	}
 	if final.busy {
 		t.Error("the UI is still busy after the turn ended")
