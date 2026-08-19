@@ -8,6 +8,8 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.63.1
 	github.com/aymanbagabas/go-udiff v0.4.1
 	github.com/bmatcuk/doublestar/v4 v4.10.0
+	github.com/charmbracelet/x/exp/golden v0.0.0-20251109135125-8916d276318f
+	github.com/charmbracelet/x/exp/teatest/v2 v2.0.0-20260816001655-68d539dca504
 	github.com/openai/openai-go/v3 v3.52.0
 	github.com/spf13/cobra v1.10.2
 	github.com/tidwall/jsonc v0.3.3
