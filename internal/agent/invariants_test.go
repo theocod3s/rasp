@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/theocod3s/rasp/internal/agent"
 	"github.com/theocod3s/rasp/internal/llm"
@@ -100,6 +101,11 @@ func TestCancellingAnywhereInAMultiStepTurnLeavesAValidTranscript(t *testing.T) 
 // sketch: the batch stops where the cancellation caught it, and the calls behind
 // that point are committed already answered rather than left for a later request
 // to trip over.
+//
+// The batch is a serial one, because that is where "behind that point" names
+// anything: a concurrent batch has every call in flight before the first of them
+// can cancel, so which ones ran is a property of the scheduler. The concurrent
+// half of this rule is the test below.
 func TestCancellingMidBatchAnswersTheCallsThatNeverRan(t *testing.T) {
 	names := []string{"one", "two", "three"}
 
@@ -108,16 +114,16 @@ func TestCancellingMidBatchAnswersTheCallsThatNeverRan(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			stubs := make([]*stub, len(names))
+			stubs := make([]*serialStub, len(names))
 			tools := make([]tool.Tool, len(names))
 			for i, name := range names {
 				stops := i == stopAt
-				stubs[i] = &stub{name: name, run: func(context.Context, json.RawMessage) (tool.Result, error) {
+				stubs[i] = &serialStub{&stub{name: name, run: func(context.Context, json.RawMessage) (tool.Result, error) {
 					if stops {
 						cancel()
 					}
 					return tool.Result{Content: name + " ran"}, nil
-				}}
+				}}}
 				tools[i] = stubs[i]
 			}
 
@@ -146,7 +152,7 @@ func TestCancellingMidBatchAnswersTheCallsThatNeverRan(t *testing.T) {
 				if ran {
 					want = 1
 				}
-				if got := len(stubs[i].calls); got != want {
+				if got := len(stubs[i].calls()); got != want {
 					t.Errorf("%s ran %d time(s) and should have run %d; the cancellation landed on %s",
 						names[i], got, want, stopper)
 				}
@@ -159,6 +165,87 @@ func TestCancellingMidBatchAnswersTheCallsThatNeverRan(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestACancelledConcurrentBatchKeepsWhatFinishedAndAnswersTheRest is the same
+// rule where the batch is running all at once. The cancellation lands while the
+// cap's worth of calls are in flight, so what "stopped where it caught it" means
+// here is: everything already running finishes and its result is kept, and the
+// call still queued for a slot never starts and is answered as interrupted.
+//
+// The batch is one call wider than the cap and the interrupt is fired from inside
+// the barrier, at the moment the last of the cap arrives and before any of them
+// is released. That is what makes the last call's fate a fact rather than a
+// race: it cannot hold a slot while the others do, and by the time one frees the
+// turn is already cancelled.
+func TestACancelledConcurrentBatchKeepsWhatFinishedAndAnswersTheRest(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	m := newMeeting(agent.MaxParallelTools, 2*time.Second)
+	m.full = cancel
+
+	names := make([]string, agent.MaxParallelTools+1)
+	tools := make([]tool.Tool, len(names))
+	stubs := make([]*stub, len(names))
+	for i := range names {
+		names[i] = fmt.Sprintf("call%d", i)
+		stubs[i] = m.attendee(names[i])
+		tools[i] = stubs[i]
+	}
+
+	var script []fake.Step
+	for i, name := range names {
+		script = append(script, fake.ToolCall(name, fmt.Sprintf(`{"n":%d}`, i)))
+	}
+	// A second turn nobody should reach, so a loop that carried on past the
+	// cancellation fails the count below rather than panicking the fake.
+	script = append(script, fake.Done(llm.StopToolUse), fake.Text("all done"), fake.Done(llm.StopEndTurn))
+
+	p := fake.New(script...)
+	a := newAgent(t, agent.Config{Provider: p, Tools: registry(tools...)})
+
+	if err := a.Send(ctx, "go"); !errors.Is(err, agent.ErrInterrupted) {
+		t.Fatalf("Send returned %v; the turn was cancelled while its batch ran", err)
+	}
+	if got := len(p.Requests()); got != 1 {
+		t.Errorf("the provider was called %d time(s); a cancelled turn takes no further step", got)
+	}
+	if peak, _, _ := m.peaked(); peak != agent.MaxParallelTools {
+		t.Fatalf("%d calls were in flight when the interrupt fired; it fires from the barrier, so "+
+			"anything else means the batch was never full and this test proved nothing about the "+
+			"call left queued", peak)
+	}
+	msgs := a.Messages()
+	wantPaired(t, msgs, len(names))
+
+	// Which call is the queued one is not fixed, and pinning it would be wrong
+	// rather than merely brittle: a semaphore hands out slots to whichever
+	// goroutine the scheduler runs, not in the order the batch spawned them. What
+	// is fixed is the count either side, and that every answer sits at the index
+	// of the call it belongs to.
+	var ran, unrun int
+	for i, block := range answers(t, msgs) {
+		switch {
+		case !block.IsError && block.Content == names[i]+" ran":
+			ran++
+			if got := len(stubs[i].calls()); got != 1 {
+				t.Errorf("%s was answered with its own result and ran %d time(s)", names[i], got)
+			}
+		case block.IsError && strings.Contains(block.Content, "interrupted"):
+			unrun++
+			if got := len(stubs[i].calls()); got != 0 {
+				t.Errorf("%s was answered as interrupted and ran %d time(s)", names[i], got)
+			}
+		default:
+			t.Errorf("call %d (%s) was answered with %q (error: %t); a call either kept the result it "+
+				"finished or says the user stopped it", i, names[i], block.Content, block.IsError)
+		}
+	}
+	if ran != agent.MaxParallelTools || unrun != 1 {
+		t.Errorf("%d call(s) kept a result and %d were answered as interrupted; the cap's worth were in "+
+			"flight and had to finish, and the one still queued for a slot had to not start", ran, unrun)
 	}
 }
 
@@ -363,9 +450,9 @@ func TestAStepIsCommittedWholeOrNotAtAll(t *testing.T) {
 	if err := a.Send(context.Background(), "go"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	if len(second.calls) != 1 {
+	if len(second.calls()) != 1 {
 		t.Fatalf("the second tool ran %d time(s), so nothing was read part way through a step and this "+
-			"test examined an empty transcript", len(second.calls))
+			"test examined an empty transcript", len(second.calls()))
 	}
 
 	// One call, not two: the second step's reply is still uncommitted while its

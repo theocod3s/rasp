@@ -189,8 +189,8 @@ func TestATruncatedReplyRunsNoneOfItsCalls(t *testing.T) {
 				t.Fatalf("Send: %v", err)
 			}
 
-			if len(write.calls) != 0 {
-				t.Errorf("write ran %d time(s) from a truncated reply, on %s", len(write.calls), write.calls)
+			if ran := write.calls(); len(ran) != 0 {
+				t.Errorf("write ran %d time(s) from a truncated reply, on %s", len(ran), ran)
 			}
 			wantPaired(t, a.Messages(), len(c.calls))
 
@@ -345,8 +345,8 @@ func TestCancellingMidStreamAnswersTheCallItWasMaking(t *testing.T) {
 	if err := a.Send(ctx, "go"); !errors.Is(err, agent.ErrInterrupted) {
 		t.Fatalf("Send returned %v; the stream was cancelled part way", err)
 	}
-	if len(never.calls) != 0 {
-		t.Errorf("never ran %d time(s); a cancelled turn dispatches nothing", len(never.calls))
+	if len(never.calls()) != 0 {
+		t.Errorf("never ran %d time(s); a cancelled turn dispatches nothing", len(never.calls()))
 	}
 	msgs := a.Messages()
 	wantPaired(t, msgs, 1)
