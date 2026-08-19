@@ -2,20 +2,20 @@
 # YAML, so the sequence has one definition and a green `just ci` locally means a green pipeline.
 name: CI
 
+# Pull requests only, deliberately: every commit reaches main by squash-merging a PR whose
+# run already certified this exact tree, so a second run on the push would spend the same
+# minutes proving the same thing. The trade is that main itself carries no verdict of its
+# own — worth revisiting when the repo is public and minutes are free.
 on:
-  push:
-    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
-# A newer push to the same PR makes the in-flight run irrelevant. Never cancel a main run,
-# though: two PRs merged in quick succession would leave the first commit with no verdict,
-# and that is exactly the commit a later bisect or release tag needs a signal for.
+# A newer push to the same PR makes the in-flight run irrelevant.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   # Tests run on linux only. The repo is private, where macOS runners bill at 10x the minute
