@@ -407,3 +407,60 @@ func TestResultsComeBackInTheOrderTheModelAskedFor(t *testing.T) {
 		t.Errorf("the results arrived as %d block(s) in one message; three calls are answered together", got)
 	}
 }
+
+// TestABatchThatFinishesBackwardsAnswersInTheOrderItWasAsked runs the same rule at
+// the completion order that breaks it: the last call the model asked for returns
+// first and the first returns last, held there by each other rather than by a
+// clock. A result belongs to the call at its own index, so nothing about the
+// transcript moves.
+//
+// The failure this rules out is quiet rather than loud. Results appended as they
+// complete still produce one tool_result per tool_use in block order — the blocks
+// come from the message, not from the batch — so what a provider receives is a
+// batch of answers each attached to the wrong call, and every count still adds up.
+func TestABatchThatFinishesBackwardsAnswersInTheOrderItWasAsked(t *testing.T) {
+	names := []string{"alpha", "beta", "gamma", "delta", "epsilon"}
+
+	b := newBackwards(len(names), neverWaited)
+	tools := make([]tool.Tool, len(names))
+	for i, name := range names {
+		tools[i] = b.attendee(i, name)
+	}
+
+	p := fake.New(batch(names...)...)
+	a := newAgent(t, agent.Config{Provider: p, Tools: registry(tools...)})
+	if err := a.Send(context.Background(), "go"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	// Asserted rather than assumed: a batch that finished in request order would
+	// satisfy everything below whatever dispatch did with the results, which is the
+	// quietest way for this test to stop testing anything.
+	reversed := slices.Clone(names)
+	slices.Reverse(reversed)
+	if order, stalled := b.finished(); stalled != 0 || !slices.Equal(order, reversed) {
+		t.Fatalf("the calls returned in the order %v, %d of them only after waiting %s alone; this test "+
+			"is the assertion that %v changes nothing, and it ran something else", order, stalled, neverWaited, reversed)
+	}
+
+	want := make([]string, len(names))
+	for i, name := range names {
+		want[i] = name + " ran"
+	}
+
+	msgs := a.Messages()
+	wantPaired(t, msgs, len(names))
+	if got := contents(answers(t, msgs)); !slices.Equal(got, want) {
+		t.Errorf("the committed results read\n\t%v\nand the model asked in the order\n\t%v", got, want)
+	}
+
+	// And what the model is actually handed, which is what a provider matches
+	// against its tool_use sequence. A result committed but never sent is silence.
+	sent := p.Requests()
+	if len(sent) != 2 {
+		t.Fatalf("the provider was called %d time(s); the batch's answers go back in a second request", len(sent))
+	}
+	if got := contents(answers(t, sent[1].Messages)); !slices.Equal(got, want) {
+		t.Errorf("the request carried the results\n\t%v\nagainst tool_use blocks in the order\n\t%v", got, want)
+	}
+}

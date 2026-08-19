@@ -161,6 +161,76 @@ func (m *meeting) peaked() (peak, alone int, order []string) {
 	return m.peak, m.alone, slices.Clone(m.order)
 }
 
+// backwards is a batch that finishes in reverse: the call the model asked for
+// last returns first, and each earlier one only once the call behind it has
+// returned. Where meeting answers "did these overlap?", this fixes the order they
+// complete in — the input a result slice is not allowed to be sensitive to — and
+// it rests on no clock either, because each call waits on the call behind it
+// rather than on a duration. wait is the deadline on a wait that should never
+// happen: a batch running its calls one at a time in request order can never
+// finish backwards, so the call left waiting reports itself through stalled
+// rather than hanging the run.
+type backwards struct {
+	wait    time.Duration
+	arrived chan struct{}   // closed once every call of the batch is in flight
+	done    []chan struct{} // done[i] closes as call i returns
+
+	mu       sync.Mutex
+	inFlight int
+	order    []string
+	stalled  int
+}
+
+func newBackwards(n int, wait time.Duration) *backwards {
+	b := &backwards{wait: wait, arrived: make(chan struct{}), done: make([]chan struct{}, n)}
+	for i := range b.done {
+		b.done[i] = make(chan struct{})
+	}
+	return b
+}
+
+// attendee is the tool for call i of the batch.
+func (b *backwards) attendee(i int, name string) *stub {
+	return &stub{name: name, run: func(context.Context, json.RawMessage) (tool.Result, error) {
+		b.mu.Lock()
+		b.inFlight++
+		full := b.inFlight == len(b.done)
+		b.mu.Unlock()
+		if full {
+			close(b.arrived)
+		}
+
+		// The last call waits for the whole batch to be in flight; every earlier one
+		// waits for the call behind it, which cannot have returned any sooner.
+		gate := b.arrived
+		if i+1 < len(b.done) {
+			gate = b.done[i+1]
+		}
+		timer := time.NewTimer(b.wait)
+		defer timer.Stop()
+		select {
+		case <-gate:
+		case <-timer.C:
+			b.mu.Lock()
+			b.stalled++
+			b.mu.Unlock()
+		}
+
+		b.mu.Lock()
+		b.order = append(b.order, name)
+		b.mu.Unlock()
+		close(b.done[i])
+		return tool.Result{Content: name + " ran"}, nil
+	}}
+}
+
+// finished is the order the calls returned in, and how many gave up waiting.
+func (b *backwards) finished() (order []string, stalled int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.order), b.stalled
+}
+
 // recorder collects the turn's events. They arrive on the goroutine running the
 // turn, so a test reads them once Send has returned.
 type recorder struct{ events []agent.Event }
