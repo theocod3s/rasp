@@ -23,15 +23,19 @@ var allowedImports = []string{
 	"context",
 	"errors",
 	"fmt",
+	"maps",
+	"slices",
+	"strings",
 	"sync",
 	"sync/atomic",
+	"unicode/utf8",
 }
 
 // minSources is what this package holds today. The walk below covers
 // subdirectories as well, so the floor only has to be low enough not to need
 // raising with every new file and high enough that a package emptied, renamed
 // or moved out from under the test fails instead of passing on nothing.
-const minSources = 3
+const minSources = 5
 
 func TestGrantsHaveNowhereToPersistTo(t *testing.T) {
 	fset := token.NewFileSet()
