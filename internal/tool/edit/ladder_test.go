@@ -159,26 +159,16 @@ func TestNoMatchFallsThrough(t *testing.T) {
 // lines against the normalized rung's line-by-line scan — so an off-by-one in
 // either shows up as a disagreement rather than as agreement about the wrong
 // bytes.
+//
+// The seed set is the golden corpus, so a case added there is a starting point
+// the fuzzer mutates from without anyone remembering to copy it.
 func FuzzApply(f *testing.F) {
-	f.Add("package main\n\nfunc main() {}\n", "main() {}", "main() { run() }", false)
-	f.Add(twice, "8080", "9090", true)
-	f.Add(twice, "8080", "9090", false)
-	f.Add("aaa", "aa", "b", false)
-	f.Add("", "x", "y", false)
-	f.Add("x", "x", "", false)
-	f.Add("\t\tif err != nil {\n", "\t\tif err != nil {\n", "\t\tif err == nil {\n", false)
-	f.Add("func f() {\n\tif x {\n\t\treturn 1\n\t}\n}\n",
-		"    if x {\n        return 1\n    }", "    if x {\n        return 2\n    }", false)
-	f.Add("\tport := 8080\n", "port := 8080  ", "port := 9090", false)
-	f.Add("a\r\nb\r\nc\r\n", "  b", "B", false)
-	// Four spaces against the file's tabs: "p := 1" on its own is found twice byte
-	// for byte, inside the indentation of both lines, and never reaches the rung
-	// this seed is for.
-	f.Add("func a() {\n\tp := 1\n}\n\nfunc b() {\n\t\tp := 1\n}\n", "    p := 1", "    p := 2", true)
-	f.Add("func a() {\n\tp := 1\n}\n\nfunc b() {\n\t\tp := 1\n}\n", "    p := 1", "    p := 2", false)
-	f.Add("x\ny\nz\n", "   \n", "q", false)
-	f.Add("one\ntwo\nthree\n", "one\nTWO\nthree", "1\n2\n3", false)
-	f.Add("keep\n\tdrop\nkeep\n", "    drop\n", "", false)
+	if len(corpus) == 0 {
+		f.Fatal("the corpus is empty, so the fuzzer starts from nothing but its own defaults")
+	}
+	for _, c := range corpus {
+		f.Add(c.src, c.old, c.new, c.replaceAll)
+	}
 
 	f.Fuzz(func(t *testing.T, src, old, new string, replaceAll bool) {
 		rep, err := edit.Apply(src, old, new, replaceAll)
