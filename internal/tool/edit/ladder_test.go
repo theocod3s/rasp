@@ -2,6 +2,7 @@ package edit_test
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -130,13 +131,6 @@ func TestNoMatchFallsThrough(t *testing.T) {
 		"text is not there": {
 			src: "a\nb\n", old: "c", want: edit.ErrNotFound,
 		},
-		"whitespace differs": {
-			// The rung that would accept this is the normalized one, so until it
-			// exists a whitespace mismatch has to leave the ladder as a clean miss
-			// rather than as a match with the indentation guessed.
-			src: "if x {\n\treturn 1\n}\n", old: "    return 1", new: "    return 2",
-			want: edit.ErrNotFound,
-		},
 		"nothing to match": {
 			src: "a\n", old: "", new: "b", want: edit.ErrEmpty,
 		},
@@ -159,10 +153,12 @@ func TestNoMatchFallsThrough(t *testing.T) {
 }
 
 // FuzzApply hunts for the outcome design §13 names as the worst one: a match
-// that succeeds in the wrong place. The oracle is strings.Split/Join, which
-// reaches the same answer as Apply's strings.Replace by a different route, so an
-// off-by-one in either shows up as a disagreement rather than as agreement about
-// the wrong bytes.
+// that succeeds in the wrong place. Both matching rungs get an oracle that
+// reaches the same answer by a different route — strings.Split/Join against the
+// exact rung's strings.Replace, and a substring search over the file's trimmed
+// lines against the normalized rung's line-by-line scan — so an off-by-one in
+// either shows up as a disagreement rather than as agreement about the wrong
+// bytes.
 func FuzzApply(f *testing.F) {
 	f.Add("package main\n\nfunc main() {}\n", "main() {}", "main() { run() }", false)
 	f.Add(twice, "8080", "9090", true)
@@ -171,42 +167,209 @@ func FuzzApply(f *testing.F) {
 	f.Add("", "x", "y", false)
 	f.Add("x", "x", "", false)
 	f.Add("\t\tif err != nil {\n", "\t\tif err != nil {\n", "\t\tif err == nil {\n", false)
+	f.Add("func f() {\n\tif x {\n\t\treturn 1\n\t}\n}\n",
+		"    if x {\n        return 1\n    }", "    if x {\n        return 2\n    }", false)
+	f.Add("\tport := 8080\n", "port := 8080  ", "port := 9090", false)
+	f.Add("a\r\nb\r\nc\r\n", "  b", "B", false)
+	// Four spaces against the file's tabs: "p := 1" on its own is found twice byte
+	// for byte, inside the indentation of both lines, and never reaches the rung
+	// this seed is for.
+	f.Add("func a() {\n\tp := 1\n}\n\nfunc b() {\n\t\tp := 1\n}\n", "    p := 1", "    p := 2", true)
+	f.Add("func a() {\n\tp := 1\n}\n\nfunc b() {\n\t\tp := 1\n}\n", "    p := 1", "    p := 2", false)
+	f.Add("x\ny\nz\n", "   \n", "q", false)
+	f.Add("one\ntwo\nthree\n", "one\nTWO\nthree", "1\n2\n3", false)
+	f.Add("keep\n\tdrop\nkeep\n", "    drop\n", "", false)
 
 	f.Fuzz(func(t *testing.T, src, old, new string, replaceAll bool) {
 		rep, err := edit.Apply(src, old, new, replaceAll)
 
-		count := strings.Count(src, old)
+		exact := strings.Count(src, old)
+		var aligned []int
+		if old != "" && exact == 0 {
+			aligned = alignedOracle(src, old)
+		}
+
 		if err != nil {
 			if rep != (edit.Replacement{}) {
 				t.Fatalf("Apply(%q, %q, %q, %v) failed with %v but still produced %+v",
 					src, old, new, replaceAll, err, rep)
 			}
+
 			var ambiguous *edit.AmbiguousError
-			if errors.As(err, &ambiguous) && (ambiguous.Count != count || count < 2 || replaceAll) {
-				t.Fatalf("Apply(%q, %q, %q, %v) called %d occurrences ambiguous; src holds %d",
-					src, old, new, replaceAll, ambiguous.Count, count)
+			var notFound *edit.NotFoundError
+			switch {
+			case errors.As(err, &ambiguous):
+				want := exact
+				if exact == 0 {
+					want = len(aligned)
+				}
+				if ambiguous.Count != want || want < 2 || replaceAll {
+					t.Fatalf("Apply(%q, %q, %q, %v) called %d occurrences ambiguous; src holds %d "+
+						"exact and %d normalized", src, old, new, replaceAll, ambiguous.Count, exact, len(aligned))
+				}
+			case errors.As(err, &notFound):
+				if len(aligned) > 0 {
+					t.Fatalf("Apply(%q, %q, %q, %v) found nothing, but %d whole-line normalized "+
+						"matches are there at %v", src, old, new, replaceAll, len(aligned), aligned)
+				}
+				if lines := len(rawLines(src)); notFound.Line < 0 || notFound.Line > lines {
+					t.Fatalf("Apply(%q, %q, %q, %v) pointed at line %d of a %d-line file",
+						src, old, new, replaceAll, notFound.Line, lines)
+				}
+				if (notFound.Line == 0) != (notFound.Actual == "") {
+					t.Fatalf("Apply(%q, %q, %q, %v) reported line %d with content %q; a location "+
+						"and its content arrive together or not at all",
+						src, old, new, replaceAll, notFound.Line, notFound.Actual)
+				}
+				if strings.Contains(notFound.Actual, "\t") {
+					t.Fatalf("Apply(%q, %q, %q, %v) quoted %q back with a real tab in it, which is "+
+						"as invisible as it was in the file", src, old, new, replaceAll, notFound.Actual)
+				}
+			case errors.Is(err, edit.ErrEmpty):
+				if old != "" {
+					t.Fatalf("Apply(%q, %q, %q, %v) called %q empty", src, old, new, replaceAll, old)
+				}
+			case errors.Is(err, edit.ErrUnchanged):
+				if old != new && len(aligned) == 0 {
+					t.Fatalf("Apply(%q, %q, %q, %v) said the edit changes nothing, but old and new "+
+						"differ and nothing matched", src, old, new, replaceAll)
+				}
+			default:
+				t.Fatalf("Apply(%q, %q, %q, %v) failed with %v, which is not one of the ladder's "+
+					"refusals — every miss carries a *NotFoundError so a caller can always ask "+
+					"where the file came closest", src, old, new, replaceAll, err)
 			}
 			return
 		}
 
-		switch {
-		case count == 0:
-			t.Fatalf("Apply(%q, %q, %q, %v) matched text that is not there",
-				src, old, new, replaceAll)
-		case count > 1 && !replaceAll:
-			t.Fatalf("Apply(%q, %q, %q, %v) replaced %d occurrences without replace_all",
-				src, old, new, replaceAll, count)
-		case rep.Count != count:
-			t.Fatalf("Apply(%q, %q, %q, %v) reported %d occurrences, src holds %d",
-				src, old, new, replaceAll, rep.Count, count)
-		case rep.Rung != edit.Exact:
-			t.Fatalf("Apply(%q, %q, %q, %v) matched on rung %d, and rung %d is the only one",
-				src, old, new, replaceAll, rep.Rung, edit.Exact)
+		if rep.Text == src {
+			t.Fatalf("Apply(%q, %q, %q, %v) reported %d replacements on rung %d and left src as it was",
+				src, old, new, replaceAll, rep.Count, rep.Rung)
 		}
 
-		if want := strings.Join(strings.Split(src, old), new); rep.Text != want {
-			t.Fatalf("Apply(%q, %q, %q, %v) = %q, want %q",
-				src, old, new, replaceAll, rep.Text, want)
+		switch rep.Rung {
+		case edit.Exact:
+			switch {
+			case exact == 0:
+				t.Fatalf("Apply(%q, %q, %q, %v) matched text that is not there",
+					src, old, new, replaceAll)
+			case exact > 1 && !replaceAll:
+				t.Fatalf("Apply(%q, %q, %q, %v) replaced %d occurrences without replace_all",
+					src, old, new, replaceAll, exact)
+			case rep.Count != exact:
+				t.Fatalf("Apply(%q, %q, %q, %v) reported %d occurrences, src holds %d",
+					src, old, new, replaceAll, rep.Count, exact)
+			}
+			if want := strings.Join(strings.Split(src, old), new); rep.Text != want {
+				t.Fatalf("Apply(%q, %q, %q, %v) = %q, want %q",
+					src, old, new, replaceAll, rep.Text, want)
+			}
+
+		case edit.Normalized:
+			switch {
+			case exact != 0:
+				t.Fatalf("Apply(%q, %q, %q, %v) took the normalized rung with %d exact matches there",
+					src, old, new, replaceAll, exact)
+			case rep.Count != len(aligned):
+				t.Fatalf("Apply(%q, %q, %q, %v) replaced %d whole-line matches; %d are there at %v",
+					src, old, new, replaceAll, rep.Count, len(aligned), aligned)
+			case rep.Count > 1 && !replaceAll:
+				t.Fatalf("Apply(%q, %q, %q, %v) replaced %d occurrences without replace_all",
+					src, old, new, replaceAll, rep.Count)
+			}
+
+			// Everything outside the outermost match has to arrive byte for byte:
+			// this rung finds whole lines, so a splice off by a line would rewrite
+			// one the model never named.
+			lines := rawLines(src)
+			n := len(trimmedLines(old))
+			prefix := strings.Join(lines[:aligned[0]], "")
+			suffix := strings.Join(lines[aligned[len(aligned)-1]+n:], "")
+			if !strings.HasPrefix(rep.Text, prefix) || !strings.HasSuffix(rep.Text, suffix) {
+				t.Fatalf("Apply(%q, %q, %q, %v) = %q, which does not keep %q ahead of the first "+
+					"match and %q after the last", src, old, new, replaceAll, rep.Text, prefix, suffix)
+			}
+
+			// And re-indentation may move a line, never rewrite one.
+			if len(aligned) == 1 {
+				spliced := strings.TrimSuffix(strings.TrimPrefix(rep.Text, prefix), suffix)
+				if got, want := contentLines(spliced), contentLines(new); !slices.Equal(got, want) {
+					t.Fatalf("Apply(%q, %q, %q, %v) spliced in %q, whose lines read %v rather than "+
+						"new's %v", src, old, new, replaceAll, spliced, got, want)
+				}
+			}
+
+		default:
+			t.Fatalf("Apply(%q, %q, %q, %v) matched on rung %d, which is not a rung that places text",
+				src, old, new, replaceAll, rep.Rung)
 		}
 	})
+}
+
+// alignedOracle answers the normalized rung by a different route: the file's
+// trimmed lines joined back into one string and searched for old's, so a match
+// is an occurrence at a line boundary rather than a window the scan agreed with
+// itself about.
+func alignedOracle(src, old string) []int {
+	srcLines, oldLines := trimmedLines(src), trimmedLines(old)
+	if len(oldLines) == 0 || len(oldLines) > len(srcLines) {
+		return nil
+	}
+	if !slices.ContainsFunc(oldLines, func(s string) bool { return s != "" }) {
+		return nil
+	}
+
+	// Every line carries its terminator here, including the last, so an
+	// occurrence of needle is line-aligned at its end by construction.
+	haystack := strings.Join(srcLines, "\n") + "\n"
+	needle := strings.Join(oldLines, "\n") + "\n"
+
+	var starts []int
+	for from := 0; from+len(needle) <= len(haystack); {
+		k := strings.Index(haystack[from:], needle)
+		if k < 0 {
+			break
+		}
+		at := from + k
+		if at > 0 && haystack[at-1] != '\n' {
+			from = at + 1
+			continue
+		}
+		starts = append(starts, strings.Count(haystack[:at], "\n"))
+		from = at + len(needle)
+	}
+	return starts
+}
+
+// rawLines and trimmedLines split text the way the ladder does — no trailing
+// empty line for a file that ends in a newline — by a route of their own.
+func rawLines(s string) []string {
+	if s == "" {
+		return nil
+	}
+	lines := strings.SplitAfter(s, "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+func trimmedLines(s string) []string {
+	lines := rawLines(s)
+	for i, l := range lines {
+		lines[i] = strings.TrimSpace(l)
+	}
+	return lines
+}
+
+// contentLines is trimmedLines with the empty tail dropped, which is what lets a
+// replacement be compared against what was spliced in: old_string ending
+// mid-line leaves the file's own terminator behind it, exactly as strings.Replace
+// would.
+func contentLines(s string) []string {
+	lines := trimmedLines(s)
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
 }

@@ -105,6 +105,97 @@ func TestEditReplaceAllTakesEveryOccurrence(t *testing.T) {
 	}
 }
 
+// editIndented is a tab-indented file, which is what a model that retypes rather
+// than copies hands back as spaces.
+const editIndented = "func f() {\n\tif x {\n\t\treturn 1\n\t}\n}\n"
+
+// TestEditTellsTheModelAMatchWasNotByteExact is the half of the normalized rung
+// that lives out here. Details.Fuzzy reaches the UI and stops; the model is going
+// on editing against the copy of the file it already has, so unless the result
+// says the whitespace moved, the next edit it builds from that copy fails for a
+// reason it has no way to see.
+func TestEditTellsTheModelAMatchWasNotByteExact(t *testing.T) {
+	ws, dir := editWorkspace(t)
+	editWrite(t, dir, "main.go", editIndented)
+
+	result := editRun(t, ws, `{"path":"main.go","old_string":"    if x {\n        return 1\n    }","new_string":"    if x {\n        return 2\n    }"}`)
+	if result.IsError {
+		t.Fatalf("edit failed: %s", result.Content)
+	}
+
+	if got, want := editRead(t, dir, "main.go"), "func f() {\n\tif x {\n\t\treturn 2\n\t}\n}\n"; got != want {
+		t.Errorf("file = %q, want %q; the replacement arrived in the model's spaces rather than "+
+			"the file's tabs", got, want)
+	}
+	if !strings.Contains(result.Content, "byte for byte") {
+		t.Errorf("the model was not told the match was inexact: %q", result.Content)
+	}
+	if !strings.Contains(result.Content, "Read main.go again") {
+		t.Errorf("the model was not told to re-read the file it now has a stale copy of: %q",
+			result.Content)
+	}
+
+	details, ok := result.Details.(*tool.DiffDetails)
+	if !ok {
+		t.Fatalf("Details = %T, want *tool.DiffDetails", result.Details)
+	}
+	if !details.Fuzzy {
+		t.Error("Details.Fuzzy is false on a match that was not byte-exact, so the UI draws the " +
+			"diff as though the model named the text it changed")
+	}
+}
+
+// TestEditSaysNothingExtraAboutAByteExactMatch is the other side of that message:
+// a notice on every edit is a notice the model learns to skip, and the byte-exact
+// rung has nothing to report.
+func TestEditSaysNothingExtraAboutAByteExactMatch(t *testing.T) {
+	ws, dir := editWorkspace(t)
+	editWrite(t, dir, "main.go", editIndented)
+
+	result := editRun(t, ws, `{"path":"main.go","old_string":"\t\treturn 1","new_string":"\t\treturn 2"}`)
+	if result.IsError {
+		t.Fatalf("edit failed: %s", result.Content)
+	}
+	if strings.Contains(result.Content, "byte for byte") {
+		t.Errorf("a byte-exact edit warned about its own match: %q", result.Content)
+	}
+	if details, ok := result.Details.(*tool.DiffDetails); !ok || details.Fuzzy {
+		t.Errorf("Details = %#v, want DiffDetails with Fuzzy false", result.Details)
+	}
+}
+
+// TestEditShowsWhereTheFileComesClosest is the rung people skip. "Not found"
+// makes the model guess again; the file's own line back, with the whitespace it
+// cannot see spelled out, lets it correct its input.
+func TestEditShowsWhereTheFileComesClosest(t *testing.T) {
+	ws, dir := editWorkspace(t)
+	editWrite(t, dir, "main.go", editIndented)
+
+	// The model wrote the line it wants rather than the line that is there.
+	result := editRun(t, ws, `{"path":"main.go","old_string":"\tif x {\n\t\treturn 2\n\t}","new_string":"\tif x {\n\t\treturn 3\n\t}"}`)
+	if !result.IsError {
+		t.Fatalf("edit succeeded on text that is not in the file: %s", result.Content)
+	}
+	if got := editRead(t, dir, "main.go"); got != editIndented {
+		t.Errorf("a refused edit rewrote the file to %q", got)
+	}
+
+	for _, want := range []string{
+		"line 2",             // where to look
+		"→if x {",            // the file's own content there, tabs made visible
+		"→→return 1",         // the line the model got wrong, as it really reads
+		"→ stands for a tab", // the legend, without which the glyphs are one more invisible difference
+	} {
+		if !strings.Contains(result.Content, want) {
+			t.Errorf("the diagnostic does not carry %q: %q", want, result.Content)
+		}
+	}
+	if strings.Contains(result.Content, "\t") {
+		t.Errorf("the diagnostic quoted a real tab back, which the model can no more see than "+
+			"it could in the file: %q", result.Content)
+	}
+}
+
 func TestEditRefusalsLeaveTheFileAlone(t *testing.T) {
 	const original = "if x {\n\treturn 1\n}\n"
 
@@ -114,10 +205,6 @@ func TestEditRefusalsLeaveTheFileAlone(t *testing.T) {
 	}{
 		"text is not there": {
 			args: `{"path":"main.go","old_string":"return 2","new_string":"return 3"}`,
-			want: "not in main.go",
-		},
-		"whitespace differs": {
-			args: `{"path":"main.go","old_string":"    return 1","new_string":"    return 2"}`,
 			want: "not in main.go",
 		},
 		"nothing to match": {
