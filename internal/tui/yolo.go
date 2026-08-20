@@ -4,6 +4,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/theocod3s/rasp/internal/permission"
+	"github.com/theocod3s/rasp/internal/tui/chat"
 )
 
 // yoloConfirm is the word that arms the bypass. Typed rather than pressed: the
@@ -18,12 +19,25 @@ const yoloWarning = "/yolo turns off every permission check for the rest of this
 	"It goes off again with /yolo, and it is off the next time rasp starts: it lives in this " +
 	"process and is written nowhere. Type `/yolo confirm` to turn it on."
 
+// yoloCaret marks the line the user is typing on while the bypass is armed.
+// Both this and the status badge: a status line is one line among many on a full
+// screen and is scrolled past, where the caret is where the eyes already are —
+// so the risk stays visible while you type rather than only when you look down
+// (design §7.8).
+const yoloCaret = "⚠"
+
 func yolo(m Model, args string) (Model, tea.Cmd) {
 	if m.permissions == nil {
 		return m.say("This session has no permission service, so there is nothing here for /yolo " +
 			"to turn off."), nil
 	}
 	if m.status.yolo {
+		// The confirmation word means "on" everywhere it is written — /help and the
+		// warning both say so — so it must not be what turns it off for someone
+		// typing it to check. Bare /yolo is the way out, and stays one word.
+		if args == yoloConfirm {
+			return m.say("Yolo is already on. /yolo on its own turns it off."), nil
+		}
 		return m.setYolo(false), nil
 	}
 	// Exactly the word and nothing else: parseCommand has already trimmed what
@@ -33,6 +47,14 @@ func yolo(m Model, args string) (Model, tea.Cmd) {
 		return m.say(yoloWarning), nil
 	}
 	return m.setYolo(true), nil
+}
+
+// caret is what the input line is drawn behind.
+func (m Model) caret() string {
+	if !m.status.yolo {
+		return chat.Caret
+	}
+	return yoloStyle.Render(yoloCaret) + " " + chat.Caret
 }
 
 // setYolo moves the bypass, the badge and what the model is told together, for

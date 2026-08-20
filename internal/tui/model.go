@@ -490,7 +490,7 @@ func (m Model) View() tea.View {
 		writeLine(&b, "working…")
 	}
 	writeLine(&b, m.status.Render(m.width, m.background))
-	b.WriteString(chat.Caret + m.input)
+	b.WriteString(m.caret() + m.input)
 	return tea.NewView(b.String())
 }
 

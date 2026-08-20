@@ -12,6 +12,7 @@ import (
 	"github.com/theocod3s/rasp/internal/agent"
 	"github.com/theocod3s/rasp/internal/llm"
 	"github.com/theocod3s/rasp/internal/permission"
+	"github.com/theocod3s/rasp/internal/tui/chat"
 	"github.com/theocod3s/rasp/internal/tui/styles"
 )
 
@@ -89,6 +90,38 @@ func TestLeavingTheBypassTakesNothing(t *testing.T) {
 	}
 }
 
+// TestTheConfirmationNeverTurnsItOff. `/yolo confirm` is what /help and the
+// warning both say turns it on, so someone who armed it with --yolo — and so
+// never read either — must not turn it off by typing the words that mean on.
+func TestTheConfirmationNeverTurnsItOff(t *testing.T) {
+	service := &answers{}
+	m := newModel(t.Context(), &promptTurner{}, Config{Mode: permission.ModeManual})
+	m.permissions = service
+
+	m = typeCommand(m, "/yolo "+yoloConfirm)
+	if !service.armed() {
+		t.Fatal("the bypass was never armed, so the second command below proves nothing")
+	}
+
+	m = typeCommand(m, "/yolo "+yoloConfirm)
+
+	if !service.armed() {
+		t.Errorf("the service was told %v; the confirmation turned the bypass off", service.yolos)
+	}
+	if !m.status.yolo {
+		t.Error("the badge went out on a command that says it turns the bypass on")
+	}
+	if frame := words(m.View().Content); !strings.Contains(frame, "already on") {
+		t.Errorf("nothing on the screen says the command changed nothing:\n%s", frame)
+	}
+
+	// And the one word out still works.
+	m = typeCommand(m, "/yolo")
+	if service.armed() || m.status.yolo {
+		t.Errorf("bare /yolo left the bypass on: %v", service.yolos)
+	}
+}
+
 // TestTheBadgeIsOnEveryFrameWhileTheBypassIsArmed. A badge that goes missing in
 // the states nobody looks at is the one thing this indicator may not do: it is
 // the only thing on the screen saying that nothing will be asked before anything
@@ -134,6 +167,35 @@ func TestTheBadgeIsOnEveryFrameWhileTheBypassIsArmed(t *testing.T) {
 				t.Errorf("the frame carries no badge:\n%s", frame)
 			}
 		})
+	}
+}
+
+// TestTheLineBeingTypedOnSaysItToo. A status line is one line among many on a
+// full screen and is scrolled past; the caret is where the eyes are while
+// typing, which is why the indicator is on both (design §7.8).
+func TestTheLineBeingTypedOnSaysItToo(t *testing.T) {
+	m := newModel(t.Context(), &promptTurner{}, Config{Mode: permission.ModeManual})
+	m.permissions = &answers{}
+	m.width = goldenWidth
+
+	if before := lastLine(m.View().Content); strings.Contains(before, yoloCaret) {
+		t.Fatalf("a gated session already marks its input line %q, so the change below says nothing", before)
+	}
+
+	m = typeCommand(m, "/yolo "+yoloConfirm)
+	m = typed(m, "rm the lot")
+
+	line := lastLine(m.View().Content)
+	if !strings.Contains(line, yoloCaret) {
+		t.Errorf("the line being typed on is %q, and nothing on it says the approvals are off", line)
+	}
+	if !strings.Contains(line, "rm the lot") {
+		t.Errorf("the line being typed on is %q, and what was typed is not on it", line)
+	}
+	// Marked rather than replaced: the caret is where the cursor sits, and a
+	// prompt that lost it would move the text the user is editing.
+	if !strings.Contains(line, chat.Caret) {
+		t.Errorf("the caret is gone from %q", line)
 	}
 }
 
@@ -296,4 +358,11 @@ func TestArmingWithNothingToArmSaysSo(t *testing.T) {
 func typeCommand(m Model, line string) Model {
 	m, _ = typed(m, line).press(key(tea.KeyEnter))
 	return m
+}
+
+// lastLine is the line the user types on, which View draws last and without a
+// newline after it (model.go).
+func lastLine(frame string) string {
+	lines := strings.Split(ansi.Strip(frame), "\n")
+	return lines[len(lines)-1]
 }
