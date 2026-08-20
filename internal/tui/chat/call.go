@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/theocod3s/rasp/internal/tool"
+	"github.com/theocod3s/rasp/internal/tui/diffview"
+	"github.com/theocod3s/rasp/internal/tui/styles"
 )
 
 // A card's first two columns: the marker saying there is more under it, or the
@@ -49,12 +51,24 @@ type Call struct {
 	Elapsed time.Duration
 
 	Expanded bool
+
+	// Background is the terminal's, and picks the palette a diff is drawn in.
+	// Passed in for the same reason Elapsed is.
+	Background styles.Background
 }
 
 func (c Call) Finished() bool { return c.State == CallDone }
 
+// HasDiff reports that the card has a file change to show rather than a tool's
+// text output. Such a card is opened for the reader rather than by them: a
+// change one keypress short of visible is a path and a line count, which is the
+// gap this UI exists to close.
+func (c Call) HasDiff() bool { return c.unified() != "" }
+
 func (c Call) Render(width int) string {
-	body := c.body()
+	// Drawn to its own width rather than wrapped afterwards: wrapping a diff line
+	// draws one changed line as two.
+	body := c.body(width - len(cardIndent))
 
 	// The headline is set in like the body and then gives its first two columns
 	// back to the marker. Wrapped whole instead, a summary too long for the
@@ -65,7 +79,7 @@ func (c Call) Render(width int) string {
 	if body == "" || !c.Expanded {
 		return head
 	}
-	return head + "\n" + inset(wrap(body, width-len(cardIndent)), cardIndent)
+	return head + "\n" + inset(body, cardIndent)
 }
 
 func (c Call) marker(expandable bool) string {
@@ -125,11 +139,6 @@ func (c Call) outcome() string {
 // rung of the match ladder rather than byte for byte. On the collapsed line
 // rather than in the body, because the file no longer reads as the model wrote
 // it and a reader who has to open the card to learn that learns it too late.
-//
-// The one thing a card reads out of Details today. Everything else a built-in
-// computes for the UI it also puts in Title or Content, and an MCP server's
-// Details is arbitrary decoded JSON — a card guessing at the shape of that
-// would be inventing facts rather than drawing them.
 func fuzzy(details any) string {
 	if d, ok := details.(*tool.DiffDetails); ok && d.Fuzzy {
 		return " (whitespace-normalized match)"
@@ -137,11 +146,16 @@ func fuzzy(details any) string {
 	return ""
 }
 
-// body is what expanding the card shows: the output the model was given.
-func (c Call) body() string {
+// body is what expanding the card shows, already drawn to width: the diff a
+// file change produced, or the output the model was given.
+func (c Call) body(width int) string {
 	if c.State != CallDone || c.Result == nil {
 		return ""
 	}
+	if diff := c.unified(); diff != "" {
+		return diffview.Render(diff, width, styles.For(c.Background))
+	}
+
 	content := strings.Trim(c.Result.Content, "\n")
 
 	// A failing tool writes no title, so the line above already carries the
@@ -150,7 +164,21 @@ func (c Call) body() string {
 	if c.Result.IsError && c.Result.Title == "" && content == firstLine(content) {
 		return ""
 	}
-	return content
+	return wrap(content, width)
+}
+
+// unified is the diff a tool that changed a file put in Details, and empty for
+// everything else: an edit that turned out to change nothing, which go-udiff
+// renders as no text at all, and an MCP server's structured output, which is
+// arbitrary decoded JSON a card guessing at its shape would invent facts from.
+func (c Call) unified() string {
+	if c.Result == nil {
+		return ""
+	}
+	if d, ok := c.Result.Details.(*tool.DiffDetails); ok {
+		return d.Unified
+	}
+	return ""
 }
 
 // elapsed is a duration as a card says it, and nothing for one too short to be

@@ -12,6 +12,7 @@ import (
 	"github.com/theocod3s/rasp/internal/agent"
 	"github.com/theocod3s/rasp/internal/llm"
 	"github.com/theocod3s/rasp/internal/tui/chat"
+	"github.com/theocod3s/rasp/internal/tui/styles"
 )
 
 // Model is the root Bubble Tea model.
@@ -63,6 +64,11 @@ type Model struct {
 	// of the conversation is already in.
 	expanded bool
 
+	// background is what the terminal answered the background query with, and
+	// picks the palette a diff is drawn from. Dark until it answers, and forever
+	// on a terminal that never does.
+	background styles.Background
+
 	// beating says a redraw of the running cards is already on its way. Four
 	// calls starting at once would otherwise leave four timers running, each
 	// rescheduling itself.
@@ -106,6 +112,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+	case tea.BackgroundColorMsg:
+		return m.repaint(msg.IsDark()), nil
 	case tea.KeyPressMsg:
 		return m.press(msg)
 	case agentMsg:
@@ -178,6 +186,7 @@ func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
 		m = m.announced(ev.CallID, ev.Tool)
 		c := m.cards[ev.CallID]
 		c.item.State, c.item.Result = chat.CallDone, ev.Result
+		c.item.Expanded = c.item.Expanded || c.item.HasDiff()
 		if !c.started.IsZero() {
 			c.item.Elapsed = m.clock().Sub(c.started)
 		}
@@ -217,7 +226,28 @@ func (m Model) announced(id, name string) Model {
 	if m.cards == nil {
 		m.cards = make(map[string]card)
 	}
-	return m.draw(id, card{item: chat.Call{Name: name, Expanded: m.expanded}})
+	return m.draw(id, card{item: chat.Call{Name: name, Expanded: m.expanded, Background: m.background}})
+}
+
+// repaint moves every card onto the terminal's own palette. The whole list
+// rather than the cards drawn after the answer, because a terminal answers the
+// background query once the program is already running and a finished card's
+// render is frozen at the colours it was first drawn in (internals §4.5).
+func (m Model) repaint(isDark bool) Model {
+	bg := styles.Dark
+	if !isDark {
+		bg = styles.Light
+	}
+	if bg == m.background {
+		return m
+	}
+
+	m.background = bg
+	for id, c := range m.cards {
+		c.item.Background = bg
+		m = m.draw(id, c)
+	}
+	return m
 }
 
 func (m Model) draw(id string, c card) Model {
@@ -228,7 +258,9 @@ func (m Model) draw(id string, c card) Model {
 
 // expand shows or hides every card's body. The whole conversation rather than
 // the card under a selection, because nothing selects one yet: the transcript
-// has no cursor over it, so there is no "this card" to mean.
+// has no cursor over it, so there is no "this card" to mean. It overrides the
+// diff cards that opened themselves, so a reader who wants the transcript small
+// can have it.
 func (m Model) expand() Model {
 	m.expanded = !m.expanded
 	for id, c := range m.cards {

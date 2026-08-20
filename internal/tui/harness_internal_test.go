@@ -63,6 +63,40 @@ func snapshots() []snapshot {
 			"against a file rasp has not seen. Read it first.",
 	}
 
+	// A turn that changed two files, which is the state the diff renderer exists
+	// for. The replacement's second line is deliberately longer than the terminal
+	// is wide: a diff line that wrapped would read as two changed lines.
+	changed := asking(reply("Parsing the header once, in the middleware."),
+		llm.Block{Type: llm.BlockToolUse, ID: "call_3", Name: "edit"},
+		llm.Block{Type: llm.BlockToolUse, ID: "call_4", Name: "write"})
+	edited := &tool.Result{
+		Title:   "auth.go +2 -1",
+		Content: "Edited auth.go: 1 replacement, +2 -1.",
+		Details: &tool.DiffDetails{Path: "auth.go", Additions: 2, Deletions: 1, Unified: diff(
+			"--- a/auth.go",
+			"+++ b/auth.go",
+			"@@ -12,5 +12,6 @@",
+			" func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {",
+			"-\tclaims, err := parse(r.Header.Get(\"Authorization\"))",
+			"+\tclaims, err := m.claims(r)",
+			"+\tr = r.WithContext(context.WithValue(r.Context(), claimsKey, claims)) // the handler reads it from here",
+			" \tif err != nil {",
+			" \t\tunauthorized(w)",
+		)},
+	}
+	created := &tool.Result{
+		Title:   "Created middleware_test.go",
+		Content: "Created middleware_test.go (78 bytes).",
+		Details: &tool.DiffDetails{Path: "middleware_test.go", Additions: 3, Unified: diff(
+			"--- a/middleware_test.go",
+			"+++ b/middleware_test.go",
+			"@@ -0,0 +1,3 @@",
+			"+func TestParsesTheHeaderOnce(t *testing.T) {",
+			"+\treq := request(t)",
+			"+}",
+		)},
+	}
+
 	// A batch of two, started and finished in the reverse of the order the model
 	// asked for them, which is what a batch running its calls at once does. The
 	// cards still have to read in the order of the tool_use blocks above.
@@ -96,6 +130,18 @@ func snapshots() []snapshot {
 			{Kind: agent.EventAssistantEnd, Message: explained},
 			{Kind: agent.EventToolStart, CallID: "call_2", Tool: "edit"},
 		}},
+		// Two file changes, drawn. Nothing here presses a key: a card holding a
+		// diff opens itself, which is the difference between a transcript that
+		// shows what changed and one that shows a path.
+		{name: "diff", prompt: prompt, events: []agent.Event{
+			{Kind: agent.EventAssistantDelta, Message: changed},
+			{Kind: agent.EventAssistantEnd, Message: changed},
+			{Kind: agent.EventToolStart, CallID: "call_3", Tool: "edit"},
+			{Kind: agent.EventToolEnd, CallID: "call_3", Tool: "edit", Result: edited},
+			{Kind: agent.EventToolStart, CallID: "call_4", Tool: "write"},
+			{Kind: agent.EventToolEnd, CallID: "call_4", Tool: "write", Result: created},
+			{Kind: agent.EventTurnEnd},
+		}},
 		// A step that failed mid-reply: the fragment is settled rather than left
 		// open, and the failure is drawn under it.
 		{name: "error", prompt: prompt, events: []agent.Event{
@@ -112,6 +158,10 @@ func asking(msg *llm.Message, calls ...llm.Block) *llm.Message {
 	msg.Content = append(msg.Content, calls...)
 	return msg
 }
+
+// diff joins the lines of a unified diff the way go-udiff hands one over:
+// newline-separated, header pair included, and ending in a newline.
+func diff(lines ...string) string { return strings.Join(lines, "\n") + "\n" }
 
 // TestViewGoldens freezes the frame each state draws, so a change to any of the
 // styling, the wrapping or the order things appear in shows up as a diff rather

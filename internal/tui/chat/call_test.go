@@ -7,6 +7,7 @@ import (
 
 	"github.com/theocod3s/rasp/internal/tool"
 	"github.com/theocod3s/rasp/internal/tui/chat"
+	"github.com/theocod3s/rasp/internal/tui/styles"
 )
 
 // wide is a terminal nothing under test wraps at, so a card's line can be
@@ -100,6 +101,107 @@ func TestAFuzzyEditSaysSoOnTheCollapsedLine(t *testing.T) {
 		t.Errorf("the card reads %q for an edit that matched byte for byte", got)
 	}
 }
+
+// TestAFileChangeOpensAsItsDiff is the acceptance criterion where a reader
+// meets it: expanding an edit or a write shows what changed, not the sentence
+// the model was handed. The card's own line is the path and a line count, which
+// is the whole of what the reference implementations show and the reason this
+// exists.
+func TestAFileChangeOpensAsItsDiff(t *testing.T) {
+	call := opened(answered("edit", &tool.Result{
+		Title:   "auth.go +1 -1",
+		Content: "Edited auth.go: 1 replacement, +1 -1.",
+		Details: &tool.DiffDetails{Path: "auth.go", Additions: 1, Deletions: 1, Unified: unified},
+	}))
+
+	body := words(call.Render(wide))
+	for _, line := range []string{"- return parse(header)", "+ return r.claims()"} {
+		if !strings.Contains(body, line) {
+			t.Errorf("the card does not draw %q:\n%s", line, body)
+		}
+	}
+	if !call.HasDiff() {
+		t.Error("the card does not report having a diff, so nothing will open it without a keypress")
+	}
+}
+
+// TestACardWithNoDiffStillShowsWhatTheToolSaid. The diff is a different body,
+// not an extra one, so a tool that changed no file must not lose its output to
+// the branch that draws diffs.
+func TestACardWithNoDiffStillShowsWhatTheToolSaid(t *testing.T) {
+	call := opened(answered("bash", &tool.Result{Title: "go test ./...", Content: "ok  rasp/internal/auth"}))
+
+	if body := words(call.Render(wide)); !strings.Contains(body, "ok rasp/internal/auth") {
+		t.Errorf("the card lost the tool's output:\n%s", body)
+	}
+	if call.HasDiff() {
+		t.Error("a bash result reports having a diff")
+	}
+}
+
+// TestAnEditThatChangedNothingFallsBackToItsOutput. go-udiff renders a diff
+// with no hunks as no text at all, and a card that opened onto it would offer a
+// marker leading to a blank line.
+func TestAnEditThatChangedNothingFallsBackToItsOutput(t *testing.T) {
+	call := opened(answered("edit", &tool.Result{
+		Title:   "auth.go +0 -0",
+		Content: "Edited auth.go: 1 replacement, +0 -0.",
+		Details: &tool.DiffDetails{Path: "auth.go"},
+	}))
+
+	if call.HasDiff() {
+		t.Fatal("an empty diff reports as a diff, so the card opens onto nothing")
+	}
+	if body := words(call.Render(wide)); !strings.Contains(body, "Edited auth.go") {
+		t.Errorf("the card shows neither a diff nor what the tool said:\n%s", body)
+	}
+}
+
+// TestADiffLineIsCutAtTheWidthRatherThanWrapped. The card wraps everything else
+// it draws, and a diff line wrapped is one changed line reading as two.
+func TestADiffLineIsCutAtTheWidthRatherThanWrapped(t *testing.T) {
+	const narrow = 30
+
+	call := opened(answered("edit", &tool.Result{
+		Title:   "auth.go +1 -1",
+		Details: &tool.DiffDetails{Path: "auth.go", Unified: unified},
+	}))
+
+	drawn := call.Render(narrow)
+	// One line for the card's own summary and one per line of the diff below the
+	// header pair, which is four.
+	if rows, want := strings.Split(drawn, "\n"), 5; len(rows) != want {
+		t.Errorf("the card drew %d rows, want %d — a diff line wrapped:\n%s", len(rows), want, drawn)
+	}
+}
+
+// TestTheTerminalsBackgroundPicksTheDiffsColours. Nothing else can check this:
+// the palette is chosen by a query the terminal answers, and a test has no
+// terminal, so the card is asked for both and the two are compared.
+func TestTheTerminalsBackgroundPicksTheDiffsColours(t *testing.T) {
+	change := &tool.Result{Title: "auth.go +1 -1", Details: &tool.DiffDetails{Path: "auth.go", Unified: unified}}
+
+	onDark := opened(answered("edit", change))
+	onLight := onDark
+	onLight.Background = styles.Light
+
+	dark, light := onDark.Render(wide), onLight.Render(wide)
+	if dark == light {
+		t.Fatal("the card drew the same bytes on a light terminal and a dark one")
+	}
+	if words(dark) != words(light) {
+		t.Errorf("the two backgrounds changed the text and not only the colours:\n%s\n\n%s",
+			words(dark), words(light))
+	}
+}
+
+// unified is what go-udiff writes for a one-line replacement.
+const unified = "--- a/auth.go\n" +
+	"+++ b/auth.go\n" +
+	"@@ -8,3 +8,3 @@\n" +
+	" func (m *Middleware) claims(r *http.Request) (Claims, error) {\n" +
+	"-\treturn parse(header)\n" +
+	"+\treturn r.claims()\n"
 
 // TestADetailsPayloadTheCardCannotNameIsLeftAlone. An MCP server's structured
 // output arrives as arbitrary decoded JSON in the same field, so the type

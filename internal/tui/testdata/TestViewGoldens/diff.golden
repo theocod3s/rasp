@@ -1,0 +1,16 @@
+› fix the failing auth test
+  [38;5;252mParsing the header once, in the[m[38;5;252m middleware.[m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m
+▾ edit auth.go +2 -1
+  [38;2;88;166;255m@@ -12,5 +12,6 @@[m
+  [38;2;145;152;161m func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {[m
+  [38;2;248;81;73m-   claims, err := parse(r.Header.Get("Authorization"))[m
+  [38;2;63;185;80m+   claims, err := m.claims(r)[m
+  [38;2;63;185;80m+   r = r.WithContext(context.WithValue(r.Context(), claimsKey, claims)) // t[m[38;2;110;118;129m…[m
+  [38;2;145;152;161m    if err != nil {[m
+  [38;2;145;152;161m        unauthorized(w)[m
+▾ write Created middleware_test.go
+  [38;2;88;166;255m@@ -0,0 +1,3 @@[m
+  [38;2;63;185;80m+func TestParsesTheHeaderOnce(t *testing.T) {[m
+  [38;2;63;185;80m+   req := request(t)[m
+  [38;2;63;185;80m+}[m
+› 
