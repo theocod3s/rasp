@@ -63,7 +63,7 @@ func (c Call) Finished() bool { return c.State == CallDone }
 // text output. Such a card is opened for the reader rather than by them: a
 // change one keypress short of visible is a path and a line count, which is the
 // gap this UI exists to close.
-func (c Call) HasDiff() bool { return c.unified() != "" }
+func (c Call) HasDiff() bool { return diffview.Draws(c.unified()) }
 
 func (c Call) Render(width int) string {
 	// Drawn to its own width rather than wrapped afterwards: wrapping a diff line
@@ -152,7 +152,7 @@ func (c Call) body(width int) string {
 	if c.State != CallDone || c.Result == nil {
 		return ""
 	}
-	if diff := c.unified(); diff != "" {
+	if diff := c.unified(); diffview.Draws(diff) {
 		return diffview.Render(diff, width, styles.For(c.Background))
 	}
 

@@ -46,6 +46,13 @@ func Render(unified string, width int, p styles.Palette) string {
 	return b.String()
 }
 
+// Draws reports that unified has lines a reader would see. Exported so that
+// asking "is there a diff to show" and drawing it cannot disagree: what counts
+// as nothing to show is the header-stripping below, and a caller deciding for
+// itself would call a header-only diff a diff and then open a card onto an
+// empty body.
+func Draws(unified string) bool { return len(body(unified)) > 0 }
+
 // body is the diff's lines with the `--- a/x` and `+++ b/x` pair above the
 // first hunk dropped. The card this is drawn under already names the file, and
 // at 80 columns two more lines of it is a third of what a small diff has to

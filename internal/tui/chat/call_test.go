@@ -141,21 +141,30 @@ func TestACardWithNoDiffStillShowsWhatTheToolSaid(t *testing.T) {
 	}
 }
 
-// TestAnEditThatChangedNothingFallsBackToItsOutput. go-udiff renders a diff
-// with no hunks as no text at all, and a card that opened onto it would offer a
-// marker leading to a blank line.
+// TestAnEditThatChangedNothingFallsBackToItsOutput. A diff with nothing in it
+// has two spellings — go-udiff renders no hunks as no text at all, and a
+// header pair with nothing under it draws nothing once the header is dropped.
+// A card that called either one a diff would open onto a blank line, and would
+// be recorded as open while showing no marker.
 func TestAnEditThatChangedNothingFallsBackToItsOutput(t *testing.T) {
-	call := opened(answered("edit", &tool.Result{
-		Title:   "auth.go +0 -0",
-		Content: "Edited auth.go: 1 replacement, +0 -0.",
-		Details: &tool.DiffDetails{Path: "auth.go"},
-	}))
+	for name, unified := range map[string]string{
+		"no text at all": "",
+		"a header pair":  "--- a/auth.go\n+++ b/auth.go\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			call := opened(answered("edit", &tool.Result{
+				Title:   "auth.go +0 -0",
+				Content: "Edited auth.go: 1 replacement, +0 -0.",
+				Details: &tool.DiffDetails{Path: "auth.go", Unified: unified},
+			}))
 
-	if call.HasDiff() {
-		t.Fatal("an empty diff reports as a diff, so the card opens onto nothing")
-	}
-	if body := words(call.Render(wide)); !strings.Contains(body, "Edited auth.go") {
-		t.Errorf("the card shows neither a diff nor what the tool said:\n%s", body)
+			if call.HasDiff() {
+				t.Fatal("an empty diff reports as a diff, so the card opens onto nothing")
+			}
+			if body := words(call.Render(wide)); !strings.Contains(body, "Edited auth.go") {
+				t.Errorf("the card shows neither a diff nor what the tool said:\n%s", body)
+			}
+		})
 	}
 }
 
