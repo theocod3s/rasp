@@ -121,7 +121,9 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 	if !created {
 		switch before, err = w.ws.ReadFile(rel); {
 		case errors.Is(err, fs.ErrNotExist):
-			before = nil
+			// Cleared rather than left standing, so nothing below can read an
+			// error this branch decided was not one.
+			before, err = nil, nil
 		case err != nil:
 			return writeRefused(err.Error()), nil
 		}
