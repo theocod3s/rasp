@@ -18,10 +18,14 @@ type Permissions interface {
 	// this call is the one that decided it.
 	Resolve(callID string, d permission.Decision) bool
 
-	// SetMode installs the rules a mode stands for. A mode with no rules to
-	// install fails rather than leaving the session in one the ladder cannot
-	// read (mode.go).
+	// SetMode installs the rules a mode stands for, and ends the yolo bypass if
+	// one was armed. A mode with no rules to install fails rather than leaving
+	// the session in one the ladder cannot read (mode.go).
 	SetMode(mode permission.Mode) error
+
+	// SetYolo arms or disarms the bypass that answers ahead of those rules. The
+	// mode is left alone: disarming puts the session back under it (yolo.go).
+	SetYolo(on bool)
 }
 
 // promptMsg carries a permission request from the goroutine that asked into

@@ -19,8 +19,9 @@ when they are already in context.
 
 - `internal/agent` owns the loop. No terminal code, no HTTP, no filesystem syscall, and **no
   knowledge of modes** — the loop never branches on plan/manual/auto/yolo (design §1, §2 table).
-- `internal/permission` owns the four modes as presets over one approval ladder; `yolo`
-  short-circuits before every other check (design §7, prd §6.7).
+- `internal/permission` owns the three gated modes as presets over one approval ladder. `yolo`
+  is not a fourth preset: it arms a flag that short-circuits before every other check, has no
+  `Mode` value at all, and is never written anywhere (design §7.1, §7.7, prd §6.7).
 - Services are leaf packages that meet only through the interfaces in `llm` and `tool`. `agent`
   is the only package that composes them (design §1).
 - No MCP type, error code, method name or protocol concept may leave `internal/mcp`. It exposes

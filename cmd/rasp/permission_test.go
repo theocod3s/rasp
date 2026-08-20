@@ -167,11 +167,124 @@ func TestTheUsersOverridesReachTheCompiledRules(t *testing.T) {
 	}
 }
 
+// TestArmingTheBypassAnswersAheadOfTheMode, at the seam the UI reaches: the
+// mode's rules are never uninstalled, so disarming puts the session straight
+// back under the mode the status line was already naming.
+func TestArmingTheBypassAnswersAheadOfTheMode(t *testing.T) {
+	g := gateFor(t, config.Config{Mode: config.ModeManual}, t.TempDir())
+	write := call("write", `{"path":"a.go"}`)
+
+	if !g.Prompts(write) {
+		t.Fatal("manual does not ask about a write, so nothing below is about a gate that was there")
+	}
+
+	g.SetYolo(true)
+	if g.Prompts(write) {
+		t.Error("the gate still asks about a write with the bypass armed")
+	}
+
+	g.SetYolo(false)
+	if !g.Prompts(write) {
+		t.Error("the gate lets a write through once the bypass is off, so the mode never came back")
+	}
+}
+
+// TestAModeSwitchEndsTheBypass. The two are one statement about how the session
+// is gated: a switch that left yolo armed would put a mode on the status line
+// that the ladder never reaches.
+func TestAModeSwitchEndsTheBypass(t *testing.T) {
+	g := gateFor(t, config.Config{Mode: config.ModeManual}, t.TempDir())
+	write := call("write", `{"path":"a.go"}`)
+
+	g.SetYolo(true)
+	if g.Prompts(write) {
+		t.Fatal("the bypass was never armed, so the switch below has nothing to end")
+	}
+
+	if err := g.SetMode(permission.ModeManual); err != nil {
+		t.Fatalf("SetMode: %v", err)
+	}
+	if !g.Prompts(write) {
+		t.Error("the gate still lets a write through, so the bypass outlived the mode switch")
+	}
+}
+
+// TestNothingInTheConfigurationCanArmTheBypass is the half of "yolo never
+// survives a restart" that is provable before sessions exist: a value in a file
+// or an environment variable comes back on the next run, so no key may reach it.
+// Only the flag and the command do, and neither is written down.
+func TestNothingInTheConfigurationCanArmTheBypass(t *testing.T) {
+	for _, b := range config.FlagBindings() {
+		if b.Flag == yoloFlag || b.Key == config.ModeYolo {
+			t.Errorf("--%s is bound to the config key %q, so it resolves through the precedence "+
+				"chain a file also writes to", b.Flag, b.Key)
+		}
+	}
+	for _, b := range config.EnvBindings() {
+		if strings.Contains(strings.ToLower(b.Var), yoloFlag) {
+			t.Errorf("%s carries the bypass into the configuration", b.Var)
+		}
+	}
+
+	// The flag is set and still contributes nothing to what Load resolves, which
+	// is what keeps `rasp config check` from ever reporting it as a setting.
+	cmd := newRootCmd()
+	if err := cmd.Flags().Parse([]string{"--" + yoloFlag}); err != nil {
+		t.Fatalf("parsing --%s: %v", yoloFlag, err)
+	}
+	if armed, err := cmd.Flags().GetBool(yoloFlag); err != nil || !armed {
+		t.Fatalf("--%s parsed as %v (%v); the check below rests on it having been set", yoloFlag, armed, err)
+	}
+	if flags := changedFlags(cmd); len(flags) != 0 {
+		t.Errorf("--%s put %v into the configuration", yoloFlag, flags)
+	}
+}
+
+// TestAGlobalConfigNamingYoloStartsNoSession is the same rule where it is least
+// obvious — the user's own file, asking for their own machine. A value in a
+// config file is back on the next run and every run after that, which is the one
+// thing the bypass may never be, so the refusal comes from the resolver: the
+// file is still named at that point, and the answer can say what does work.
+func TestAGlobalConfigNamingYoloStartsNoSession(t *testing.T) {
+	projectConfig(t, `{}`)
+	path := globalConfig(t, `{"mode": "yolo"}`)
+
+	_, err := config.Load(config.Sources{})
+	if err == nil {
+		t.Fatal("a global config naming yolo resolved cleanly, so `rasp` would go on to start " +
+			"a session under a mode with no rules — or under none")
+	}
+	for _, want := range []string{path, "--yolo"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q:\n%s", want, err)
+		}
+	}
+}
+
+// globalConfig writes a global config, points the environment at it, and returns
+// its path. After projectConfig, which puts an empty one in place of the
+// developer's own.
+func globalConfig(t *testing.T, contents string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rasp", config.File)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("creating %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	return path
+}
+
 // TestAModeWithNoRulesRefusesToStart. Yolo is a bypass ahead of the ladder
-// rather than a permissive preset (design §7.7 rung 0) and nothing arms it yet.
-// A session that quietly ran under the manual rules instead would prompt while
-// the status line said yolo, which teaches the user the wrong thing about what
-// is guarding them.
+// rather than a permissive preset (design §7.7 rung 0), so `"mode": "yolo"` from
+// any layer that can carry it resolves to a mode with no rules — and a session
+// that quietly ran under the manual rules instead would prompt while the status
+// line said yolo, which teaches the user the wrong thing about what is guarding
+// them. It is armed per run instead, by --yolo or /yolo.
 func TestAModeWithNoRulesRefusesToStart(t *testing.T) {
 	_, err := newGate(config.Config{Mode: config.ModeYolo}, nil, nil)
 	if err == nil {

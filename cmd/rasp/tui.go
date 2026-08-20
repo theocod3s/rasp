@@ -29,6 +29,13 @@ func startTUI(cmd *cobra.Command) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "rasp: %s\n", warning)
 	}
 
+	// Ahead of everything slower, so a flag this cannot read stops the run before
+	// a provider is built or a workspace opened.
+	uiCfg, err := uiConfig(cmd, res.Config)
+	if err != nil {
+		return err
+	}
+
 	provider, model, err := buildProvider(cmd.Context(), res)
 	if err != nil {
 		return err
@@ -40,13 +47,7 @@ func startTUI(cmd *cobra.Command) error {
 			"and it could not be read: %w", err)
 	}
 
-	// The configured id rather than the one buildProvider puts on the wire: the
-	// wire id has had its provider cut off the front, and `claude-opus-5` served
-	// through a router says less than the line the user wrote.
-	ui := tui.New(tui.Config{
-		Model: res.Config.Model,
-		Mode:  permission.Mode(res.Config.Mode),
-	})
+	ui := tui.New(uiCfg)
 	s, err := newSession(res.Config, provider, model, dir, ui, ui.Events)
 	if err != nil {
 		return err
@@ -54,6 +55,29 @@ func startTUI(cmd *cobra.Command) error {
 	defer func() { _ = s.ws.Close() }()
 
 	return ui.Run(s.agent, s.gate)
+}
+
+// uiConfig is the session as the UI has to say it. The model is the configured
+// id rather than the one buildProvider puts on the wire: that one has had its
+// provider cut off the front, and `claude-opus-5` served through a router says
+// less than the line the user wrote.
+//
+// --yolo is read here rather than resolved with everything else because it is
+// not a configuration value (design §10) — it arms the bypass for this run and
+// is written nowhere. The only way the read errors is the flag having been
+// renamed out from under this name, and a session that quietly started gated
+// when the user asked for --yolo is a wrong answer given without a word.
+func uiConfig(cmd *cobra.Command, cfg config.Config) (tui.Config, error) {
+	yolo, err := cmd.Flags().GetBool(yoloFlag)
+	if err != nil {
+		return tui.Config{}, fmt.Errorf("--%s decides whether this run asks before it does "+
+			"anything, and it could not be read: %w", yoloFlag, err)
+	}
+	return tui.Config{
+		Model: cfg.Model,
+		Mode:  permission.Mode(cfg.Mode),
+		Yolo:  yolo,
+	}, nil
 }
 
 // session is what a frontend needs to run turns: the agent, the gate it answers

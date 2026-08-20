@@ -44,10 +44,10 @@ func (g *gate) SetMode(mode permission.Mode) error {
 	preset, ok := permission.Presets()[mode]
 	if !ok {
 		// Yolo is the one name that reaches this: a bypass ahead of the ladder
-		// rather than a permissive preset (design §7.7 rung 0), with nothing here
-		// to arm it yet. Refused rather than quietly downgraded, because a session
-		// that prompts while the status line says yolo teaches the user the wrong
-		// thing about what is guarding them.
+		// rather than a permissive preset (design §7.7 rung 0), armed for a run by
+		// SetYolo below and never by a mode. Refused rather than quietly
+		// downgraded, because a session that prompts while the status line says
+		// yolo teaches the user the wrong thing about what is guarding them.
 		return fmt.Errorf("mode %q has no permission rules to run under, so rasp would be "+
 			"guessing what it may do; use plan, manual or auto", mode)
 	}
@@ -67,6 +67,11 @@ func (g *gate) SetMode(mode permission.Mode) error {
 	g.service.SetRules(rules)
 	return nil
 }
+
+// SetYolo arms or disarms the bypass ahead of the ladder (design §7.7). Nothing
+// is compiled and nothing can fail: the mode's rules stay installed underneath,
+// and disarming is the session going back under them.
+func (g *gate) SetYolo(on bool) { g.service.SetYolo(on) }
 
 func (g *gate) Prompts(call llm.ToolCall) bool { return g.service.Prompts(g.request(call)) }
 

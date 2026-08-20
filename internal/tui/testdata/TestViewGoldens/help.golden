@@ -4,6 +4,7 @@
 [38;2;125;133;144m  /resume   reopen an earlier session — needs session support[m
 [38;2;125;133;144m  /compact  summarize the conversation to free context — needs compaction[m
 [38;2;125;133;144m  /clear    clear the conversation off the screen[m
+[38;2;125;133;144m  /yolo     run every tool call with no approval — /yolo confirm turns it on[m
 [38;2;125;133;144m  /help     list these commands[m
 [38;2;125;133;144m  /quit     stop a running turn and leave[m
 manual[38;2;125;133;144m · anthropic/claude-opus-5 · ctx 0 · in 0 · out 0 · cost —[m

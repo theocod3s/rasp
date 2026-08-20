@@ -22,7 +22,7 @@ func (e *InvalidError) Error() string {
 
 // validate checks one layer's contribution before it is merged. Per layer rather
 // than on the merged result because both of its rules are about *where* a value
-// was written: a project file setting yolo is refused even if a flag would have
+// was written: a file asking for yolo is refused even when a flag would have
 // overridden it, since the next run without that flag is the one that gets it.
 func validate(t tree, origin Origin) ([]Warning, error) {
 	var warnings []Warning
@@ -177,7 +177,14 @@ func checkResolved(t tree, origins Origins) error {
 }
 
 // checkMode applies both of design §10's rules about `mode`: the name has to
-// exist, and yolo may be selected only where doing so is a deliberate act.
+// exist, and yolo is not one a config file may select — from any layer. It arms
+// a bypass ahead of the permission ladder rather than choosing a preset within
+// it, and a file is read again on every run, which is the one thing a bypass may
+// never be.
+//
+// Refused here rather than left to the mode having no preset behind it: by the
+// time startup finds that out, the layer that wrote the value is merged away, and
+// the user is told a mode has no rules instead of which line to delete.
 func checkMode(mode string, origin Origin) error {
 	if !slices.Contains(modeNames, mode) {
 		return &InvalidError{
@@ -186,24 +193,18 @@ func checkMode(mode string, origin Origin) error {
 			Reason: fmt.Sprintf("unknown mode %q; want one of %s", mode, modeList()),
 		}
 	}
-	if mode != ModeYolo || origin.Layer == LayerGlobal {
+	if mode != ModeYolo {
 		return nil
 	}
 
-	reason := "yolo turns off every approval prompt, so it is not a value any " +
-		"layer can set on your behalf. "
-	switch origin.Layer {
-	case LayerProject:
-		reason += "A project config travels with the repository: honouring this " +
+	reason := "yolo turns off every approval prompt, and a config file is read on " +
+		"every run — so it is not a value any layer can set. Arm it for a single run " +
+		"with --yolo at launch, or /yolo in session."
+	if origin.Layer == LayerProject {
+		// The layer with a second reason: this one arrives from somebody else.
+		reason += " A project config travels with the repository, so honouring it " +
 			"would disable the guardrails on `git clone`, before anyone had read a " +
-			"line of the code. Set it in the global config instead, or arm it for a " +
-			"single run with --yolo."
-	default:
-		// The environment and flags are the user's own act, but yolo arms a
-		// bypass ahead of the permission ladder rather than selecting a preset
-		// within it (design §10) — so it arrives through --yolo, not through
-		// the precedence chain.
-		reason += "Arm it explicitly with --yolo at launch, or /yolo in session."
+			"line of the code."
 	}
 
 	return &InvalidError{Origin: origin, Key: "mode", Reason: reason}

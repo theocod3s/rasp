@@ -392,6 +392,8 @@ func (g gated) Resolve(callID string, d permission.Decision) bool {
 	return g.service.Resolve(callID, d)
 }
 
+func (g gated) SetYolo(on bool) { g.service.SetYolo(on) }
+
 func (g gated) SetMode(mode permission.Mode) error {
 	preset, ok := permission.Presets()[mode]
 	if !ok {

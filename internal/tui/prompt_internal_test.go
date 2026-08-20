@@ -414,6 +414,7 @@ type answers struct {
 	given   []given
 	decided bool
 	modes   []permission.Mode
+	yolos   []bool
 }
 
 type given struct {
@@ -426,9 +427,19 @@ func (a *answers) Resolve(callID string, d permission.Decision) bool {
 	return a.decided
 }
 
+// SetMode records the switch and, as the real service does, ends any bypass the
+// session had armed (permission/service.go).
 func (a *answers) SetMode(mode permission.Mode) error {
 	a.modes = append(a.modes, mode)
+	a.yolos = append(a.yolos, false)
 	return nil
+}
+
+func (a *answers) SetYolo(on bool) { a.yolos = append(a.yolos, on) }
+
+// armed is whether the last thing this was told left the bypass on.
+func (a *answers) armed() bool {
+	return len(a.yolos) > 0 && a.yolos[len(a.yolos)-1]
 }
 
 // serviceAnswers is a real service standing in for the UI's whole seam. Its
