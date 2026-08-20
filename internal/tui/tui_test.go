@@ -21,6 +21,12 @@ const (
 	// settle is how long a test waits for something the UI has already been told
 	// to do. Reaching it is a failure, never a slow machine.
 	settle = 5 * time.Second
+
+	// beforehand is how long a test holds still to build confidence that
+	// something has *not* happened yet. Too short and a slow machine passes the
+	// check by accident; there is no way to make waiting for an absence certain,
+	// only more or less likely to catch a real ordering bug.
+	beforehand = 200 * time.Millisecond
 )
 
 // TestRunEndsThePumpWithTheProgram is the wiring, and TestMain checks the half
@@ -124,6 +130,44 @@ func TestAProgramStoppedWithoutUpdateStillEndsItsTurn(t *testing.T) {
 	}
 }
 
+// TestRunWaitsForTheInFlightTurnBeforeReturning is the ordering session
+// persistence will need: Run committing what a cancelled turn produced (design
+// §4, decisions.md) is only real if nothing that reads the transcript after
+// Run returns can race the commit. Bubble Tea does not give this for free —
+// the goroutine running a tea.Cmd is deliberately not waited on at shutdown,
+// so ctrl+c's own key handling has to hold Run open until Send itself returns.
+func TestRunWaitsForTheInFlightTurnBeforeReturning(t *testing.T) {
+	turner := newWaitingTurner()
+	turner.release = make(chan struct{})
+	p := tui.New(tui.Config{}, headless(typing("hi"+enter+ctrlC))...)
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- p.Run(turner) }()
+
+	select {
+	case <-turner.entered:
+	case <-time.After(settle):
+		t.Fatal("no turn ever started, so nothing here is being cancelled mid-turn")
+	}
+
+	select {
+	case <-stopped:
+		t.Fatal("Run returned while the turn's Send call was still running")
+	case <-time.After(beforehand):
+	}
+
+	close(turner.release)
+
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Run returned %v", err)
+		}
+	case <-time.After(settle):
+		t.Fatal("Run never returned once the turn's Send call did")
+	}
+}
+
 // headless is a program with no terminal at either end.
 func headless(opts ...tea.ProgramOption) []tea.ProgramOption {
 	return append([]tea.ProgramOption{
@@ -141,10 +185,14 @@ type idleTurner struct{}
 func (idleTurner) Send(context.Context, string) error { return nil }
 
 // waitingTurner stays in Send until its turn is cancelled, and reports how the
-// context ended.
+// context ended. release is nil for the ordinary case; a test that needs Send
+// held open past the cancellation itself sets it, which is what turns "Run and
+// the turn both eventually finish" into "Run does not finish before the turn
+// does" — waiting for each separately would still pass if Run returned first.
 type waitingTurner struct {
 	entered chan struct{}
 	ran     chan error
+	release chan struct{}
 }
 
 func newWaitingTurner() *waitingTurner {
@@ -154,6 +202,9 @@ func newWaitingTurner() *waitingTurner {
 func (w *waitingTurner) Send(ctx context.Context, _ string) error {
 	close(w.entered)
 	<-ctx.Done()
+	if w.release != nil {
+		<-w.release
+	}
 	w.ran <- ctx.Err()
 	return agent.ErrInterrupted
 }

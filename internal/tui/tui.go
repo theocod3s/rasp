@@ -56,8 +56,21 @@ func (p *Program) Run(a Turner) error {
 	prog := tea.NewProgram(newModel(ctx, a, p.cfg), p.opts...)
 	p.bridge.start(prog)
 	defer p.bridge.stop()
-	defer cancel()
 
-	_, err := prog.Run()
+	final, err := prog.Run()
+
+	// Not deferred: a deferred cancel runs after Wait below, which would then
+	// block forever on the very turn this cancel is what stops.
+	cancel()
+
+	// Waited on because Bubble Tea's own shutdown does not (model.go turns) —
+	// without this, Run can return while the turn ctrl+c just cancelled is
+	// still committing what it has. No timeout: design §6 rule 7 threads the
+	// context into everything a turn can be waiting on, so this is meant to
+	// return as soon as that cancellation does — a bound here would let Run
+	// exit before the commit again, on whichever call is the one that is slow.
+	if m, ok := final.(Model); ok && m.turns != nil {
+		m.turns.Wait()
+	}
 	return err
 }

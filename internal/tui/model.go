@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -86,6 +87,22 @@ type Model struct {
 	// rescheduling itself.
 	beating bool
 
+	// armed is whether the last key was an Esc that asked to cancel the running
+	// turn, so the next Esc confirms it instead of cancelling on the first press
+	// a stray keystroke could send (design §6 rule 7). press clears it on any
+	// other key, and finish clears it once the turn it was armed against ends,
+	// however that happens — a stale arm from a turn that already finished
+	// would confirm a cancel with nothing left to cancel.
+	armed bool
+
+	// turns counts turn goroutines still running. Bubble Tea's own shutdown
+	// leaks a tea.Cmd goroutine rather than wait on one that can run as long as
+	// a turn does, so Run waits on this instead — what stops ctrl+c returning
+	// while the turn it just cancelled is still committing what it has (turn.go,
+	// decisions.md). A pointer, shared by every copy of the model; allocated in
+	// begin rather than here, so a model with no turn begun costs nothing extra.
+	turns *sync.WaitGroup
+
 	// now is the model's clock. nil is time.Now; a test sets it to name the
 	// times the frames it compares were drawn between.
 	now func() time.Time
@@ -143,6 +160,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // matches nothing.
 func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	key := msg.Key()
+	if key.Code != tea.KeyEscape {
+		m.armed = false
+	}
 	switch {
 	case key.Mod == tea.ModCtrl && key.Code == 'c':
 		// Here rather than left to the program's exit, so the turn is already
@@ -150,7 +170,7 @@ func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		m.interrupt()
 		return m, tea.Quit
 	case key.Code == tea.KeyEscape:
-		m.interrupt()
+		return m.escape(), nil
 	case key.Code == tea.KeyEnter:
 		return m.begin()
 	case key.Mod == tea.ModCtrl && key.Code == 'r':
@@ -161,6 +181,22 @@ func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		m.input += key.Text
 	}
 	return m, nil
+}
+
+// escape is Esc's two-stage cancel (design §6 rule 7): a turn with nothing
+// running has nothing to arm, the first press against a running turn only
+// arms, and the second confirms it by cancelling.
+func (m Model) escape() Model {
+	if !m.busy {
+		return m
+	}
+	if !m.armed {
+		m.armed = true
+		return m
+	}
+	m.interrupt()
+	m.armed = false
+	return m
 }
 
 func backspace(s string) string {
@@ -215,7 +251,13 @@ func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
 		m = m.report(ev.Err)
 
 	case agent.EventTurnEnd:
+		// EventTurnEnd and turnDone (finish, turn.go) both mark the same turn
+		// over, and arrive by different routes that make no promise about which
+		// lands first — so busy and armed are cleared on both rather than one.
+		// Leaving armed here would strand the hint on screen between this event
+		// and finish for a turn there is nothing left to confirm a cancel on.
 		m.busy = false
+		m.armed = false
 		m.status = m.status.turnEnded(ev.Usage)
 		m = m.settle()
 	}
@@ -412,7 +454,10 @@ func (m Model) View() tea.View {
 	if m.err != nil {
 		writeLine(&b, "error: "+m.err.Error())
 	}
-	if m.busy {
+	switch {
+	case m.armed:
+		writeLine(&b, "press esc again to cancel")
+	case m.busy:
 		writeLine(&b, "working…")
 	}
 	writeLine(&b, m.status.Render(m.width, m.background))
