@@ -129,6 +129,11 @@ func snapshots() []snapshot {
 	return []snapshot{
 		{name: "empty"},
 		{name: "busy", prompt: prompt},
+		// The command list. Recorded rather than only asserted because it is the
+		// one place the whole set of commands is visible to a reader, so a command
+		// added, renamed or newly able to do its job shows up here as a diff in the
+		// words a user will actually read.
+		{name: "help", keys: typedLine("/help")},
 		// The first Esc against a running turn, which arms rather than cancels
 		// (design §6 rule 7) — the hint replacing "working…" is the only thing
 		// this state exists to draw.
@@ -168,6 +173,15 @@ func snapshots() []snapshot {
 			{Kind: agent.EventTurnEnd},
 		}},
 	}
+}
+
+// typedLine is a line typed into the input and sent.
+func typedLine(line string) []tea.KeyPressMsg {
+	keys := make([]tea.KeyPressMsg, 0, len(line)+1)
+	for _, r := range line {
+		keys = append(keys, tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	return append(keys, key(tea.KeyEnter))
 }
 
 // asking is a reply that also asked for tools, the blocks in the order the
