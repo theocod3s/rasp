@@ -52,10 +52,14 @@ func (m Model) begin() (Model, tea.Cmd) {
 	}
 	m.turns.Add(1)
 
+	// What the model is sent is not always what the user typed: a mode switched
+	// since the last turn rides in ahead of it (mode.go).
+	m, sent := m.sending(text)
+
 	turner, turns := m.turner, m.turns
 	return m, func() tea.Msg {
 		defer turns.Done()
-		return turnDone{err: turner.Send(ctx, text)}
+		return turnDone{err: turner.Send(ctx, sent)}
 	}
 }
 

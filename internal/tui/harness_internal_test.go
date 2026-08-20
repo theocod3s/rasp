@@ -136,6 +136,11 @@ func snapshots() []snapshot {
 		// added, renamed or newly able to do its job shows up here as a diff in the
 		// words a user will actually read.
 		{name: "help", keys: typedLine("/help")},
+		// A mode switched from the keyboard. Recorded because it is the one place
+		// the words a switch tells the model are visible to a reader, and they are
+		// the same words the next turn carries (design §7.5) — so an edit to them
+		// shows up here rather than only inside a transcript nobody reads.
+		{name: "mode", keys: []tea.KeyPressMsg{shiftTab}},
 		// The first Esc against a running turn, which arms rather than cancels
 		// (design §6 rule 7) — the hint replacing "working…" is the only thing
 		// this state exists to draw.

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"errors"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -9,8 +8,6 @@ import (
 	"github.com/theocod3s/rasp/internal/permission"
 	"github.com/theocod3s/rasp/internal/tui/dialog"
 )
-
-var errNoPermissions = errors.New("this session has no permission service, so there is no mode to switch")
 
 // Permissions is the permission service as the UI reaches it: the answer to a
 // question the service opened, and the mode the session is in. What an answer
@@ -21,9 +18,9 @@ type Permissions interface {
 	// this call is the one that decided it.
 	Resolve(callID string, d permission.Decision) bool
 
-	// SetMode installs the rules a mode stands for, and is the half of a mode
-	// switch that is not the status line. It fails on a mode with no rules to
-	// install rather than leaving the session in one the ladder cannot read.
+	// SetMode installs the rules a mode stands for. A mode with no rules to
+	// install fails rather than leaving the session in one the ladder cannot
+	// read (mode.go).
 	SetMode(mode permission.Mode) error
 }
 
@@ -113,19 +110,4 @@ func (m Model) dismissAll() Model {
 		m = m.dismiss()
 	}
 	return m
-}
-
-// setMode carries a mode change to the service and to the line that says which
-// mode the session is in (design §7.4). No key is bound to it yet: the cycle
-// that will bind one is its own piece of work, and this is the half it needs in
-// order to be one keybinding rather than a second place modes are decided.
-func (m Model) setMode(mode permission.Mode) (Model, error) {
-	if m.permissions == nil {
-		return m, errNoPermissions
-	}
-	if err := m.permissions.SetMode(mode); err != nil {
-		return m, err
-	}
-	m.status.mode = mode
-	return m, nil
 }
