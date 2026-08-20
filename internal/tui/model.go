@@ -172,7 +172,7 @@ func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	case key.Code == tea.KeyEscape:
 		return m.escape(), nil
 	case key.Code == tea.KeyEnter:
-		return m.begin()
+		return m.submit()
 	case key.Mod == tea.ModCtrl && key.Code == 'r':
 		return m.expand(), nil
 	case key.Code == tea.KeyBackspace:
