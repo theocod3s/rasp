@@ -141,13 +141,19 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 
 	// A file that arrived is one this session never read, which is what the
 	// tracker refuses. Its guard was skipped because the stat found nothing.
+	//
+	// Gone again by now is not a refusal: there is nothing left to protect, and
+	// treating a third turn of the same race as a failure would refuse a write
+	// that is once more an ordinary creation.
 	if arrived {
-		info, err := w.ws.Stat(rel)
-		if err != nil {
+		switch info, err := w.ws.Stat(rel); {
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
 			return writeRefused(err.Error()), nil
-		}
-		if err := refuseUnread(w.reads, rel, info.ModTime(), "overwriting it"); err != nil {
-			return writeRefused(err.Error()), nil
+		default:
+			if err := refuseUnread(w.reads, rel, info.ModTime(), "overwriting it"); err != nil {
+				return writeRefused(err.Error()), nil
+			}
 		}
 	}
 
