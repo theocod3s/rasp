@@ -1856,13 +1856,18 @@ refused by the API, exactly as §3.1's ladder answers for an effort rung a model
 **Two constraints on `mode`, both about the same hazard.** A project config is a file in a
 repository — it arrives from `git clone`, and nobody reads it.
 
-1. **`"mode": "yolo"` starts no session, from any layer.** A project config is refused as it
-   loads, naming the file — otherwise cloning a repository could disable every guardrail before
-   the user has read a single line of it. Every other layer, the global config included, is
-   refused a step later: yolo has no preset to run under (§7.2), so startup stops there rather
-   than in the resolver. The reason is the same both ways round — a value in a config file is
-   back on every run after it, and the bypass may not be. It is armed per run instead, by
-   `--yolo` or `/yolo`, and it is gone with the process.
+1. **`"mode": "yolo"` is refused from every layer**, the user's own global config included, and
+   refused in the resolver — where the file that asked for it is still named and the answer can
+   point at `--yolo`. The reason is one sentence: a config file is read again on every run, and
+   a bypass ahead of the ladder may never be. A project config gets a second sentence, because
+   that one arrives from somebody else — honouring it would disable every guardrail on
+   `git clone`, before anyone had read a line of the code. Yolo is armed per run, by `--yolo`
+   or `/yolo`, and it goes with the process.
+
+   `Presets` has no yolo entry either (§7.2), so a `Config` carrying the name in-process is
+   refused a second time at startup. Two refusals rather than one: the resolver's is the one a
+   user meets, and the second is what stops any later caller composing a session around a mode
+   the ladder cannot run.
 2. **`modes.yolo` overrides are ignored entirely.** Yolo short-circuits ahead of pattern
    evaluation (§7.7), so an override could only ever create the false impression of a
    constraint that is not being enforced. Configuring one is a warning at startup, not a

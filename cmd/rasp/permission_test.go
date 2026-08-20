@@ -241,31 +241,30 @@ func TestNothingInTheConfigurationCanArmTheBypass(t *testing.T) {
 }
 
 // TestAGlobalConfigNamingYoloStartsNoSession is the same rule where it is least
-// obvious. The config layer accepts the name in the user's own file (design
-// §10), and startup still refuses it: a value in a file is back on the next run
-// and every run after that, which is the one thing the bypass may never be.
+// obvious — the user's own file, asking for their own machine. A value in a
+// config file is back on the next run and every run after that, which is the one
+// thing the bypass may never be, so the refusal comes from the resolver: the
+// file is still named at that point, and the answer can say what does work.
 func TestAGlobalConfigNamingYoloStartsNoSession(t *testing.T) {
 	projectConfig(t, `{}`)
-	globalConfig(t, `{"mode": "yolo"}`)
+	path := globalConfig(t, `{"mode": "yolo"}`)
 
-	res, err := config.Load(config.Sources{})
-	if err == nil && res.Config.Mode != config.ModeYolo {
-		t.Fatalf("the global file resolved to mode %q, so the refusal below would be about "+
-			"something else entirely", res.Config.Mode)
+	_, err := config.Load(config.Sources{})
+	if err == nil {
+		t.Fatal("a global config naming yolo resolved cleanly, so `rasp` would go on to start " +
+			"a session under a mode with no rules — or under none")
 	}
-	if err != nil {
-		// Refused a layer earlier than expected, which is a stronger answer than
-		// this test asks for — but not the one it is written about.
-		t.Skipf("the config layer refused it outright: %v", err)
-	}
-	if _, err := newGate(res.Config, nil, nil); err == nil {
-		t.Fatal("a session started from a global config naming yolo")
+	for _, want := range []string{path, "--yolo"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q:\n%s", want, err)
+		}
 	}
 }
 
-// globalConfig writes a global config and points the environment at it. After
-// projectConfig, which puts an empty one in place of the developer's own.
-func globalConfig(t *testing.T, contents string) {
+// globalConfig writes a global config, points the environment at it, and returns
+// its path. After projectConfig, which puts an empty one in place of the
+// developer's own.
+func globalConfig(t *testing.T, contents string) string {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -277,6 +276,7 @@ func globalConfig(t *testing.T, contents string) {
 		t.Fatalf("writing %s: %v", path, err)
 	}
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	return path
 }
 
 // TestAModeWithNoRulesRefusesToStart. Yolo is a bypass ahead of the ladder

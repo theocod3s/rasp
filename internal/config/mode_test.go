@@ -36,10 +36,14 @@ func TestProjectYoloIsRejected(t *testing.T) {
 		t.Errorf("error names key %q, want %q", invalid.Key, "mode")
 	}
 	msg := err.Error()
-	for _, want := range []string{path, "--yolo", "global config"} {
+	for _, want := range []string{path, "--yolo", "git clone"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error does not mention %q:\n%s", want, msg)
 		}
+	}
+	// And it does not send the reader to a file that would be refused as well.
+	if strings.Contains(msg, "global config instead") {
+		t.Errorf("the refusal advises moving the value somewhere it is also refused:\n%s", msg)
 	}
 }
 
@@ -56,36 +60,32 @@ func TestProjectYoloIsRejectedEvenWhenOverridden(t *testing.T) {
 	}
 }
 
-// TestYoloIsAcceptedFromTheGlobalConfig is the other half.
-func TestYoloIsAcceptedFromTheGlobalConfig(t *testing.T) {
-	res := load(t, config.Sources{GlobalPath: global(t, `{"mode": "yolo"}`)})
-	if got := res.Config.Mode; got != "yolo" {
-		t.Errorf("mode = %q, want yolo to be accepted from the global config", got)
-	}
-}
-
-// TestYoloIsNotSelectableThroughTheChain covers the layers design §10 does not
-// list.
-func TestYoloIsNotSelectableThroughTheChain(t *testing.T) {
+// TestYoloIsNotSelectableFromAnyLayer. Every one of them, including the user's
+// own global file: `mode` picks a preset the ladder runs under, and yolo is a
+// bypass ahead of the ladder that is armed for one run. A layer that took the
+// value would put it back on every run after it, which is what the bypass may
+// never do — and the refusal has to name the way that does work, or a reader who
+// meant it has nowhere to go.
+func TestYoloIsNotSelectableFromAnyLayer(t *testing.T) {
 	tests := []struct {
 		name string
 		src  config.Sources
 	}{
-		{
-			name: "environment",
-			src:  config.Sources{Getenv: env{"RASP_MODE": "yolo"}.lookup},
-		},
-		{
-			name: "flag",
-			src:  config.Sources{Flags: map[string]string{"mode": "yolo"}},
-		},
+		{name: "global config", src: config.Sources{GlobalPath: global(t, `{"mode": "yolo"}`)}},
+		{name: "project config", src: config.Sources{ProjectDir: project(t, `{"mode": "yolo"}`)}},
+		{name: "environment", src: config.Sources{Getenv: env{"RASP_MODE": "yolo"}.lookup}},
+		{name: "flag", src: config.Sources{Flags: map[string]string{"mode": "yolo"}}},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			src := tc.src
-			src.GlobalPath = filepath.Join(t.TempDir(), config.File)
-			src.ProjectDir = t.TempDir()
+			if src.GlobalPath == "" {
+				src.GlobalPath = filepath.Join(t.TempDir(), config.File)
+			}
+			if src.ProjectDir == "" {
+				src.ProjectDir = t.TempDir()
+			}
 			if src.Getenv == nil {
 				src.Getenv = env{}.lookup
 			}

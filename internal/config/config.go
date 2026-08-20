@@ -85,9 +85,9 @@ type UI struct {
 }
 
 // Mode names. internal/permission owns the Mode type and its presets (design
-// §7.1); config knows only the names, to reject one of them from a project file
-// and catch a typo before startup. Importing permission would make config a
-// non-leaf package, so a mode added there has to be added here too.
+// §7.1); config knows only the names, to catch a typo before startup and to
+// refuse yolo with an answer of its own. Importing permission would make config
+// a non-leaf package, so a mode added there has to be added here too.
 const (
 	ModePlan   = "plan"
 	ModeManual = "manual"
@@ -95,8 +95,10 @@ const (
 	ModeYolo   = "yolo"
 )
 
-// modeNames is every mode a config file may name, in cycle order with yolo last.
-// Whether a given layer may select one is validate.go's business.
+// modeNames is every mode this build knows, in cycle order with yolo last. It
+// is not the set a config file may select — yolo is refused from every layer
+// (validate.go) — and it is listed here so that refusal can be about the bypass
+// rather than about a name nobody recognises.
 var modeNames = []string{ModePlan, ModeManual, ModeAuto, ModeYolo}
 
 // Permission rules, as a config file writes them, repeated here for the reason
