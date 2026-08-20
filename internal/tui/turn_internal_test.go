@@ -27,7 +27,7 @@ func TestEnterHandsTheTurnToACommandRatherThanRunningIt(t *testing.T) {
 	// A turner that answers instantly, so a Send called from Update fails the
 	// assertion below rather than deadlocking the test into a timeout.
 	turner := &promptTurner{started: make(chan context.Context, 1)}
-	m := typed(newModel(t.Context(), turner), "fix the auth test")
+	m := typed(newModel(t.Context(), turner, Config{}), "fix the auth test")
 
 	m, cmd := m.press(key(tea.KeyEnter))
 
@@ -69,7 +69,7 @@ func TestEnterHandsTheTurnToACommandRatherThanRunningIt(t *testing.T) {
 // does not draw, because the person who caused it is watching (decisions.md).
 func TestEscCancelsTheTurnAndTheUIStaysQuietAboutIt(t *testing.T) {
 	turner := newTurner(fmt.Errorf("the turn stopped: %w", agent.ErrInterrupted))
-	m := typed(newModel(t.Context(), turner), "read every file")
+	m := typed(newModel(t.Context(), turner, Config{}), "read every file")
 
 	m, cmd := m.press(key(tea.KeyEnter))
 	done := run(cmd)
@@ -107,7 +107,7 @@ func TestEscCancelsTheTurnAndTheUIStaysQuietAboutIt(t *testing.T) {
 // is cancelled — which here is the end of the session.
 func TestAFinishedTurnReleasesItsContext(t *testing.T) {
 	turner := &promptTurner{started: make(chan context.Context, 1)}
-	m := typed(newModel(t.Context(), turner), "hello")
+	m := typed(newModel(t.Context(), turner, Config{}), "hello")
 
 	m, cmd := m.press(key(tea.KeyEnter))
 	m = update(m, waitFor(t, run(cmd)))
@@ -129,7 +129,7 @@ func TestAFinishedTurnReleasesItsContext(t *testing.T) {
 // anything else between the interrupt and the exit.
 func TestCtrlCCancelsTheTurnBeforeItQuits(t *testing.T) {
 	turner := newTurner(nil)
-	m := typed(newModel(t.Context(), turner), "go")
+	m := typed(newModel(t.Context(), turner, Config{}), "go")
 
 	m, cmd := m.press(key(tea.KeyEnter))
 	run(cmd)
@@ -155,7 +155,7 @@ func TestCtrlCCancelsTheTurnBeforeItQuits(t *testing.T) {
 // red line for pressing Enter twice.
 func TestASecondPromptWhileATurnRunsIsNotSent(t *testing.T) {
 	turner := newTurner(nil)
-	m := typed(newModel(t.Context(), turner), "first")
+	m := typed(newModel(t.Context(), turner, Config{}), "first")
 
 	m, cmd := m.press(key(tea.KeyEnter))
 	run(cmd)
@@ -194,7 +194,7 @@ func TestAnInterruptionIsQuietOnEveryRouteItArrivesBy(t *testing.T) {
 		{"the turn's own outcome", turnDone{err: stopped}},
 	} {
 		t.Run(tc.route, func(t *testing.T) {
-			m := update(newModel(t.Context(), &promptTurner{}), tc.msg)
+			m := update(newModel(t.Context(), &promptTurner{}, Config{}), tc.msg)
 
 			if m.err != nil {
 				t.Errorf("the UI kept %v to draw, from %s", m.err, tc.route)
@@ -221,7 +221,7 @@ func TestATurnThatFailedForAnyOtherReasonIsDrawn(t *testing.T) {
 		{"the turn's own outcome", turnDone{err: broke}},
 	} {
 		t.Run(tc.route, func(t *testing.T) {
-			m := update(newModel(t.Context(), &promptTurner{}), tc.msg)
+			m := update(newModel(t.Context(), &promptTurner{}, Config{}), tc.msg)
 
 			if !errors.Is(m.err, broke) {
 				t.Errorf("the model kept %v, want the failure that arrived by %s", m.err, tc.route)
@@ -263,7 +263,7 @@ func TestInterruptingFromTheUILeavesATranscriptTheNextRequestCanBeBuiltFrom(t *t
 		t.Fatalf("agent.New: %v", err)
 	}
 
-	m := typed(newModel(t.Context(), a), "go")
+	m := typed(newModel(t.Context(), a, Config{}), "go")
 	m, cmd := m.press(key(tea.KeyEnter))
 	done := run(cmd)
 

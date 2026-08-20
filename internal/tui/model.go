@@ -53,6 +53,11 @@ type Model struct {
 	// already looking at.
 	streaming *llm.Message
 
+	// status is the line under the conversation. It sits beside the chat rather
+	// than inside it, so what it says can move without the conversation being
+	// asked to draw itself again.
+	status status
+
 	// cards is every tool call drawn so far, by the provider's call id, so one
 	// can be redrawn without the event that made it: an elapsed time that has
 	// moved on, an expansion the user has just asked for. Shared between copies
@@ -97,8 +102,8 @@ type card struct {
 	started time.Time
 }
 
-func newModel(ctx context.Context, turner Turner) Model {
-	return Model{ctx: ctx, turner: turner}
+func newModel(ctx context.Context, turner Turner, cfg Config) Model {
+	return Model{ctx: ctx, turner: turner, status: status{model: cfg.Model, mode: cfg.Mode}}
 }
 
 func (m Model) clock() time.Time {
@@ -179,6 +184,11 @@ func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
 		if ev.Message != nil {
 			m.chat.Set(replyKey(m.replies), chat.Message{Content: *ev.Message, Done: true})
 			m = m.announce(*ev.Message)
+			// Here and not on a delta: a step's usage is final on the message that
+			// went into the transcript, and a provider that reports its counts only
+			// at the end would otherwise drop the line to nothing for the length of
+			// every stream.
+			m.status = m.status.call(ev.Message.Usage)
 		}
 		m.streaming = nil
 		m.replies++
@@ -206,6 +216,7 @@ func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
 
 	case agent.EventTurnEnd:
 		m.busy = false
+		m.status = m.status.turnEnded(ev.Usage)
 		m = m.settle()
 	}
 	return m, nil
@@ -404,6 +415,7 @@ func (m Model) View() tea.View {
 	if m.busy {
 		writeLine(&b, "working…")
 	}
+	writeLine(&b, m.status.Render(m.width, m.background))
 	b.WriteString(chat.Caret + m.input)
 	return tea.NewView(b.String())
 }

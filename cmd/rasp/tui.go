@@ -7,6 +7,7 @@ import (
 
 	"github.com/theocod3s/rasp/internal/agent"
 	"github.com/theocod3s/rasp/internal/config"
+	"github.com/theocod3s/rasp/internal/permission"
 	"github.com/theocod3s/rasp/internal/tool"
 	"github.com/theocod3s/rasp/internal/tui"
 )
@@ -35,7 +36,13 @@ func startTUI(cmd *cobra.Command) error {
 		return err
 	}
 
-	ui := tui.New()
+	// The configured id rather than the one buildProvider puts on the wire: the
+	// wire id has had its provider cut off the front, and `claude-opus-5` served
+	// through a router says less than the line the user wrote.
+	ui := tui.New(tui.Config{
+		Model: res.Config.Model,
+		Mode:  permission.Mode(res.Config.Mode),
+	})
 	a, err := agent.New(agent.Config{
 		Provider:  provider,
 		Tools:     tool.NewRegistry(nil),

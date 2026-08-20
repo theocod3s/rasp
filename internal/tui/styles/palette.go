@@ -26,8 +26,15 @@ type Palette struct {
 
 	// Muted is what the UI put on the screen itself rather than what it was given
 	// to show: the mark on a line the terminal was too narrow for, the note that
-	// a file ends without a newline.
+	// a file ends without a newline, the status line under the conversation.
 	Muted lipgloss.Style
+
+	// ModePlan and ModeAuto tint the permission mode the session is in. Manual
+	// has no token because it draws in the terminal's own foreground (design
+	// §7.8) — which is also what leaves the two modes that change what a tool may
+	// do as the two that catch the eye.
+	ModePlan lipgloss.Style
+	ModeAuto lipgloss.Style
 }
 
 // For returns the palette for bg. Anything that is not Light is dark, so a
@@ -58,5 +65,8 @@ func build(isDark bool) Palette {
 		// Muted, not faint. It carries the mark saying a line was cut off, and a
 		// reader who cannot see that mark reads a shortened line as the whole one.
 		Muted: fg(lipgloss.Color("#6e7781"), lipgloss.Color("#7d8590")),
+
+		ModePlan: fg(lipgloss.Color("#0550ae"), lipgloss.Color("#58a6ff")),
+		ModeAuto: fg(lipgloss.Color("#8a6100"), lipgloss.Color("#d29922")),
 	}
 }

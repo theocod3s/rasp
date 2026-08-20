@@ -7,4 +7,5 @@
   edit failed: Cannot edit auth.go: it has not been read this session, so
   old_string would be matched against a file rasp has not seen. Read it first.
   [38;5;252mBoth call sites read the parsed header instead of parsing it[m[38;5;252m again.[m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m
+manual[38;2;125;133;144m · anthropic/claude-opus-5 · ctx 12.8k · in 24.8k · out 205 · cost —[m
 › 
