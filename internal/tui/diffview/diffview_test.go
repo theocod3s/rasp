@@ -98,6 +98,65 @@ func TestAWideLineIsCutRatherThanWrapped(t *testing.T) {
 	}
 }
 
+// TestAFilesOwnControlCharactersAreNotHandedToTheTerminal. A diff draws the
+// bytes of a file nobody vetted. An ESC in one lets its contents recolour the
+// screen or swallow the text after it — and a cut landing inside a sequence
+// emits a half-written one, which is worse. A BEL sounds on every frame the
+// line is in. A CR writes what comes next back over the line just drawn, and
+// every line of every CRLF file ends with one.
+func TestAFilesOwnControlCharactersAreNotHandedToTheTerminal(t *testing.T) {
+	hostile := lines(
+		"@@ -1,3 +1,3 @@",
+		"-old line\r",
+		"+colour \x1b[41mRED\x1b[0m, a bell \a and a null \x00, then enough text to reach the cut",
+	)
+
+	drawn := diffview.Render(hostile, 40, styles.For(styles.Dark))
+	for _, row := range strings.Split(drawn, "\n") {
+		for _, escape := range []string{"\x1b[41m", "\x1b[0m"} {
+			if strings.Contains(row, escape) {
+				t.Errorf("the row hands the terminal %q, which came out of the file: %q", escape, row)
+			}
+		}
+		if strings.ContainsAny(row, "\r\a\x00") {
+			t.Errorf("the row carries a control character the terminal acts on: %q", row)
+		}
+	}
+
+	// Dropping the ESC and nothing else, so what it introduced stays visible as
+	// text rather than vanishing from a line that says it changed.
+	if !strings.Contains(text(drawn), "[41mRED") {
+		t.Errorf("the escape's own text is gone as well, so the line no longer says what it holds:\n%s",
+			text(drawn))
+	}
+}
+
+// TestACutNeverLandsWiderThanTheTerminal covers what a sum of rune widths gets
+// wrong in both directions. A flag emoji is two runes and two cells together
+// and two cells each apart, so summing over-counts; a sun followed by the
+// variation selector that makes it emoji is one cell of runes and two cells
+// drawn, so summing under-counts — and under-counting is a line the terminal
+// wraps after all.
+func TestACutNeverLandsWiderThanTheTerminal(t *testing.T) {
+	for name, content := range map[string]string{
+		"flags":               strings.Repeat("\U0001F1FA\U0001F1F8", 6),
+		"variation selectors": strings.Repeat("☀️", 6),
+		"combining marks":     strings.Repeat("é", 12),
+		"wide":                strings.Repeat("漢", 12),
+	} {
+		t.Run(name, func(t *testing.T) {
+			diff := lines("@@ -1,1 +1,1 @@", "+ab"+content)
+			for width := 2; width <= 20; width++ {
+				for _, row := range strings.Split(diffview.Render(diff, width, styles.For(styles.Dark)), "\n") {
+					if n := lipgloss.Width(row); n > width {
+						t.Errorf("at width %d a row measures %d: %q", width, n, text(row))
+					}
+				}
+			}
+		})
+	}
+}
+
 // TestTabsAreExpandedBeforeAnythingIsMeasured. Cell measurement counts a tab as
 // nothing, so a tab-indented line — which most Go is — measures short, is left
 // uncut, and then wraps in the terminal: the failure the cut exists to prevent,

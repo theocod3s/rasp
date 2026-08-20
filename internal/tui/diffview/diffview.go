@@ -2,6 +2,7 @@ package diffview
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
 
@@ -63,7 +64,7 @@ func body(unified string) []string {
 }
 
 func draw(line string, width int, p styles.Palette) string {
-	text, cut := fit(tabs(line), width)
+	text, cut := fit(expand(line), width)
 	drawn := classify(line, p).Render(text)
 	if cut {
 		drawn += p.Muted.Render(elision)
@@ -89,28 +90,40 @@ func classify(line string, p styles.Palette) lipgloss.Style {
 	return p.DiffContext
 }
 
-// tabs expands a line's tabs to the next stop. Cell measurement counts a tab as
-// nothing, so a tab-indented line — which most Go is — measures short, is left
-// uncut, and then wraps in the terminal: the exact failure the cut is here to
-// prevent.
-func tabs(line string) string {
-	if !strings.Contains(line, "\t") {
-		return line
-	}
-
+// expand turns a diff line into something a terminal will draw rather than act
+// on: tabs become spaces to the next stop, and every other control character is
+// dropped.
+//
+// Both are the same problem — a file is arbitrary bytes and this draws them.
+// Cell measurement counts a tab as nothing, so a tab-indented line, which most
+// Go is, measures short, survives the cut and then wraps: the failure the cut
+// exists to prevent, arriving through the check meant to catch it. The rest a
+// terminal obeys instead of printing — an ESC lets a file's own contents
+// recolour the screen or swallow what follows it, a BEL sounds on every frame
+// the line is drawn in, and a CR writes the next characters back over this one.
+// The trailing CR on every line of a CRLF file makes that ordinary rather than
+// exotic. Dropping the ESC alone leaves the rest of a sequence as literal text,
+// which is visible and inert.
+func expand(line string) string {
 	var (
 		b   strings.Builder
 		col int
 	)
 	for _, r := range line {
-		if r == '\t' {
+		switch {
+		case r == '\t':
 			n := tabWidth - col%tabWidth
 			b.WriteString(strings.Repeat(" ", n))
 			col += n
-			continue
+		case r < 0x20 || r == 0x7f:
+		default:
+			w := 1
+			if r > 0x7f {
+				w = lipgloss.Width(string(r))
+			}
+			b.WriteRune(r)
+			col += w
 		}
-		b.WriteRune(r)
-		col += lipgloss.Width(string(r))
 	}
 	return b.String()
 }
@@ -123,6 +136,9 @@ func fit(line string, width int) (string, bool) {
 		return line, false
 	}
 
+	// Rune by rune, stopping at the limit rather than measuring the whole line,
+	// so a minified file's one 500KB line costs the width of the terminal and
+	// not its own length.
 	limit := width - lipgloss.Width(elision)
 	var (
 		b     strings.Builder
@@ -136,5 +152,15 @@ func fit(line string, width int) (string, bool) {
 		cells += w
 		b.WriteRune(r)
 	}
-	return b.String(), true
+
+	// Measured once more whole, because a sum of rune widths is not the width of
+	// what they spell: a flag emoji is two runes and two cells together, and two
+	// cells each once the cut falls between them. The result is a terminal's
+	// width at most, so shrinking it here is cheap however long the line was.
+	out := b.String()
+	for out != "" && lipgloss.Width(out) > limit {
+		_, n := utf8.DecodeLastRuneInString(out)
+		out = out[:len(out)-n]
+	}
+	return out, true
 }
