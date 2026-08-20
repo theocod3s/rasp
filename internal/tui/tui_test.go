@@ -27,7 +27,7 @@ const (
 // this cannot see: Run owns the drainer's lifetime, so a UI the user quit leaves
 // nothing behind. A pump still parked in Send is a process that will not exit.
 func TestRunEndsThePumpWithTheProgram(t *testing.T) {
-	p := tui.New(headless(typing(ctrlC))...)
+	p := tui.New(tui.Config{}, headless(typing(ctrlC))...)
 
 	stopped := make(chan error, 1)
 	go func() { stopped <- p.Run(idleTurner{}) }()
@@ -52,7 +52,7 @@ func TestRunEndsThePumpWithTheProgram(t *testing.T) {
 // would reach its timeout with the program never having quit.
 func TestTheUIKeepsHandlingKeysWhileATurnRuns(t *testing.T) {
 	turner := newWaitingTurner()
-	p := tui.New(headless(typing("hi" + enter + ctrlC))...)
+	p := tui.New(tui.Config{}, headless(typing("hi"+enter+ctrlC))...)
 
 	stopped := make(chan error, 1)
 	go func() { stopped <- p.Run(turner) }()
@@ -93,7 +93,7 @@ func TestAProgramStoppedWithoutUpdateStillEndsItsTurn(t *testing.T) {
 	defer keyboard.Close()
 
 	turner := newWaitingTurner()
-	p := tui.New(headless(tea.WithInput(keys), tea.WithContext(ctx))...)
+	p := tui.New(tui.Config{}, headless(tea.WithInput(keys), tea.WithContext(ctx))...)
 
 	stopped := make(chan error, 1)
 	go func() { stopped <- p.Run(turner) }()

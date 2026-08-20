@@ -13,4 +13,5 @@
   [38;2;63;185;80m+func TestParsesTheHeaderOnce(t *testing.T) {[m
   [38;2;63;185;80m+   req := request(t)[m
   [38;2;63;185;80m+}[m
+manual[38;2;125;133;144m · anthropic/claude-opus-5 · ctx 0 · in 0 · out 0 · cost —[m
 › 

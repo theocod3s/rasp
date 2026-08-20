@@ -7,11 +7,22 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/theocod3s/rasp/internal/agent"
+	"github.com/theocod3s/rasp/internal/permission"
 )
+
+// Config is what the session is, as the UI has to say it: the model the agent
+// was built against, and the mode it starts in. Both are resolved settings the
+// UI only draws — a mode changed later is written here by Update and read by
+// the permission service, never the other way round (design §7.4).
+type Config struct {
+	Model string
+	Mode  permission.Mode
+}
 
 // Program is a running rasp TUI: a Bubble Tea program, plus the one goroutine
 // that carries agent events into it.
 type Program struct {
+	cfg    Config
 	opts   []tea.ProgramOption
 	bridge *bridge
 }
@@ -19,8 +30,8 @@ type Program struct {
 // New builds the program. Options reach Bubble Tea unchanged, which is how a
 // caller with no terminal — a test, a recorded session — supplies its own input
 // and output.
-func New(opts ...tea.ProgramOption) *Program {
-	return &Program{opts: opts, bridge: newBridge()}
+func New(cfg Config, opts ...tea.ProgramOption) *Program {
+	return &Program{cfg: cfg, opts: opts, bridge: newBridge()}
 }
 
 // Events is the sink for agent.Config.Events, and the only thing the agent knows
@@ -42,7 +53,7 @@ func (p *Program) Run(a Turner) error {
 	// turn running against a UI that has gone.
 	ctx, cancel := context.WithCancel(context.Background())
 
-	prog := tea.NewProgram(newModel(ctx, a), p.opts...)
+	prog := tea.NewProgram(newModel(ctx, a, p.cfg), p.opts...)
 	p.bridge.start(prog)
 	defer p.bridge.stop()
 	defer cancel()

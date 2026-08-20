@@ -10,14 +10,15 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/golden"
 	teatest "github.com/charmbracelet/x/exp/teatest/v2"
 
 	"github.com/theocod3s/rasp/internal/agent"
 	"github.com/theocod3s/rasp/internal/llm"
+	"github.com/theocod3s/rasp/internal/permission"
 	"github.com/theocod3s/rasp/internal/tool"
 )
 
@@ -29,6 +30,14 @@ const goldenWidth, goldenHeight = 80, 24
 // goldenNow is the instant every frame here is drawn at. Any instant will do —
 // it is never printed — as long as it is one the machine does not choose.
 var goldenNow = time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+
+// goldenConfig is the session every frame here is drawn for. The default mode,
+// so the frames record what a session that configured nothing looks like; the
+// two modes with a colour of their own are asserted rather than recorded
+// (status_internal_test.go).
+func goldenConfig() Config {
+	return Config{Model: "anthropic/claude-opus-5", Mode: permission.ModeManual}
+}
 
 // snapshot is one state of the UI worth freezing: the prompt that starts a turn,
 // the events the loop then emits into it, and anything the user typed after.
@@ -47,11 +56,13 @@ func snapshots() []snapshot {
 	const prompt = "fix the failing auth test"
 
 	fragment := reply("Reading `auth_test.go` now. The header is parsed")
-	explained := asking(reply("Reading `auth_test.go` now. The header is parsed **twice**.\n\n"+
+	explained := spent(asking(reply("Reading `auth_test.go` now. The header is parsed **twice**.\n\n"+
 		"- once in the middleware\n- once in the handler\n"),
 		llm.Block{Type: llm.BlockToolUse, ID: "call_1", Name: "read"},
-		llm.Block{Type: llm.BlockToolUse, ID: "call_2", Name: "edit"})
-	fixed := reply("Both call sites read the parsed header instead of parsing it again.")
+		llm.Block{Type: llm.BlockToolUse, ID: "call_2", Name: "edit"}),
+		llm.Usage{Input: 812, Output: 143, CacheRead: 11204})
+	fixed := spent(reply("Both call sites read the parsed header instead of parsing it again."),
+		llm.Usage{Input: 1530, Output: 62, CacheRead: 11204})
 
 	read := &tool.Result{
 		Title:   "read auth_test.go (2 lines)",
@@ -109,7 +120,10 @@ func snapshots() []snapshot {
 		{Kind: agent.EventToolEnd, CallID: "call_1", Tool: "read", Result: read},
 		{Kind: agent.EventAssistantDelta, Message: fixed},
 		{Kind: agent.EventAssistantEnd, Message: fixed},
-		{Kind: agent.EventTurnEnd},
+		// The turn's own total, which the loop sums over the same two messages
+		// (agent/step.go) — so the status line ends the turn saying what it said
+		// a moment before rather than twice as much.
+		{Kind: agent.EventTurnEnd, Usage: llm.Usage{Input: 2342, Output: 205, CacheRead: 22408}},
 	}
 
 	return []snapshot{
@@ -156,6 +170,13 @@ func snapshots() []snapshot {
 // model wrote them.
 func asking(msg *llm.Message, calls ...llm.Block) *llm.Message {
 	msg.Content = append(msg.Content, calls...)
+	return msg
+}
+
+// spent is a reply the provider reported counts for, which is what puts numbers
+// on the status line rather than the zeros a session before its first turn has.
+func spent(msg *llm.Message, u llm.Usage) *llm.Message {
+	msg.Usage = u
 	return msg
 }
 
@@ -224,8 +245,11 @@ func TestAResizeRedrawsTheConversationAtItsNewWidth(t *testing.T) {
 	if !strings.Contains(words(frame), prompt) {
 		t.Fatalf("the prompt never reached the conversation:\n%s", frame)
 	}
+	// Measured in cells rather than runes: the chrome is styled, and counting the
+	// escape sequences would call a six-column status line twenty wide — a
+	// failure about nothing, on every line the UI colours.
 	for _, line := range strings.Split(frame, "\n") {
-		if n := utf8.RuneCountInString(line); n > narrow {
+		if n := ansi.StringWidth(line); n > narrow {
 			t.Errorf("a line runs %d columns into a terminal %d wide, so the resize was never drawn: %q",
 				n, narrow, line)
 		}
@@ -261,7 +285,7 @@ func program(t *testing.T) (*teatest.TestModel, *turner) {
 	t.Helper()
 
 	turner := newTurner(agent.ErrInterrupted)
-	m := newModel(t.Context(), turner)
+	m := newModel(t.Context(), turner, goldenConfig())
 	// A stopped clock, so no card shows an elapsed time. Real time would put a
 	// duration into the frames that depends on how fast the machine drained the
 	// queue, and a beat firing between two sends would move it again. What a

@@ -1,4 +1,5 @@
 › fix the failing auth test
   [38;5;252mReading [m[38;5;203;48;5;236m auth_test.go [m[38;5;252m now. The header is[m[38;5;252m parsed[m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m
 error: the provider closed the stream mid-message
+manual[38;2;125;133;144m · anthropic/claude-opus-5 · ctx 0 · in 0 · out 0 · cost —[m
 › 
