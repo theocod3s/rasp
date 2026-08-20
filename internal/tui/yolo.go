@@ -12,18 +12,12 @@ import (
 // back off takes no confirmation at all — leaving should always be easy.
 const yoloConfirm = "confirm"
 
-// yoloWarning is what the bare /yolo answers with. It says what stops rather
-// than what starts, names the way back out, and says the arming lasts one run —
-// the three things somebody about to type the second line needs and cannot read
-// off a badge.
 const yoloWarning = "/yolo turns off every permission check for the rest of this session. Edits, " +
 	"writes and any command at all run the moment the model asks for them, with nothing put to " +
 	"you first and nothing refused — including the destructive commands auto still stops for. " +
 	"It goes off again with /yolo, and it is off the next time rasp starts: it lives in this " +
 	"process and is written nowhere. Type `/yolo confirm` to turn it on."
 
-// yolo is /yolo. Armed, it disarms on the spot; off, it says what arming costs
-// and asks for the line that does it.
 func yolo(m Model, args string) (Model, tea.Cmd) {
 	if m.permissions == nil {
 		return m.say("This session has no permission service, so there is nothing here for /yolo " +
@@ -53,8 +47,7 @@ func (m Model) setYolo(on bool) Model {
 
 // yoloReminder is what arming tells the model, in the shape design §7.5 gives a
 // mode change — naming the constraint that moved rather than a mode, because no
-// mode changed. The mode is still there underneath and is where turning it off
-// lands, which is what the second sentence is for.
+// mode changed and the one underneath is still where turning it off lands.
 func yoloReminder(on bool, mode permission.Mode) string {
 	if on {
 		return "[Yolo is on. Nothing is put to the user before it runs: every edit, every write " +

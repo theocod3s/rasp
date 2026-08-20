@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/theocod3s/rasp/internal/config"
 )
 
 // TestTheRootStartsTheUIAndFailsBeforeItTakesTheTerminal runs the root command
@@ -27,6 +29,41 @@ func TestTheRootStartsTheUIAndFailsBeforeItTakesTheTerminal(t *testing.T) {
 	}
 	if stdout != "" {
 		t.Errorf("stdout = %q; the screen belongs to the UI and this run never opened one", stdout)
+	}
+}
+
+// TestTheFlagIsWhatTheUIIsToldTheSessionIs. The badge and the bypass both come
+// off this one field (tui.Config.Yolo, installed by tui.Run), so a run launched
+// with --yolo and a UI told nothing would be a session that skips every check
+// with nothing on the screen saying so.
+func TestTheFlagIsWhatTheUIIsToldTheSessionIs(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{
+		{args: nil},
+		{args: []string{"--" + yoloFlag}, want: true},
+		{args: []string{"--" + yoloFlag + "=false"}},
+	} {
+		t.Run(strings.Join(append([]string{"rasp"}, tc.args...), " "), func(t *testing.T) {
+			cmd := newRootCmd()
+			if err := cmd.Flags().Parse(tc.args); err != nil {
+				t.Fatalf("parsing %v: %v", tc.args, err)
+			}
+
+			cfg, err := uiConfig(cmd, config.Config{Model: "anthropic/claude-opus-5", Mode: config.ModePlan})
+			if err != nil {
+				t.Fatalf("uiConfig: %v", err)
+			}
+			if cfg.Yolo != tc.want {
+				t.Errorf("the UI is told yolo = %v, want %v", cfg.Yolo, tc.want)
+			}
+			// The rest of the line the flag rides in on, so a Config assembled from
+			// the wrong resolved values fails here too.
+			if string(cfg.Mode) != config.ModePlan || cfg.Model == "" {
+				t.Errorf("the UI is told %+v, want the resolved model and mode", cfg)
+			}
+		})
 	}
 }
 
