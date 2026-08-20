@@ -175,8 +175,18 @@ func TestACutNeverLandsWiderThanTheTerminal(t *testing.T) {
 // them, and rasp is not a security boundary: what this owes is that the diff it
 // draws is the bytes it was given, in their order.
 func TestABidiOverrideCannotReorderWhatTheCardShows(t *testing.T) {
-	// Every invisible directional control, in one line each.
-	for _, r := range []rune{0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069} {
+	// Named from the threat rather than from the implementation: this is the set
+	// Rust's text_direction_codepoint_in_literal lint refuses, written out here
+	// so the test cannot become a copy of whatever the renderer happens to check
+	// — which is the shape that can never find a gap.
+	//
+	//	LRM RLM ALM, the marks; LRE RLE PDF LRO RLO, the embeddings and
+	//	overrides; LRI RLI FSI PDI, the isolates that replaced them.
+	for _, r := range []rune{
+		0x200e, 0x200f, 0x061c,
+		0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+		0x2066, 0x2067, 0x2068, 0x2069,
+	} {
 		t.Run(strconv.FormatInt(int64(r), 16), func(t *testing.T) {
 			trojan := lines("@@ -1,1 +1,1 @@", "+if (access) {"+string(r)+" // } "+string(r)+" nothing")
 
@@ -232,15 +242,28 @@ func TestTabsAreExpandedBeforeAnythingIsMeasured(t *testing.T) {
 // and every later tab on the line inherits the drift, so the indentation the
 // card shows is not the file's.
 func TestATabAfterAClusterLandsOnTheRightStop(t *testing.T) {
-	// `+` is column 0 and the flag covers 1 and 2, so the tab fills column 3
-	// alone and `value` starts at the stop.
-	diff := lines("@@ -1,1 +1,1 @@", "+\U0001F1FA\U0001F1F8\tvalue")
-
-	drawn := text(diffview.Render(diff, wide, styles.For(styles.Dark)))
-	added := strings.Split(drawn, "\n")[1]
-
-	if want := "+\U0001F1FA\U0001F1F8 value"; added != want {
-		t.Errorf("the line draws %q, want %q — the tab was placed by counting runes", added, want)
+	for name, tc := range map[string]struct{ content, want string }{
+		// Two runes and two cells: `+` is column 0, the flag covers 1 and 2, so
+		// the tab fills column 3 alone.
+		"a flag, wider than its runes": {
+			content: "+\U0001F1FA\U0001F1F8\tvalue",
+			want:    "+\U0001F1FA\U0001F1F8 value",
+		},
+		// Two runes and one cell, which is the case a rune count gets wrong in
+		// the other direction: e plus a combining acute sits in column 1 alone,
+		// so the tab has columns 2 and 3 to fill.
+		"a combining mark, narrower than its runes": {
+			content: "+é\tvalue",
+			want:    "+é  value",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			drawn := text(diffview.Render(lines("@@ -1,1 +1,1 @@", tc.content), wide, styles.For(styles.Dark)))
+			if added := strings.Split(drawn, "\n")[1]; added != tc.want {
+				t.Errorf("the line draws %q, want %q — the tab was placed by counting runes",
+					added, tc.want)
+			}
+		})
 	}
 }
 

@@ -115,22 +115,32 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 		perm = info.Mode().Perm()
 	}
 
+	// A diff is worth taking only when both sides of it are: the file being
+	// replaced, and the text replacing it. Bounding one alone is not a bound —
+	// a creation has no old side at all, so it would always be diffed however
+	// much was written.
+	diffable := len(*in.Content) <= maxDiffBytes && (created || info.Size() <= maxDiffBytes)
+
 	// The bytes about to be replaced, read under the same lock as the rename.
-	// Bounded because this read is for the card alone: past the cap the write
-	// still happens and the diff is simply not taken.
+	// The stat above and this are two moments, and the lock is rasp's own — a
+	// checkout or an editor can take the file away between them or put one
+	// there — so this is the later look and the one that decides.
+	//
+	// When the diff is not being taken there is nothing to read, but the later
+	// look still has to happen: a stat costs nothing and keeps the race handling
+	// below from switching itself off on file size.
 	var (
-		before   []byte
-		readErr  error
-		diffable = created || info.Size() <= maxDiffBytes
+		before  []byte
+		readErr error
 	)
 	if diffable {
 		before, readErr = w.ws.ReadFile(rel)
+	} else {
+		_, readErr = w.ws.Stat(rel)
 	}
 
-	// The stat and the read are two moments, and the lock is rasp's own — a
-	// checkout or an editor can take the file away between them or put one
-	// there. The read is the later look, so it decides all three questions
-	// below; not-there is the only answer meaning the path is empty.
+	// Not-there is the only answer meaning the path is empty; a mode that
+	// forbids reading still means a file is there.
 	existed := !errors.Is(readErr, fs.ErrNotExist)
 	arrived := created && existed
 	if !created && !existed {
@@ -148,6 +158,10 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 	if arrived {
 		switch info, err := w.ws.Stat(rel); {
 		case errors.Is(err, fs.ErrNotExist):
+			// Gone again, so this is a creation once more — and has to be reported
+			// as one, or the card claims to have replaced an empty path and the
+			// diff shows lines nothing on disk had.
+			existed = false
 		case err != nil:
 			return writeRefused(err.Error()), nil
 		default:
@@ -169,7 +183,7 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 	if diffable && (readErr == nil || errors.Is(readErr, fs.ErrNotExist)) {
 		// Failing to build one is the same as not having the bytes to build it
 		// from, and goes the same way: no Details, and the write still happens.
-		details, _ = diffDetails(rel, string(before), string(data), false)
+		details, _ = diffDetails(rel, string(before), *in.Content, false)
 	}
 
 	dir := path.Dir(rel)

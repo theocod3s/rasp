@@ -9,17 +9,14 @@ import (
 )
 
 // diffDetails renders the diff the UI draws, for every tool here that changes a
-// file. Its own file rather than edit's, because write builds one too and a
-// reader of write has no way to find a helper filed under another tool.
+// file.
 //
 // udiff.Unified is the obvious call and the wrong one: it turns the error
-// handled here into log.Fatalf, which would end the process over one tool call
-// and print to a stdout the TUI owns.
-//
-// The two callers answer that error differently, deliberately. write drops the
-// payload and writes anyway, because its diff is decoration. edit refuses,
-// because its counts go into the Content and Title the model reads: a diff it
-// cannot build is a result it cannot describe.
+// handled here into log.Fatalf, ending the process over one tool call and
+// printing to a stdout the TUI owns. The two callers answer that error
+// differently on purpose — write drops the payload and writes anyway, since its
+// diff is decoration, while edit refuses, since its counts go into the Content
+// and Title the model reads.
 func diffDetails(path, before, after string, fuzzy bool) (*tool.DiffDetails, error) {
 	u, err := udiff.ToUnifiedDiff("a/"+path, "b/"+path, before, udiff.Lines(before, after), udiff.DefaultContextLines)
 	if err != nil {

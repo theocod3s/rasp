@@ -343,7 +343,7 @@ func TestALightTerminalRedrawsEveryDiffInItsOwnPalette(t *testing.T) {
 	later, _ := answered.Update(agentMsg{event: agent.Event{
 		Kind: agent.EventToolEnd, CallID: "call_2", Tool: "edit", Result: edit(),
 	}})
-	deleted := opening(t, later.View().Content, "-return parse(header)")
+	deleted := opening(later.View().Content, "-return parse(header)")
 	if len(deleted) != 2 {
 		t.Fatalf("%d rows delete that line, and two cards each drawing the diff is 2:\n%s",
 			len(deleted), later.View().Content)
@@ -357,9 +357,7 @@ func TestALightTerminalRedrawsEveryDiffInItsOwnPalette(t *testing.T) {
 // opening is the escape sequence each row saying want begins with. A row with
 // none contributes an empty string rather than being skipped, so a class that
 // lost its colour reads as a difference instead of as nothing to compare.
-func opening(t *testing.T, frame, want string) []string {
-	t.Helper()
-
+func opening(frame, want string) []string {
 	var found []string
 	for _, row := range strings.Split(frame, "\n") {
 		if !strings.Contains(words(row), want) {

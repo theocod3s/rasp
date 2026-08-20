@@ -237,6 +237,47 @@ func TestADiffLineIsCutAtTheWidthRatherThanWrapped(t *testing.T) {
 	}
 }
 
+// TestACardWhoseOutputIsOnlyWhitespaceDoesNotOfferToOpen. The marker is the
+// only promise a card makes about what is under it. Content that survives the
+// emptiness test and is then wrapped away to nothing turns that promise into a
+// blank line.
+func TestACardWhoseOutputIsOnlyWhitespaceDoesNotOfferToOpen(t *testing.T) {
+	for name, content := range map[string]string{
+		"spaces":            "   ",
+		"a padded newline":  "   \n   ",
+		"tabs and newlines": "\t\n\t\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			call := answered("bash", &tool.Result{Title: "go test ./...", Content: content})
+
+			if got := call.Render(wide); !strings.HasPrefix(got, "  ") || strings.HasPrefix(got, "▸") {
+				t.Errorf("the card offers to open onto whitespace: %q", got)
+			}
+			if got := opened(call).Render(wide); strings.Contains(got, "\n") {
+				t.Errorf("the card opened onto a blank line: %q", got)
+			}
+		})
+	}
+}
+
+// TestANarrowTerminalDoesNotShredATextBody is the diff's own narrow-width rule
+// read across to everything else a card draws. The diff is cut, so it needs a
+// column to cut to; text is wrapped, and wrapping to one column is one
+// character per row — the failure the summary line is already spared.
+func TestANarrowTerminalDoesNotShredATextBody(t *testing.T) {
+	call := opened(answered("bash", &tool.Result{
+		Title:   "go test ./...",
+		Content: "ok github.com/theocod3s/rasp/internal/auth",
+	}))
+
+	for width := 1; width <= 2; width++ {
+		if rows := strings.Split(call.Render(width), "\n"); len(rows) > 2 {
+			t.Errorf("at width %d the output was broken into %d rows: %q",
+				width, len(rows)-1, words(call.Render(width)))
+		}
+	}
+}
+
 // TestATerminalTooNarrowForTheIndentStillCuts. A width of zero or less means
 // "nobody has said how wide the terminal is" all the way down, and a card that
 // subtracted its indent could hand that same number down for a real terminal

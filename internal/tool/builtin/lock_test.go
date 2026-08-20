@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -132,6 +136,13 @@ func TestWriteHoldsTheFileLockAcrossItsStatAndRename(t *testing.T) {
 	}
 
 	editWrite(t, reads, dir, "notes.txt", "first")
+	// A mode the umask default is not, so the assertion below can tell the mode
+	// this file had from the one a create would get.
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(filepath.Join(dir, "notes.txt"), 0o640); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+	}
 	unlock()
 
 	result := arrive(t, second)
@@ -150,9 +161,29 @@ func TestWriteHoldsTheFileLockAcrossItsStatAndRename(t *testing.T) {
 		t.Errorf("the write's diff takes nothing away:\n%s\nso it read the path before taking the "+
 			"lock, and diffed against a file that was not there yet", details.Unified)
 	}
+	// And the mode, which is the half the diff cannot speak for: the stat that
+	// decides it runs inside the lock or it runs before the file it describes
+	// exists, and the replacement then lands with the process umask instead of
+	// the mode the concurrent writer left.
+	if runtime.GOOS != "windows" {
+		if got, want := editMode(t, dir, "notes.txt"), fs.FileMode(0o640); got != want {
+			t.Errorf("notes.txt is %v, want the %v it had: the stat that reads the mode ran before "+
+				"the lock, so it saw no file at all", got, want)
+		}
+	}
 	if got := editRead(t, dir, "notes.txt"); got != "second" {
 		t.Errorf("notes.txt reads %q, want %q", got, "second")
 	}
+}
+
+func editMode(t *testing.T, dir, rel string) fs.FileMode {
+	t.Helper()
+
+	info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatalf("stat %s: %v", rel, err)
+	}
+	return info.Mode().Perm()
 }
 
 func lock(t *testing.T, ws *workspace.Workspace, name string) func() {

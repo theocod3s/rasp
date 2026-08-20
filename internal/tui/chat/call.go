@@ -72,32 +72,31 @@ func (c Call) Render(width int) string {
 	// The headline is set in like the body and then gives its first two columns
 	// back to the marker. Wrapped whole instead, a summary too long for the
 	// terminal continues at column zero and reads as a line of its own.
-	// The headline keeps the plain subtraction: a terminal too narrow for the
-	// indent leaves it zero or less, wrap reads that as "no size reported" and
-	// leaves the line whole. One over-long row is what a 2-column terminal gets
-	// either way, and clamping to a column instead shreds the summary into one
-	// character per row — eighteen over-long rows in place of one.
 	head := inset(wrap(c.headline(), width-len(cardIndent)), cardIndent)
 	head = c.marker(c.opens()) + strings.TrimPrefix(head, cardIndent)
 
 	if !c.Expanded {
 		return head
 	}
-	// Only now, and to its own width rather than wrapped afterwards: wrapping a
-	// diff line draws one changed line as two, and a collapsed card that built
-	// its diff anyway would rebuild it on every frame after a collapse, which is
-	// exactly when the freeze that spared it has been dropped.
-	body := c.body(inner(width))
+	// Only now, and never wrapped afterwards: wrapping a diff line draws one
+	// changed line as two, and a collapsed card that built its diff anyway would
+	// rebuild it on every frame after a collapse, which is exactly when the
+	// freeze that spared it has been dropped.
+	body := c.body(width)
 	if body == "" {
 		return head
 	}
 	return head + "\n" + inset(body, cardIndent)
 }
 
-// inner is the width left inside the card's indent, for the body alone, and
-// never zero or less — which the diff renderer reads as "no size reported yet,
-// do not cut". A real terminal too narrow for the indent must not arrive
-// spelled that way, or every diff line goes out at full length and wraps.
+// inner is the width left inside the card's indent, never zero or less — which
+// the diff renderer reads as "no size reported yet, do not cut", so a real
+// terminal too narrow for the indent must not arrive spelled that way or every
+// diff line goes out at full length and wraps.
+//
+// The diff alone uses it. Everything else here is wrapped rather than cut, and
+// wrap reads that same zero as "leave the line whole", which is the better
+// answer: clamping to a column breaks a line into one character per row.
 func inner(width int) int {
 	if width <= 0 {
 		return width
@@ -187,10 +186,15 @@ func (c Call) body(width int) string {
 	if c.State != CallDone || c.Result == nil {
 		return ""
 	}
-	if c.HasDiff() {
-		return diffview.Render(c.unified(), width, styles.For(c.Background))
+	// Drawn and then tested, rather than asked and then drawn: HasDiff walks the
+	// whole diff to answer, and this is the one caller that has to walk it
+	// anyway. Empty from a diff and no diff at all are the same card.
+	if !c.Result.IsError {
+		if drawn := diffview.Render(c.unified(), inner(width), styles.For(c.Background)); drawn != "" {
+			return drawn
+		}
 	}
-	return wrap(c.text(), width)
+	return wrap(c.text(), width-len(cardIndent))
 }
 
 // text is the tool's output as the card shows it, and nothing when the line
@@ -201,7 +205,10 @@ func (c Call) text() string {
 	if c.Result == nil {
 		return ""
 	}
-	content := strings.Trim(c.Result.Content, "\n")
+	// All whitespace, not just newlines: wrap trims a line's trailing spaces
+	// away to nothing, so content that survived here and vanished there would
+	// hang a marker over a card that opens onto a blank line.
+	content := strings.TrimSpace(c.Result.Content)
 	if c.Result.IsError && c.Result.Title == "" && content == firstLine(content) {
 		return ""
 	}

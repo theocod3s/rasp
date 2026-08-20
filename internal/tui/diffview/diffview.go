@@ -2,6 +2,7 @@ package diffview
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -104,27 +105,44 @@ func classify(line string, p styles.Palette) lipgloss.Style {
 //
 // Dropping ESC alone leaves the rest of its sequence as literal text, which is
 // visible and inert.
+// Walked by grapheme cluster, which is what the column has to count: a flag
+// emoji is two cells drawn and four summed per rune, so a tab after one would
+// otherwise land at a stop the file does not have — and every later tab on the
+// line inherits the drift. Counted as it goes rather than re-measured at each
+// tab, or a line of a minified file pays a scan of itself per tab.
 func expand(line string) string {
-	var b strings.Builder
-	for _, r := range line {
+	var (
+		b   strings.Builder
+		col int
+	)
+	for rest := line; rest != ""; {
+		cluster, w := ansi.FirstGraphemeCluster(rest, ansi.GraphemeWidth)
+		rest = rest[len(cluster):]
+
+		r, size := utf8.DecodeRuneInString(cluster)
 		switch {
 		case r == '\t':
-			// Measured off what is written rather than summed per rune, since a rune
-			// is not a cell: a flag emoji is four cells apart and two together, and
-			// a tab after one would land at a stop the file does not have.
-			n := tabWidth - ansi.StringWidth(b.String())%tabWidth
+			n := tabWidth - col%tabWidth
 			b.WriteString(strings.Repeat(" ", n))
-		case r < 0x20 || (r >= 0x7f && r <= 0x9f) || bidi(r):
+			col += n
+		case size == len(cluster) && (r < 0x20 || (r >= 0x7f && r <= 0x9f) || bidi(r)):
 		default:
-			b.WriteRune(r)
+			b.WriteString(cluster)
+			col += w
 		}
 	}
 	return b.String()
 }
 
-// bidi reports the invisible directional formatting: embeddings and overrides,
-// and the isolates that replaced them.
+// bidi reports the invisible directional formatting characters: the embeddings
+// and overrides, the isolates that replaced them, and the three marks — LRM,
+// RLM and the Arabic letter mark — which reorder a neutral run just as well.
+// Rust's text_direction_codepoint_in_literal lint covers exactly this set.
 func bidi(r rune) bool {
+	switch r {
+	case 0x061c, 0x200e, 0x200f:
+		return true
+	}
 	return (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069)
 }
 

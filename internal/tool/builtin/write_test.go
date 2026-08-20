@@ -165,6 +165,44 @@ func TestWriteRefusesAFileThatArrivedMidCall(t *testing.T) {
 	f.wantContent("arrived.txt", "somebody else's line\n")
 }
 
+// TestWriteReportsAFileThatArrivedAndLeftAgainAsACreation. The same race turned
+// twice: nothing at the stat, a file at the read, nothing again by the time the
+// guard looks. Going ahead is right — there is nothing left to protect — but
+// the call has to say what it did, and a diff of lines nothing on disk had is
+// not a replacement.
+func TestWriteReportsAFileThatArrivedAndLeftAgainAsACreation(t *testing.T) {
+	f := newWriteFixture(t)
+
+	full := filepath.Join(f.dir, "flicker.txt")
+	var appear, vanish sync.Once
+	f.spy.afterStat = func(string) {
+		appear.Do(func() {
+			if err := os.WriteFile(full, []byte("here for a moment\n"), 0o644); err != nil {
+				t.Errorf("putting the file there: %v", err)
+			}
+		})
+	}
+	f.spy.readFile = func(name string) ([]byte, error) {
+		data, err := f.spy.Workspace.ReadFile(name)
+		vanish.Do(func() {
+			if err := os.Remove(full); err != nil {
+				t.Errorf("taking the file away again: %v", err)
+			}
+		})
+		return data, err
+	}
+
+	res := f.write("flicker.txt", "ours\n")
+	if res.IsError {
+		t.Fatalf("the write was refused over a file that is no longer there: %s", res.Content)
+	}
+	f.wantContent("flicker.txt", "ours\n")
+
+	if !strings.Contains(res.Content, "Created") {
+		t.Errorf("Content = %q, want a creation: the path was empty when the write ran", res.Content)
+	}
+}
+
 // TestWriteDoesNotReadABigFileBackJustToDrawIt. The read this tool does exists
 // only to build a card, so it is the one read here that must be bounded: a
 // generated file of a few hundred megabytes would otherwise be pulled into
@@ -196,6 +234,63 @@ func TestWriteDoesNotReadABigFileBackJustToDrawIt(t *testing.T) {
 	// file that was there.
 	if !strings.Contains(res.Content, "Replaced") {
 		t.Errorf("Content = %q, want it to report the replacement", res.Content)
+	}
+}
+
+// TestWriteDoesNotDiffAHugeCreation. Bounding the file being replaced is not a
+// bound: a creation has no old side at all, so a cap that only looks there lets
+// every new file through however large — and a card that opens itself would
+// then draw one row per line of it, unasked.
+func TestWriteDoesNotDiffAHugeCreation(t *testing.T) {
+	f := newWriteFixture(t)
+
+	res := f.write("generated.txt", strings.Repeat("a generated line\n", 20_000))
+	if res.IsError {
+		t.Fatalf("write failed: %s", res.Content)
+	}
+	if res.Details != nil {
+		t.Errorf("Details is %#v, want nothing: a creation this size is not a diff anyone can read",
+			res.Details)
+	}
+	if !strings.Contains(res.Content, "Created") {
+		t.Errorf("Content = %q, want it to report the creation", res.Content)
+	}
+}
+
+// TestWriteNoticesAVanishedFileItWasTooBigToDiff. The race handling reads what
+// the later look found; when the file is past the diff cap there is no read, so
+// the later look has to be a stat instead. Without one the guard switches
+// itself off on file size — the departed file's mode is carried onto the new
+// one, and the call reports replacing something that is not there.
+func TestWriteNoticesAVanishedFileItWasTooBigToDiff(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no mode bits to carry forward")
+	}
+	f := newWriteFixture(t)
+	f.seed("big.txt", strings.Repeat("a line of a generated file\n", 12_000))
+	if err := os.Chmod(filepath.Join(f.dir, "big.txt"), 0o600); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	var once sync.Once
+	f.spy.afterStat = func(name string) {
+		once.Do(func() {
+			if err := os.Remove(filepath.Join(f.dir, filepath.FromSlash(name))); err != nil {
+				t.Errorf("taking %s away mid-call: %v", name, err)
+			}
+		})
+	}
+
+	res := f.write("big.txt", "small now\n")
+	if res.IsError {
+		t.Fatalf("write failed: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "Created") {
+		t.Errorf("Content = %q, want a creation: the file was gone before the write", res.Content)
+	}
+	if want := 0o666 &^ umaskOf(t, f.dir); f.mode("big.txt") != want {
+		t.Errorf("mode is %v, want the %v a plain create gets — 0600 came from a file that is gone",
+			f.mode("big.txt"), want)
 	}
 }
 
