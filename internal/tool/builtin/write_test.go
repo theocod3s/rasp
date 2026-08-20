@@ -26,20 +26,54 @@ func TestWriteCreatesTheFileAndItsParentDirectories(t *testing.T) {
 	}
 	f.wantContent("pkg/sub/new.txt", "hello")
 
+	// A file that was not there is a diff of every line added and none removed.
 	details := f.details(res)
-	if !details.Created {
-		t.Errorf("Details.Created is false for a file that did not exist")
+	if details.Additions != 1 || details.Deletions != 0 {
+		t.Errorf("Details is +%d -%d, want +1 -0 for a file that did not exist",
+			details.Additions, details.Deletions)
 	}
-	if details.Bytes != len("hello") {
-		t.Errorf("Details.Bytes = %d, want %d", details.Bytes, len("hello"))
+	if !strings.Contains(details.Unified, "+hello") {
+		t.Errorf("Details.Unified is %q, and does not add the line the file now holds", details.Unified)
 	}
 	if details.Path != "pkg/sub/new.txt" {
 		t.Errorf("Details.Path = %q, want the workspace-relative path", details.Path)
 	}
 
-	// The model is told the same two facts, since it never sees Details.
+	// The model is told the two facts it can act on, since it never sees Details.
 	if !strings.Contains(res.Content, "Created") || !strings.Contains(res.Content, "5 bytes") {
 		t.Errorf("Content = %q, want it to report the creation and the byte count", res.Content)
+	}
+}
+
+// TestWriteReturnsTheDiffOfWhatItReplaced is what makes a write drawable. The
+// UI has no route to the file — it renders what Details carries and computes
+// nothing — so a write that reported only a path and a byte count could not be
+// drawn as a change at all.
+func TestWriteReturnsTheDiffOfWhatItReplaced(t *testing.T) {
+	f := newWriteFixture(t)
+	f.seed("auth.go", "one\ntwo\nthree\n")
+
+	res := f.write("auth.go", "one\nTWO\nthree\n")
+	if res.IsError {
+		t.Fatalf("write failed: %s", res.Content)
+	}
+
+	details := f.details(res)
+	if details.Additions != 1 || details.Deletions != 1 {
+		t.Errorf("Details is +%d -%d, want +1 -1 for one line replaced", details.Additions, details.Deletions)
+	}
+	for _, line := range []string{"-two", "+TWO"} {
+		if !strings.Contains(details.Unified, line) {
+			t.Errorf("Details.Unified does not hold %q:\n%s", line, details.Unified)
+		}
+	}
+	// The lines that did not change are in it too, or the diff has no context to
+	// place the one that did.
+	if !strings.Contains(details.Unified, " one") {
+		t.Errorf("Details.Unified carries no context:\n%s", details.Unified)
+	}
+	if details.Fuzzy {
+		t.Error("Details.Fuzzy is set; a write matches nothing, so nothing about it can be approximate")
 	}
 }
 
@@ -95,12 +129,9 @@ func TestWriteReplacesAndPreservesMode(t *testing.T) {
 		}
 	}
 
-	details := f.details(res)
-	if details.Created {
-		t.Errorf("Details.Created is true for a file that already existed")
-	}
-	if details.Bytes != len("new contents") {
-		t.Errorf("Details.Bytes = %d, want %d", details.Bytes, len("new contents"))
+	if details := f.details(res); details.Deletions == 0 {
+		t.Errorf("Details is +%d -%d, and an overwrite takes the old line away",
+			details.Additions, details.Deletions)
 	}
 	if !strings.Contains(res.Content, "Replaced") {
 		t.Errorf("Content = %q, want it to say the file was replaced", res.Content)
@@ -116,8 +147,12 @@ func TestWriteEmptyContentEmptiesTheFile(t *testing.T) {
 		t.Fatalf("write failed: %s", res.Content)
 	}
 	f.wantContent("notes.txt", "")
-	if d := f.details(res); d.Bytes != 0 || d.Created {
-		t.Errorf("Details = %+v, want zero bytes over an existing file", *d)
+	if d := f.details(res); d.Additions != 0 || d.Deletions != 1 {
+		t.Errorf("Details is +%d -%d, want the one line that was there taken away and nothing added",
+			d.Additions, d.Deletions)
+	}
+	if !strings.Contains(res.Content, "0 bytes") {
+		t.Errorf("Content = %q, want it to report the file is now empty", res.Content)
 	}
 }
 
@@ -351,11 +386,14 @@ func (f *writeFixture) raw(raw string) tool.Result {
 	return res
 }
 
-func (f *writeFixture) details(res tool.Result) *builtin.WriteDetails {
+// details is the write's payload for the UI. The type assertion is the point:
+// a write and an edit hand back the same shape, so one renderer draws both and
+// neither tool knows a terminal exists.
+func (f *writeFixture) details(res tool.Result) *tool.DiffDetails {
 	f.t.Helper()
-	details, ok := res.Details.(*builtin.WriteDetails)
+	details, ok := res.Details.(*tool.DiffDetails)
 	if !ok {
-		f.t.Fatalf("Details is %T, want *builtin.WriteDetails", res.Details)
+		f.t.Fatalf("Details is %T, want *tool.DiffDetails", res.Details)
 	}
 	return details
 }

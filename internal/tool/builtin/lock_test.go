@@ -138,13 +138,17 @@ func TestWriteHoldsTheFileLockAcrossItsStatAndRename(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("the write failed once the lock was released: %s", result.Content)
 	}
-	details, ok := result.Details.(*builtin.WriteDetails)
+	details, ok := result.Details.(*tool.DiffDetails)
 	if !ok {
-		t.Fatalf("Details is %T, want *builtin.WriteDetails", result.Details)
+		t.Fatalf("Details is %T, want *tool.DiffDetails", result.Details)
 	}
-	if details.Created {
-		t.Error("the write reported creating a file that already existed by the time it ran, so " +
-			"it stat'd the path before taking the lock")
+	// The diff is of what the write replaced, so it names the contents that
+	// appeared while the write waited. A write that read the path before taking
+	// the lock found nothing there and would report creating the file: every
+	// line added and none taken away.
+	if details.Deletions == 0 {
+		t.Errorf("the write's diff takes nothing away:\n%s\nso it read the path before taking the "+
+			"lock, and diffed against a file that was not there yet", details.Unified)
 	}
 	if got := editRead(t, dir, "notes.txt"); got != "second" {
 		t.Errorf("notes.txt reads %q, want %q", got, "second")

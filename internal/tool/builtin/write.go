@@ -20,17 +20,11 @@ type writeFS interface {
 	Resolve(name string) (string, error)
 	LockFile(name string) (func(), error)
 	Stat(name string) (fs.FileInfo, error)
+	ReadFile(name string) ([]byte, error)
 	MkdirAll(name string, perm fs.FileMode) error
 	OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error)
 	Rename(oldname, newname string) error
 	Remove(name string) error
-}
-
-// WriteDetails is the UI's payload for a completed write.
-type WriteDetails struct {
-	Path    string
-	Bytes   int
-	Created bool
 }
 
 type writeInput struct {
@@ -115,12 +109,30 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 		perm = info.Mode().Perm()
 	}
 
+	// The bytes about to be replaced, read under the lock the rename also runs
+	// under, so the diff is of the file that actually goes away. A creation has
+	// nothing before it, which is a diff of every line added.
+	var before []byte
+	if !created {
+		if before, err = w.ws.ReadFile(rel); err != nil {
+			return writeRefused(err.Error()), nil
+		}
+	}
+
+	data := []byte(*in.Content)
+
+	// Diffed before writing: a failure here would otherwise be a file already
+	// changed and a caller told the tool could not run.
+	details, err := diffDetails(rel, string(before), string(data), false)
+	if err != nil {
+		return tool.Result{}, err
+	}
+
 	dir := path.Dir(rel)
 	if err := w.ws.MkdirAll(dir, 0o777); err != nil {
 		return writeRefused(err.Error()), nil
 	}
 
-	data := []byte(*in.Content)
 	if err := w.replace(dir, rel, data, perm, created); err != nil {
 		// The inner error names the temporary file, which is not a path the
 		// model asked about.
@@ -133,9 +145,11 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 		summary = fmt.Sprintf("Created %s", rel)
 	}
 	return tool.Result{
+		// The diff stays in Details: it is what the UI draws, and the model just
+		// wrote the file it is a diff of.
 		Content: fmt.Sprintf("%s (%d bytes).", summary, len(data)),
 		Title:   summary,
-		Details: &WriteDetails{Path: rel, Bytes: len(data), Created: created},
+		Details: details,
 	}, nil
 }
 
