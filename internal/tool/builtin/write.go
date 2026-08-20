@@ -110,32 +110,34 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 	}
 
 	// The bytes about to be replaced, read under the lock the rename also runs
-	// under, so the diff is of the file that actually goes away. A creation has
-	// nothing before it, which is a diff of every line added.
-	//
-	// The lock is rasp's own, so it orders rasp's writes and nothing else: an
-	// editor saving, a checkout or a `make clean` can still take the file away
-	// between the stat above and this read. That is the creation case arriving
-	// late, not a reason to refuse a write that would otherwise have gone ahead.
-	var before []byte
-	if !created {
-		switch before, err = w.ws.ReadFile(rel); {
-		case errors.Is(err, fs.ErrNotExist):
-			// Cleared rather than left standing, so nothing below can read an
-			// error this branch decided was not one.
-			before, err = nil, nil
-		case err != nil:
-			return writeRefused(err.Error()), nil
-		}
+	// under, so the diff is of the file that actually goes away. Unconditional,
+	// because the stat above and this read are two moments and the lock is
+	// rasp's own: an editor saving, a checkout or a `make clean` can take a file
+	// away between them, or put one there.
+	before, readErr := w.ws.ReadFile(rel)
+	if !created && errors.Is(readErr, fs.ErrNotExist) {
+		// It left between the two. That is a creation, and calling it a
+		// replacement would report a file this write never touched and give the
+		// new one the mode of one that is gone.
+		created, perm = true, 0o666
 	}
 
 	data := []byte(*in.Content)
 
+	// A payload for the UI decides how the write is drawn, never whether it
+	// happens: a file readable only by root is one whose diff cannot be shown
+	// and whose replacement still succeeds, since that needs the directory
+	// rather than the file. Nothing to diff against is a card that says what
+	// was written, which is honest, where a diff taken against nothing would
+	// claim every line is new.
+	//
 	// Diffed before writing: a failure here would otherwise be a file already
 	// changed and a caller told the tool could not run.
-	details, err := diffDetails(rel, string(before), string(data), false)
-	if err != nil {
-		return tool.Result{}, err
+	var details *tool.DiffDetails
+	if readErr == nil || errors.Is(readErr, fs.ErrNotExist) {
+		if details, err = diffDetails(rel, string(before), string(data), false); err != nil {
+			return tool.Result{}, err
+		}
 	}
 
 	dir := path.Dir(rel)
@@ -154,13 +156,19 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 	if created {
 		summary = fmt.Sprintf("Created %s", rel)
 	}
-	return tool.Result{
+	result := tool.Result{
 		// The diff stays in Details: it is what the UI draws, and the model just
 		// wrote the file it is a diff of.
 		Content: fmt.Sprintf("%s (%d bytes).", summary, len(data)),
 		Title:   summary,
-		Details: details,
-	}, nil
+	}
+	// Assigned only when there is one, because a nil *DiffDetails in an any is
+	// not a nil any: the UI's type assertion would succeed and hand it a pointer
+	// to dereference.
+	if details != nil {
+		result.Details = details
+	}
+	return result, nil
 }
 
 func (w *writeTool) replace(dir, rel string, data []byte, perm fs.FileMode, created bool) error {

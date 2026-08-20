@@ -271,7 +271,16 @@ func (m Model) draw(id string, c card) Model {
 // the first press after a diff opened itself closes it. Tracking the press
 // instead makes the key do nothing that first time — the flag says closed, the
 // screen says open, and the press only brings the two into agreement.
+//
+// With no cards there is nothing to read, and an empty conversation would
+// answer "nothing is open" to every press and so open every time. Then the
+// flag is the only state there is, and toggling it is right.
 func (m Model) expand() Model {
+	if len(m.cards) == 0 {
+		m.expanded = !m.expanded
+		return m
+	}
+
 	m.expanded = !m.anyExpanded()
 	for id, c := range m.cards {
 		c.item.Expanded = m.expanded

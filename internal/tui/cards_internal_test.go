@@ -248,6 +248,26 @@ func TestAFileChangeIsDrawnWithoutAnyoneAskingForIt(t *testing.T) {
 	}
 }
 
+// TestTheToggleStillTogglesWithNothingToRead. Reading the direction off the
+// cards has nothing to read before any tool has run, and "nothing is open"
+// every time means opening every time — so two presses would leave the
+// conversation set to open, and the next call would arrive with its body
+// showing.
+func TestTheToggleStillTogglesWithNothingToRead(t *testing.T) {
+	var m tea.Model = Model{}
+	m, _ = m.Update(expandKey)
+	m, _ = m.Update(expandKey)
+
+	m, _ = m.Update(agentMsg{event: agent.Event{
+		Kind: agent.EventToolEnd, CallID: "call_1", Tool: "read",
+		Result: &tool.Result{Title: "read auth.go (1 line)", Content: "1\tpackage auth"},
+	}})
+
+	if frame := words(m.View().Content); strings.Contains(frame, "package auth") {
+		t.Errorf("the card arrived open after two presses that should have cancelled out:\n%s", frame)
+	}
+}
+
 // TestALightTerminalRedrawsEveryDiffInItsOwnPalette. The background query is
 // answered after the program has drawn its first frames, and a finished card's
 // render is frozen at the colours it was drawn in — so an answer that only

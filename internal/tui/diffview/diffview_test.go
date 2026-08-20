@@ -131,12 +131,8 @@ func TestAFilesOwnControlCharactersAreNotHandedToTheTerminal(t *testing.T) {
 	}
 }
 
-// TestACutNeverLandsWiderThanTheTerminal covers what a sum of rune widths gets
-// wrong in both directions. A flag emoji is two runes and two cells together
-// and two cells each apart, so summing over-counts; a sun followed by the
-// variation selector that makes it emoji is one cell of runes and two cells
-// drawn, so summing under-counts — and under-counting is a line the terminal
-// wraps after all.
+// TestACutNeverLandsWiderThanTheTerminal is fit's cluster measurement across
+// the shapes that break a per-rune one, at every width they can be cut at.
 func TestACutNeverLandsWiderThanTheTerminal(t *testing.T) {
 	for name, content := range map[string]string{
 		"flags":               strings.Repeat("\U0001F1FA\U0001F1F8", 6),

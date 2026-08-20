@@ -127,6 +127,48 @@ func TestAFileChangeOpensAsItsDiff(t *testing.T) {
 	}
 }
 
+// TestAFailedCallShowsWhyRatherThanItsDiff. Nothing built in returns both today
+// — a refusal carries no Details — but a tool that partly applied a change and
+// then failed would, and a card that drew the diff would lose the sentence
+// saying what went wrong under a headline that only says "failed".
+func TestAFailedCallShowsWhyRatherThanItsDiff(t *testing.T) {
+	call := opened(answered("edit", &tool.Result{
+		IsError: true,
+		Content: "Edited auth.go, then could not write middleware.go: permission denied.",
+		Details: &tool.DiffDetails{Path: "auth.go", Additions: 1, Deletions: 1, Unified: unified},
+	}))
+
+	body := words(call.Render(wide))
+	if !strings.Contains(body, "permission denied") {
+		t.Errorf("the card drops the reason it failed:\n%s", body)
+	}
+	if call.HasDiff() {
+		t.Error("a failed call reports a diff, so the model would open it in place of the reason")
+	}
+}
+
+// TestATypedNilInDetailsIsNotFollowed. Details is an any, and a tool with no
+// diff to report can leave a (*tool.DiffDetails)(nil) in it — which is not a
+// nil any. The assertion succeeds and hands the card a pointer to dereference,
+// so a card that only checked ok panics. The loop's guard turns that into an
+// error result rather than a dead process, and the reader still loses the card.
+func TestATypedNilInDetailsIsNotFollowed(t *testing.T) {
+	var missing *tool.DiffDetails
+
+	call := opened(answered("write", &tool.Result{
+		Title:   "Created auth.go",
+		Content: "Created auth.go (0 bytes).",
+		Details: missing,
+	}))
+
+	if call.HasDiff() {
+		t.Error("a card whose Details holds nothing at all reports having a diff")
+	}
+	if body := words(call.Render(wide)); !strings.Contains(body, "Created auth.go") {
+		t.Errorf("the card drew neither a diff nor what the tool said:\n%s", body)
+	}
+}
+
 // TestACardWithNoDiffStillShowsWhatTheToolSaid. The diff is a different body,
 // not an extra one, so a tool that changed no file must not lose its output to
 // the branch that draws diffs.

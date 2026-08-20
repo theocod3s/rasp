@@ -10,23 +10,19 @@ import (
 )
 
 const (
-	// elision marks a line the terminal was too narrow for.
 	elision = "…"
 
-	// tabWidth is the stop tabs are expanded to. Four rather than the terminal's
-	// usual eight because a diff is already two columns in — the card's indent
-	// and the +/- marker — and eight puts a doubly-indented Go line past 80
-	// columns on its whitespace alone.
+	// Four rather than the terminal's usual eight: a diff is already two columns
+	// in, between the card's indent and the +/- marker, and eight puts a
+	// doubly-indented Go line past 80 columns on its whitespace alone.
 	tabWidth = 4
 )
 
 // Render draws a unified diff, one screen line per line of it, in p's colours.
-//
-// Nothing wraps. A changed line broken across two rows reads as two changed
-// lines, which is the one thing a diff must not say — so a line past width is
-// cut at the edge and marked. The whole of it stays in the tool's Details,
-// which is where a horizontal scroll will read it from; there is no binding for
-// that yet, so today the mark is all a reader gets.
+// Nothing wraps: a changed line broken across two rows reads as two changed
+// lines, so a line past width is cut and marked instead. The whole of it stays
+// in the tool's Details, where a horizontal scroll will read it from; there is
+// no binding for that yet, so today the mark is all a reader gets.
 //
 // A width of zero or less is a terminal that has not reported its size, and
 // nothing is cut.
@@ -47,16 +43,14 @@ func Render(unified string, width int, p styles.Palette) string {
 }
 
 // Draws reports that unified has lines a reader would see. Exported so that
-// asking "is there a diff to show" and drawing it cannot disagree: what counts
-// as nothing to show is the header-stripping below, and a caller deciding for
-// itself would call a header-only diff a diff and then open a card onto an
-// empty body.
+// asking and drawing cannot disagree: what counts as nothing to show is the
+// header-stripping below, and a caller deciding for itself would call a
+// header-only diff a diff and open a card onto an empty body.
 func Draws(unified string) bool { return len(body(unified)) > 0 }
 
 // body is the diff's lines with the `--- a/x` and `+++ b/x` pair above the
-// first hunk dropped. The card this is drawn under already names the file, and
-// at 80 columns two more lines of it is a third of what a small diff has to
-// say. Positional rather than by prefix: a deleted line reading `-- x` is a
+// first hunk dropped, since the card this is drawn under already names the
+// file. Positional rather than by prefix: a deleted line reading `-- x` is a
 // deletion, and it can only be one below a hunk header.
 func body(unified string) []string {
 	unified = strings.TrimSuffix(unified, "\n")
@@ -79,10 +73,9 @@ func draw(line string, width int, p styles.Palette) string {
 	return drawn
 }
 
-// classify reads a line's class off the character unified diff format puts it
-// in: `+` inserted, `-` deleted, `@@` a hunk header, a space context. A `\`
-// opens "\ No newline at end of file", which is the format talking about the
-// file rather than a line out of it.
+// classify reads a line's class off the character the format puts it in. The
+// `\` is the one that is not a class of source line: it opens "\ No newline at
+// end of file", the format talking about the file rather than a line out of it.
 func classify(line string, p styles.Palette) lipgloss.Style {
 	switch {
 	case strings.HasPrefix(line, "@@"):

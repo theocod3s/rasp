@@ -109,6 +109,37 @@ func TestWriteSurvivesTheFileBeingTakenAwayMidCall(t *testing.T) {
 		t.Errorf("Details is +%d -%d, and there was nothing left to delete by the time it was read",
 			d.Additions, d.Deletions)
 	}
+	// And the call says so. Reporting a replacement would name a file this write
+	// never touched, and it is the same flag that decides whether the new file
+	// is given the mode of the one that has gone.
+	if !strings.Contains(res.Content, "Created") {
+		t.Errorf("Content = %q, want it to report a creation: there was nothing there to replace", res.Content)
+	}
+}
+
+// TestWriteStillWritesWhenTheOldContentsCannotBeRead. Details is drawn by the
+// UI and read by nobody else, so failing to build one must not decide whether
+// the file is written: replacing a file needs its directory, not the file, and
+// a mode that forbids reading does not forbid the rename. The card falls back
+// to saying what was written, which is honest — a diff against nothing would
+// claim every line is new.
+func TestWriteStillWritesWhenTheOldContentsCannotBeRead(t *testing.T) {
+	f := newWriteFixture(t)
+	f.seed("secret.txt", "the old contents")
+	f.spy.readFile = func(string) ([]byte, error) { return nil, fs.ErrPermission }
+
+	res := f.write("secret.txt", "the new contents")
+	if res.IsError {
+		t.Fatalf("the write was refused because its diff could not be built: %s", res.Content)
+	}
+	f.wantContent("secret.txt", "the new contents")
+
+	if res.Details != nil {
+		t.Errorf("Details is %#v, want nothing: a diff was drawn against contents nobody could read", res.Details)
+	}
+	if !strings.Contains(res.Content, "Replaced") {
+		t.Errorf("Content = %q, want it to still report the replacement", res.Content)
+	}
 }
 
 func TestWriteAtTheWorkspaceRoot(t *testing.T) {
@@ -539,6 +570,7 @@ type writeSpy struct {
 	// afterStat runs once the stat has answered, which is where a test stages
 	// something happening to the file between the calls the tool makes about it.
 	afterStat func(name string)
+	readFile  func(name string) ([]byte, error)
 
 	opened  []string
 	renamed [][2]string
@@ -550,6 +582,13 @@ func (s *writeSpy) Stat(name string) (fs.FileInfo, error) {
 		s.afterStat(name)
 	}
 	return info, err
+}
+
+func (s *writeSpy) ReadFile(name string) ([]byte, error) {
+	if s.readFile != nil {
+		return s.readFile(name)
+	}
+	return s.Workspace.ReadFile(name)
 }
 
 func (s *writeSpy) OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error) {
