@@ -40,6 +40,10 @@ func startTUI(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	// One object handed to both, or the picker writes a level to something the
+	// agent's requests never pass through.
+	effort := newDepth(provider)
+	uiCfg.Depth = effort
 
 	dir, err := os.Getwd()
 	if err != nil {
@@ -48,7 +52,7 @@ func startTUI(cmd *cobra.Command) error {
 	}
 
 	ui := tui.New(uiCfg)
-	s, err := newSession(res.Config, provider, model, dir, ui, ui.Events)
+	s, err := newSession(res.Config, effort, model, dir, ui, ui.Events)
 	if err != nil {
 		return err
 	}

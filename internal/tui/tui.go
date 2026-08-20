@@ -11,13 +11,19 @@ import (
 )
 
 // Config is what the session is, as the UI has to say it: the model the agent
-// was built against, the mode it starts in, and whether it was launched with the
-// permission checks bypassed. The first two are resolved settings the UI only
-// draws — a mode changed later is written here by Update and read by the
-// permission service, never the other way round (design §7.4).
+// was built against, the mode it starts in, the depth its turns ask for, and
+// whether it was launched with the permission checks bypassed. The first two are
+// resolved settings the UI only draws — a mode changed later is written here by
+// Update and read by the permission service, never the other way round
+// (design §7.4).
 type Config struct {
 	Model string
 	Mode  permission.Mode
+
+	// Depth is where /effort reads the levels this session's provider can send
+	// and writes the one it asks for. nil is a UI nothing composed a provider
+	// onto, where the command says so rather than drawing an empty list.
+	Depth Depth
 
 	// Yolo is `--yolo`, and the one setting here the UI installs as well as
 	// draws: Run arms the service from it, so the badge and the bypass come from

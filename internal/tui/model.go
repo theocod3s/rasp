@@ -33,6 +33,10 @@ type Model struct {
 	// drawn as a notice saying so rather than as a prompt (prompt.go).
 	permissions Permissions
 
+	// depth is the effort setting /effort drives, and nil is a UI composed
+	// without a provider behind it (effort.go).
+	depth Depth
+
 	// asked is the questions waiting on the user, oldest first, and opened is
 	// when the first of them was drawn — the two halves of prompt.go's state.
 	asked  []permission.Request
@@ -135,7 +139,12 @@ type card struct {
 }
 
 func newModel(ctx context.Context, turner Turner, cfg Config) Model {
-	return Model{ctx: ctx, turner: turner, status: status{model: cfg.Model, mode: cfg.Mode}}
+	return Model{
+		ctx:    ctx,
+		turner: turner,
+		depth:  cfg.Depth,
+		status: status{model: cfg.Model, mode: cfg.Mode},
+	}
 }
 
 func (m Model) clock() time.Time {

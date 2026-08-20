@@ -1,5 +1,6 @@
 [38;2;125;133;144mCommands[m
 [38;2;125;133;144m  /model    show the model in use — switching needs the model catalog[m
+[38;2;125;133;144m  /effort   how much depth a turn asks for — /effort <level> sets it[m
 [38;2;125;133;144m  /new      clear the screen; a conversation that starts over needs sessions[m
 [38;2;125;133;144m  /resume   reopen an earlier session — needs session support[m
 [38;2;125;133;144m  /compact  summarize the conversation to free context — needs compaction[m
