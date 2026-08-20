@@ -38,6 +38,10 @@ type Model struct {
 	asked  []permission.Request
 	opened time.Time
 
+	// reminder is what a mode switch has yet to tell the model, carried by the
+	// next turn because nothing is sent between turns (mode.go).
+	reminder string
+
 	// ctx is the program's, and every turn's context descends from it. Bubble Tea
 	// answers a signal by ending the event loop rather than by calling Update, so
 	// a turn interrupted that way is never offered the key that cancels it.
@@ -184,6 +188,13 @@ func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		return m, tea.Quit
 	case key.Code == tea.KeyEscape:
 		return m.escape(), nil
+	case key.Mod == tea.ModShift && key.Code == tea.KeyTab:
+		// Ahead of the question below, with the other keys that are not text:
+		// the prompt takes the keyboard off the input line, not off the session.
+		// A switch does not reopen the standing question either — that call was
+		// already resolved to "ask" under the mode it was asked in, and answering
+		// it again under a new one is the retroactivity design §7.4 rules out.
+		return m.cycleMode(), nil
 	case m.asking():
 		// Every key while a question stands, not only the three that answer it:
 		// the turn is blocked on the answer, so a line composed now has nowhere

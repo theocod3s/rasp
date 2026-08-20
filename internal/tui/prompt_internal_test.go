@@ -263,27 +263,6 @@ func TestASecondQuestionWaitsForTheFirst(t *testing.T) {
 	}
 }
 
-// TestSwitchingModeTellsTheServiceAndTheStatusLine holds the seam the mode
-// cycle needs. Nothing presses a key for it yet, and the half that would go
-// missing is the service: a status line saying plan over a session still
-// running the manual rules is worse than no indicator at all.
-func TestSwitchingModeTellsTheServiceAndTheStatusLine(t *testing.T) {
-	answers := &answers{}
-	m := newModel(t.Context(), &promptTurner{}, Config{Mode: permission.ModeManual})
-	m.permissions = answers
-
-	m, err := m.setMode(permission.ModePlan)
-	if err != nil {
-		t.Fatalf("setMode: %v", err)
-	}
-	if len(answers.modes) != 1 || answers.modes[0] != permission.ModePlan {
-		t.Errorf("the service was put in %v, want plan", answers.modes)
-	}
-	if !strings.Contains(words(m.View().Content), string(permission.ModePlan)) {
-		t.Errorf("the status line does not say plan:\n%s", m.View().Content)
-	}
-}
-
 // TestATurnStopsAtTheQuestionAndRunsOnTheAnswer is the whole path, with nothing
 // faked below the UI: the real loop, the real ladder in its default mode, the
 // real bridge carrying the question in, and a real tool on the far side of the

@@ -1316,6 +1316,12 @@ propose a plan; the user will switch you to manual or auto to carry it out.]
 It is a normal transcript message — persisted, replayed, and visible in the UI as a system
 notice rather than a user bubble.
 
+Until sessions exist there is no seam for appending a transcript message without running a
+turn, so the reminder waits in the UI and rides the front of the next `Send` — the same
+timing (the transcript only reaches the provider when a turn does) and the same uncached-tail
+placement §7.6 requires. The transcript-level message arrives with the session seam
+(`Agent.Note` or equivalent), which durability needs anyway to persist and replay it.
+
 ### 7.6 Prompt-caching interaction — mode text goes in the uncached tail
 
 If mode instructions live in the system prompt, switching mode changes the prompt. Whether
