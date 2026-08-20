@@ -72,21 +72,32 @@ func (c Call) Render(width int) string {
 	// The headline is set in like the body and then gives its first two columns
 	// back to the marker. Wrapped whole instead, a summary too long for the
 	// terminal continues at column zero and reads as a line of its own.
-	head := inset(wrap(c.headline(), width-len(cardIndent)), cardIndent)
+	head := inset(wrap(c.headline(), inner(width)), cardIndent)
 	head = c.marker(c.opens()) + strings.TrimPrefix(head, cardIndent)
 
 	if !c.Expanded {
 		return head
 	}
-	// Drawn only now, and to its own width rather than wrapped afterwards:
-	// wrapping a diff line draws one changed line as two, and a collapsed card
-	// that built its diff anyway would rebuild it every frame after a collapse,
-	// which is exactly when the freeze that spared it has been dropped.
-	body := c.body(width - len(cardIndent))
+	// Only now, and to its own width rather than wrapped afterwards: wrapping a
+	// diff line draws one changed line as two, and a collapsed card that built
+	// its diff anyway would rebuild it on every frame after a collapse, which is
+	// exactly when the freeze that spared it has been dropped.
+	body := c.body(inner(width))
 	if body == "" {
 		return head
 	}
 	return head + "\n" + inset(body, cardIndent)
+}
+
+// inner is the width left inside the card's indent, and never zero or less —
+// which everything downstream reads as "no size reported yet, do not cut". A
+// real terminal too narrow for the indent must not arrive spelled that way, or
+// its diff lines go out at full length and wrap.
+func inner(width int) int {
+	if width <= 0 {
+		return width
+	}
+	return max(1, width-len(cardIndent))
 }
 
 func (c Call) marker(expandable bool) string {
@@ -165,11 +176,13 @@ func (c Call) opens() bool {
 
 // body is what expanding the card shows, already drawn to width: the diff a
 // file change produced, or the output the model was given.
+// The guard is the cheap half of opens rather than a call to it, which would
+// split the diff a second time. Empty here and false there stay the same set.
 func (c Call) body(width int) string {
-	switch {
-	case !c.opens():
+	if c.State != CallDone || c.Result == nil {
 		return ""
-	case c.HasDiff():
+	}
+	if c.HasDiff() {
 		return diffview.Render(c.unified(), width, styles.For(c.Background))
 	}
 	return wrap(c.text(), width)
@@ -177,7 +190,7 @@ func (c Call) body(width int) string {
 
 // text is the tool's output as the card shows it, and nothing when the line
 // above already says the whole of it: a failing tool writes no title, so that
-// line carries the first line of its content, and where that is all there is,
+// line carries its content's first line, and where that is all there is,
 // opening the card would say the same sentence twice.
 func (c Call) text() string {
 	content := strings.Trim(c.Result.Content, "\n")
@@ -199,11 +212,9 @@ func (c Call) unified() string {
 }
 
 // diff is the payload a tool that changed a file leaves for the UI, and nil for
-// everything else — an MCP server's arbitrary decoded JSON included.
-//
-// The one route to that field, because the nil check is not the ok check: a
-// tool with nothing to report can leave a typed nil in an any, and an assertion
-// that asked only ok would go on to dereference it.
+// everything else — an MCP server's arbitrary decoded JSON included. The one
+// route to that field, because a tool with nothing to report can leave a typed
+// nil in an any, and an assertion that asked only ok would dereference it.
 func (c Call) diff() *tool.DiffDetails {
 	if c.Result == nil {
 		return nil

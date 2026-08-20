@@ -21,8 +21,8 @@ const (
 // Render draws a unified diff, one screen line per line of it, in p's colours.
 // Nothing wraps: a changed line broken across two rows reads as two changed
 // lines, so a line past width is cut and marked instead. The whole of it stays
-// in the tool's Details, where a horizontal scroll will read it from; there is
-// no binding for that yet, so today the mark is all a reader gets.
+// in the tool's Details, where a horizontal scroll will read it from — there is
+// no binding for that yet, so the mark is all a reader gets today.
 //
 // A width of zero or less is a terminal that has not reported its size, and
 // nothing is cut.
@@ -95,11 +95,12 @@ func classify(line string, p styles.Palette) lipgloss.Style {
 //
 // One problem, since a file is arbitrary bytes and this draws them. A tab
 // measures as no cells, so a tab-indented line — most Go — measures short,
-// survives the cut and wraps anyway. The rest a terminal obeys: an ESC lets a
-// file recolour the screen or swallow what follows, a BEL sounds on every frame
-// the line is in, and a CR writes the next characters back over it — which
-// every line of every CRLF file ends with. Dropping the ESC alone leaves the
-// rest of its sequence as literal text, visible and inert.
+// survives the cut and wraps anyway. The rest a terminal obeys: ESC lets a file
+// recolour the screen or swallow what follows, BEL sounds on every frame, CR
+// writes the next characters back over the line — and every line of a CRLF file
+// ends with one. C1 goes too, since U+009B is CSI on its own and U+0085 a line
+// break, both of them past where dropping ESC would stop. Dropping ESC alone
+// leaves the rest of its sequence as literal text, visible and inert.
 func expand(line string) string {
 	var (
 		b   strings.Builder
@@ -111,7 +112,7 @@ func expand(line string) string {
 			n := tabWidth - col%tabWidth
 			b.WriteString(strings.Repeat(" ", n))
 			col += n
-		case r < 0x20 || r == 0x7f:
+		case r < 0x20 || (r >= 0x7f && r <= 0x9f):
 		default:
 			w := 1
 			if r > 0x7f {
@@ -127,12 +128,10 @@ func expand(line string) string {
 // fit cuts line to width, keeping a column back for the mark, and reports
 // whether it had to.
 //
-// By grapheme cluster rather than by rune, which is not a detail: a flag emoji
-// is two runes and two cells together but two cells *each* apart, and a sun
-// plus the variation selector that makes it emoji is one rune of width and two
-// cells drawn. Measuring by rune therefore calls a line too wide when it fits —
-// cutting text and blaming the terminal — and calls one narrow enough when it
-// is not, which is the wrap this exists to prevent.
+// By grapheme cluster, not by rune: a flag emoji is two cells together and two
+// cells *each* apart, a sun plus its variation selector one rune of width and
+// two cells drawn. Per-rune therefore calls a line too wide when it fits — and
+// too narrow when it does not, which is the wrap this exists to prevent.
 func fit(line string, width int) (string, bool) {
 	if width <= 0 || ansi.StringWidth(line) <= width {
 		return line, false

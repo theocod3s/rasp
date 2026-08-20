@@ -237,6 +237,41 @@ func TestADiffLineIsCutAtTheWidthRatherThanWrapped(t *testing.T) {
 	}
 }
 
+// TestATerminalTooNarrowForTheIndentStillCuts. A width of zero or less means
+// "nobody has said how wide the terminal is" all the way down, and a card that
+// subtracted its indent could hand that same number down for a real terminal
+// with nothing left — every diff line then goes out uncut and wraps, which is
+// the one thing the cut exists to stop, arriving through the sentinel meant to
+// help.
+func TestATerminalTooNarrowForTheIndentStillCuts(t *testing.T) {
+	call := opened(answered("edit", &tool.Result{
+		Title:   "auth.go +1 -1",
+		Details: &tool.DiffDetails{Path: "auth.go", Unified: unified},
+	}))
+
+	// From three, which is the first width where the indent and a column of
+	// content both fit. Below it no card is drawable — the indent alone is two
+	// columns — and that is the card's own layout rather than the cut.
+	for width := 3; width <= 8; width++ {
+		for _, row := range strings.Split(call.Render(width), "\n") {
+			if n := ansi.StringWidth(row); n > width {
+				t.Errorf("at width %d a row measures %d: %q", width, n, words(row))
+			}
+		}
+	}
+
+	// And at the widths no card fits, the cut still runs: what must not happen
+	// is a diff line going out at its full length because a real width was read
+	// as one nobody had reported.
+	for width := 1; width <= 2; width++ {
+		for _, row := range strings.Split(call.Render(width), "\n") {
+			if n := ansi.StringWidth(row); n > width+len(chat.Caret) {
+				t.Errorf("at width %d a row measures %d, so it was never cut: %q", width, n, words(row))
+			}
+		}
+	}
+}
+
 // TestTheTerminalsBackgroundPicksTheDiffsColours. Nothing else can check this:
 // the palette is chosen by a query the terminal answers, and a test has no
 // terminal, so the card is asked for both and the two are compared.

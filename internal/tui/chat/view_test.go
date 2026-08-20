@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/theocod3s/rasp/internal/llm"
 	"github.com/theocod3s/rasp/internal/tool"
 	"github.com/theocod3s/rasp/internal/tui/chat"
@@ -184,17 +186,7 @@ func TestAReplyIsMarkdownAndAPromptIsNot(t *testing.T) {
 // words is what a frame says: the escape sequences markdown is styled with
 // taken out, and the wrapping and margins squeezed away.
 func words(frame string) string {
-	var b strings.Builder
-	for i := 0; i < len(frame); i++ {
-		if frame[i] == 0x1b {
-			for i < len(frame) && frame[i] != 'm' {
-				i++
-			}
-			continue
-		}
-		b.WriteByte(frame[i])
-	}
-	return strings.Join(strings.Fields(b.String()), " ")
+	return strings.Join(strings.Fields(ansi.Strip(frame)), " ")
 }
 
 // BenchmarkCursorBlink is the frame a blinking cursor costs in a 200-message

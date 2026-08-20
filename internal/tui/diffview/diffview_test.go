@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theocod3s/rasp/internal/tui/diffview"
 	"github.com/theocod3s/rasp/internal/tui/styles"
@@ -109,6 +110,10 @@ func TestAFilesOwnControlCharactersAreNotHandedToTheTerminal(t *testing.T) {
 		"@@ -1,3 +1,3 @@",
 		"-old line\r",
 		"+colour \x1b[41mRED\x1b[0m, a bell \a and a null \x00, then enough text to reach the cut",
+		// C1, which UTF-8 hides in plain sight: U+009B is CSI on its own, so a
+		// terminal reading 8-bit controls obeys it exactly where dropping ESC was
+		// meant to stop, and U+0085 is a line break that splits one row into two.
+		"+eight-bit 31m and a next-line  after it",
 	)
 
 	drawn := diffview.Render(hostile, 40, styles.For(styles.Dark))
@@ -120,6 +125,14 @@ func TestAFilesOwnControlCharactersAreNotHandedToTheTerminal(t *testing.T) {
 		}
 		if strings.ContainsAny(row, "\r\a\x00") {
 			t.Errorf("the row carries a control character the terminal acts on: %q", row)
+		}
+		for _, r := range row {
+			// Our own styling is the only escape allowed through, and it is the
+			// one rune this range does not cover after the ESC.
+			if r != 0x1b && r >= 0x7f && r <= 0x9f {
+				t.Errorf("the row carries U+%04X, which a terminal reading eight-bit controls "+
+					"obeys rather than draws: %q", r, row)
+			}
 		}
 	}
 
@@ -252,17 +265,7 @@ func colour(row string) string {
 	return row[i : i+j+1]
 }
 
-// text is a rendered diff reduced to what it says.
-func text(drawn string) string {
-	var b strings.Builder
-	for i := 0; i < len(drawn); i++ {
-		if drawn[i] == 0x1b {
-			for i < len(drawn) && drawn[i] != 'm' {
-				i++
-			}
-			continue
-		}
-		b.WriteByte(drawn[i])
-	}
-	return b.String()
-}
+// text is a rendered diff reduced to what it says. ansi.Strip rather than a
+// scan to the next `m`, which swallows the rest of a row whenever a sequence
+// is not the SGR one it assumes.
+func text(drawn string) string { return ansi.Strip(drawn) }

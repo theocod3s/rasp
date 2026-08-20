@@ -146,9 +146,9 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 	// changed and a caller told the tool could not run.
 	var details *tool.DiffDetails
 	if readErr == nil || errors.Is(readErr, fs.ErrNotExist) {
-		if details, err = diffDetails(rel, string(before), string(data), false); err != nil {
-			return tool.Result{}, err
-		}
+		// Failing to build one is the same as not having the bytes to build it
+		// from, and goes the same way: no Details, and the write still happens.
+		details, _ = diffDetails(rel, string(before), string(data), false)
 	}
 
 	dir := path.Dir(rel)

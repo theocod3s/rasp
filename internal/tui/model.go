@@ -59,10 +59,10 @@ type Model struct {
 	// of the model as chat.View's own map is, and for the same reason.
 	cards map[string]card
 
-	// expanded is the last thing the user asked for, and what a card added after
-	// that inherits — so a call starting mid-turn arrives in the state the rest
-	// of the conversation is already in.
-	expanded bool
+	// open is whether the reader has overridden how much of a card is shown, and
+	// which way. Its zero value is "they have not", which is what lets a card
+	// carry its own default: a file change opens and nothing else does.
+	open openness
 
 	// background is what the terminal answered the background query with, and
 	// picks the palette a diff is drawn from.
@@ -193,7 +193,9 @@ func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
 		m = m.announced(ev.CallID, ev.Tool)
 		c := m.cards[ev.CallID]
 		c.item.State, c.item.Result = chat.CallDone, ev.Result
-		c.item.Expanded = c.item.Expanded || c.item.HasDiff()
+		// Asked again now the result is here: whether the card opens itself is a
+		// question about what it holds, and it held nothing until this event.
+		c.item.Expanded = m.open.shows(c.item)
 		if !c.started.IsZero() {
 			c.item.Elapsed = m.clock().Sub(c.started)
 		}
@@ -233,7 +235,9 @@ func (m Model) announced(id, name string) Model {
 	if m.cards == nil {
 		m.cards = make(map[string]card)
 	}
-	return m.draw(id, card{item: chat.Call{Name: name, Expanded: m.expanded, Background: m.background}})
+	item := chat.Call{Name: name, Background: m.background}
+	item.Expanded = m.open.shows(item)
+	return m.draw(id, card{item: item})
 }
 
 // repaint moves every card onto the terminal's own palette. The whole list
@@ -263,33 +267,61 @@ func (m Model) draw(id string, c card) Model {
 	return m
 }
 
+// openness is how much of every card is shown: what the cards themselves say
+// until the reader takes a view, and then what the reader said.
+//
+// Modelled as the reader's opinion rather than as a bare "expanded" flag,
+// because the default is the card's own — a diff opens itself — and a flag
+// carrying both answers can only ever agree with one of them. It disagreed
+// twice: the first press after a diff opened itself did nothing, and a card
+// arriving after the reader collapsed the conversation opened anyway.
+type openness int
+
+const (
+	openByDefault openness = iota
+	openAll
+	closeAll
+)
+
+// shows is whether a card is drawn open under this openness.
+func (o openness) shows(c chat.Call) bool {
+	switch o {
+	case openAll:
+		return true
+	case closeAll:
+		return false
+	}
+	return c.HasDiff()
+}
+
 // expand shows or hides every card's body. The whole conversation rather than
 // the card under a selection, because nothing selects one yet: the transcript
 // has no cursor over it, so there is no "this card" to mean.
 //
-// Which way it goes is read off the cards rather than off the last press, so
-// the first press after a diff opened itself closes it. Tracking the press
-// instead makes the key do nothing that first time — the flag says closed, the
-// screen says open, and the press only brings the two into agreement.
-//
-// With no cards there is nothing to read, and an empty conversation would
-// answer "nothing is open" to every press and so open every time. Then the
-// flag is the only state there is, and toggling it is right.
+// With no view taken yet, which way to go is read off the screen, so the press
+// does what a reader looking at it expects. After that the reader's own last
+// answer is the thing to flip — including on an empty conversation, where the
+// screen says nothing and reading it would answer "open" forever.
 func (m Model) expand() Model {
-	if len(m.cards) == 0 {
-		m.expanded = !m.expanded
-		return m
+	switch {
+	case m.open == openAll:
+		m.open = closeAll
+	case m.open == closeAll:
+		m.open = openAll
+	case m.anyShown():
+		m.open = closeAll
+	default:
+		m.open = openAll
 	}
 
-	m.expanded = !m.anyExpanded()
 	for id, c := range m.cards {
-		c.item.Expanded = m.expanded
+		c.item.Expanded = m.open.shows(c.item)
 		m = m.draw(id, c)
 	}
 	return m
 }
 
-func (m Model) anyExpanded() bool {
+func (m Model) anyShown() bool {
 	for _, c := range m.cards {
 		if c.item.Expanded {
 			return true

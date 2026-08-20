@@ -248,6 +248,38 @@ func TestAFileChangeIsDrawnWithoutAnyoneAskingForIt(t *testing.T) {
 	}
 }
 
+// TestACollapsedConversationStaysCollapsedAsMoreChangesLand. A diff opens
+// itself, and a reader who does not want that says so once. A turn making
+// eight edits must not ask them eight more times — which is what a card
+// deciding for itself on every result, with nothing recording that the reader
+// had already answered, would do.
+func TestACollapsedConversationStaysCollapsedAsMoreChangesLand(t *testing.T) {
+	const line = "-return parse(header)"
+
+	var m tea.Model = Model{}
+	m, _ = m.Update(agentMsg{event: agent.Event{
+		Kind: agent.EventToolEnd, CallID: "call_1", Tool: "edit", Result: edit(),
+	}})
+	m, _ = m.Update(expandKey)
+
+	if frame := words(m.View().Content); strings.Contains(frame, line) {
+		t.Fatalf("the press did not collapse the conversation:\n%s", frame)
+	}
+
+	m, _ = m.Update(agentMsg{event: agent.Event{
+		Kind: agent.EventToolEnd, CallID: "call_2", Tool: "edit", Result: edit(),
+	}})
+	if frame := words(m.View().Content); strings.Contains(frame, line) {
+		t.Errorf("the next change opened itself over the reader's answer:\n%s", frame)
+	}
+
+	// And the reader can still get all of it back.
+	m, _ = m.Update(expandKey)
+	if frame := words(m.View().Content); !strings.Contains(frame, line) {
+		t.Errorf("nothing reopened:\n%s", frame)
+	}
+}
+
 // TestTheToggleStillTogglesWithNothingToRead. Reading the direction off the
 // cards has nothing to read before any tool has run, and "nothing is open"
 // every time means opening every time — so two presses would leave the

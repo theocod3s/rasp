@@ -52,6 +52,14 @@ func TestEveryTokenIsADifferentColourInEachPalette(t *testing.T) {
 // The floor is WCAG AA for normal text, which is what a diff is. The tokens
 // clear it with room — 4.55:1 at the tightest — so it is a floor on the palette
 // as chosen, not a bar it was tuned to scrape past; #8c959f came in at 3.04:1.
+//
+// What this does NOT say is that any given session is legible. Which palette a
+// session gets is model.go's question, and today the answer is always Dark:
+// nothing issues the query whose answer would select Light, so a reader on a
+// white terminal gets the dark tokens at 2.5–3.7:1 against it. That is the
+// state the whole UI is already in — glamour is pinned to its dark style too —
+// and it is why the query is not issued yet rather than something this test
+// could catch. Naming it here so the check is not read as covering it.
 func TestEveryTokenStandsOutFromTheBackgroundItIsFor(t *testing.T) {
 	const floor = 4.5
 

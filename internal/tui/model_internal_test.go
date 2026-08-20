@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theocod3s/rasp/internal/agent"
 	"github.com/theocod3s/rasp/internal/llm"
@@ -137,15 +138,5 @@ func reply(text string) *llm.Message {
 // left margin and broken wherever the width fell — none of which is what these
 // tests are about.
 func words(frame string) string {
-	var b strings.Builder
-	for i := 0; i < len(frame); i++ {
-		if frame[i] == 0x1b {
-			for i < len(frame) && frame[i] != 'm' {
-				i++
-			}
-			continue
-		}
-		b.WriteByte(frame[i])
-	}
-	return strings.Join(strings.Fields(b.String()), " ")
+	return strings.Join(strings.Fields(ansi.Strip(frame)), " ")
 }
