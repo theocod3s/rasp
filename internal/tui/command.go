@@ -33,6 +33,7 @@ func commands() []command {
 		{"resume", "reopen an earlier session — needs session support", resume},
 		{"compact", "summarize the conversation to free context — needs compaction", compact},
 		{"clear", "clear the conversation off the screen", clearConversation},
+		{"yolo", "run every tool call with no approval — /yolo confirm turns it on", yolo},
 		{"help", "list these commands", help},
 		{"quit", "stop a running turn and leave", leave},
 	}

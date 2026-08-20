@@ -141,6 +141,12 @@ func snapshots() []snapshot {
 		// the same words the next turn carries (design §7.5) — so an edit to them
 		// shows up here rather than only inside a transcript nobody reads.
 		{name: "mode", keys: []tea.KeyPressMsg{shiftTab}},
+		// The bypass, reached the only way a session can reach it: the warning the
+		// bare /yolo answers with, and then the badge the confirmed one leaves on
+		// the status line. Recorded because those are the words standing between a
+		// user and every guardrail being off, and because the badge is the whole
+		// of what design §7.8 asks the line to do while it is armed.
+		{name: "yolo", keys: append(typedLine("/yolo"), typedLine("/yolo "+yoloConfirm)...)},
 		// The first Esc against a running turn, which arms rather than cancels
 		// (design §6 rule 7) — the hint replacing "working…" is the only thing
 		// this state exists to draw.

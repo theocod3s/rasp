@@ -16,7 +16,9 @@ import (
 func TestTheRootStartsTheUIAndFailsBeforeItTakesTheTerminal(t *testing.T) {
 	projectConfig(t, `{"model": "claude-opus-5"}`)
 
-	stdout, _, err := run(t)
+	// With --yolo, which the root reads before it builds anything: a flag renamed
+	// out from under that read fails here, naming itself instead of the model.
+	stdout, _, err := run(t, "--"+yoloFlag)
 	if err == nil {
 		t.Fatal("`rasp` started with a model id that names no provider")
 	}
@@ -25,6 +27,32 @@ func TestTheRootStartsTheUIAndFailsBeforeItTakesTheTerminal(t *testing.T) {
 	}
 	if stdout != "" {
 		t.Errorf("stdout = %q; the screen belongs to the UI and this run never opened one", stdout)
+	}
+}
+
+// TestTheBypassFlagBelongsToTheSessionAndNowhereElse. It arms a session with a
+// user watching it, and a subcommand that accepted the word and ignored it would
+// be a flag reading as applied when it is not — worst of all on `config check`,
+// whose whole job is saying what is in force.
+func TestTheBypassFlagBelongsToTheSessionAndNowhereElse(t *testing.T) {
+	if newRootCmd().Flags().Lookup(yoloFlag) == nil {
+		t.Fatalf("the root has no --%s, so there is no way to start a session with one", yoloFlag)
+	}
+
+	projectConfig(t, `{"model": "anthropic/claude-opus-5"}`)
+	for _, args := range [][]string{
+		{"config", "check", "--" + yoloFlag},
+		{"run", "-p", "hello", "--" + yoloFlag},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			_, _, err := run(t, args...)
+			if err == nil {
+				t.Fatalf("`rasp %s` was accepted", strings.Join(args, " "))
+			}
+			if !strings.Contains(err.Error(), yoloFlag) {
+				t.Errorf("it failed with %v, and the flag it could not take is not named", err)
+			}
+		})
 	}
 }
 

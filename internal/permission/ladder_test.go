@@ -377,3 +377,124 @@ func TestClearingGrantsEndsTheirSession(t *testing.T) {
 		t.Errorf("the user was asked %d times after the grants were cleared, want 1", len(h.prompts()))
 	}
 }
+
+// recordingRules reports whether the preset was consulted at all — the half of
+// rung 0 that an allow-or-deny assertion cannot see.
+type recordingRules struct {
+	consulted bool
+	rule      permission.Rule
+}
+
+func (r *recordingRules) Resolve(permission.Request) permission.Rule {
+	r.consulted = true
+	return r.rule
+}
+
+// TestYoloAnswersBeforeEveryOtherRung asserts the claim the field carries in
+// service.go: under yolo no pattern is consulted, so nothing a user configured
+// can turn the bypass back into a denial.
+func TestYoloAnswersBeforeEveryOtherRung(t *testing.T) {
+	req := permission.Request{CallID: "call-1", Tool: "bash",
+		Action: permission.ActionExecute, Command: "rm -rf /"}
+
+	preset := &recordingRules{rule: permission.RuleDeny}
+	s := permission.New(nil) // reaching rung 5 with no Prompter is a refusal as well
+	s.SetRules(preset)
+
+	if err := s.Ask(t.Context(), req); !errors.Is(err, permission.ErrDenied) {
+		t.Fatalf("Ask with the bypass off = %v, want ErrDenied — otherwise what follows proves nothing", err)
+	}
+
+	preset.consulted = false
+	s.SetYolo(true)
+
+	if err := s.Ask(t.Context(), req); err != nil {
+		t.Errorf("Ask under yolo = %v, want the call allowed", err)
+	}
+	if preset.consulted {
+		t.Errorf("the preset was consulted under yolo, so a pattern could still deny")
+	}
+}
+
+// TestDisarmingPutsTheSessionBackUnderTheModeItWasIn. Arming installs no rules
+// of its own, so there is nothing to reinstate and nothing to get wrong: the
+// preset that was in force before answers again the moment the bypass goes.
+func TestDisarmingPutsTheSessionBackUnderTheModeItWasIn(t *testing.T) {
+	req := permission.Request{CallID: "call-1", Tool: "write",
+		Action: permission.ActionWrite, Path: "/foo/a.go"}
+
+	s := permission.New(nil)
+	s.SetRules(fixed(permission.RuleDeny))
+	s.SetYolo(true)
+	if err := s.Ask(t.Context(), req); err != nil {
+		t.Fatalf("Ask under yolo = %v, want the call allowed", err)
+	}
+
+	s.SetYolo(false)
+
+	if err := s.Ask(t.Context(), req); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("Ask once the bypass was disarmed = %v, want the mode's own rules answering again", err)
+	}
+}
+
+// TestInstallingAModesRulesEndsTheBypass is the other half of that pair. A mode
+// switch says how the session is gated, and one that left yolo armed would put a
+// mode on the status line that the ladder never reaches.
+func TestInstallingAModesRulesEndsTheBypass(t *testing.T) {
+	req := permission.Request{CallID: "call-1", Tool: "write",
+		Action: permission.ActionWrite, Path: "/foo/a.go"}
+
+	s := permission.New(nil)
+	s.SetYolo(true)
+	if err := s.Ask(t.Context(), req); err != nil {
+		t.Fatalf("Ask under yolo = %v, want the call allowed", err)
+	}
+
+	s.SetRules(fixed(permission.RuleDeny))
+
+	if err := s.Ask(t.Context(), req); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("Ask once a mode's rules were installed = %v, want them answering", err)
+	}
+}
+
+// TestTheBypassBelongsToOneServiceRatherThanToTheProcess is as near as this
+// package gets to "yolo never survives a restart": the flag is a field, so a
+// second Service is gated however armed the first one is. Worth a test because
+// the alternative shape — a package-level flag — passes every other assertion
+// here and fails only this one.
+func TestTheBypassBelongsToOneServiceRatherThanToTheProcess(t *testing.T) {
+	req := permission.Request{CallID: "call-1", Tool: "write",
+		Action: permission.ActionWrite, Path: "/foo/a.go"}
+
+	armed := permission.New(nil)
+	armed.SetYolo(true)
+	if err := armed.Ask(t.Context(), req); err != nil {
+		t.Fatalf("Ask on the armed service = %v; nothing below is about a bypass that is off", err)
+	}
+
+	// Nothing installed on this one, so the bypass is the only thing that could
+	// allow the call — installing rules to deny would have disarmed it and proved
+	// nothing.
+	if err := permission.New(nil).Ask(t.Context(), req); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("Ask on a service nobody armed = %v, want a refusal", err)
+	}
+}
+
+// TestRemovingThePresetLeavesTheQuestionToTheRungsBelow covers the one call
+// SetRules cannot pass straight to the atomic pointer: a nil Rules stored as a
+// pointer to a nil interface reads back as present and panics on use.
+func TestRemovingThePresetLeavesTheQuestionToTheRungsBelow(t *testing.T) {
+	req := permission.Request{CallID: "call-1", Tool: "write",
+		Action: permission.ActionWrite, Path: "/foo/a.go"}
+
+	s := permission.New(nil)
+	s.SetRules(&recordingRules{rule: permission.RuleAllow})
+	if err := s.Ask(t.Context(), req); err != nil {
+		t.Fatalf("Ask under a preset that allows = %v, want the call allowed", err)
+	}
+
+	s.SetRules(nil)
+	if err := s.Ask(t.Context(), req); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("Ask with no preset = %v, want the rungs below to answer", err)
+	}
+}

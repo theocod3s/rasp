@@ -11,12 +11,20 @@ import (
 )
 
 // Config is what the session is, as the UI has to say it: the model the agent
-// was built against, and the mode it starts in. Both are resolved settings the
-// UI only draws — a mode changed later is written here by Update and read by
-// the permission service, never the other way round (design §7.4).
+// was built against, the mode it starts in, and whether it was launched with the
+// permission checks bypassed. The first two are resolved settings the UI only
+// draws — a mode changed later is written here by Update and read by the
+// permission service, never the other way round (design §7.4).
 type Config struct {
 	Model string
 	Mode  permission.Mode
+
+	// Yolo is `--yolo`, and the one setting here the UI installs as well as
+	// draws: Run arms the service from it, so the badge and the bypass come from
+	// a single act rather than from a caller remembering to do both. Nothing in
+	// the configuration can set it — a value in a file would survive every
+	// restart (design §10).
+	Yolo bool
 }
 
 // Program is a running rasp TUI: a Bubble Tea program, plus the one goroutine
@@ -64,6 +72,9 @@ func (p *Program) Run(a Turner, answers Permissions) error {
 
 	m := newModel(ctx, a, p.cfg)
 	m.permissions = answers
+	if p.cfg.Yolo && answers != nil {
+		m = m.setYolo(true)
+	}
 
 	prog := tea.NewProgram(m, p.opts...)
 	p.bridge.start(prog)

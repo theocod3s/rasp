@@ -1,0 +1,11 @@
+[38;2;125;133;144m/yolo turns off every permission check for the rest of this session. Edits,[m
+[38;2;125;133;144mwrites and any command at all run the moment the model asks for them, with[m
+[38;2;125;133;144mnothing put to you first and nothing refused — including the destructive[m
+[38;2;125;133;144mcommands auto still stops for. It goes off again with /yolo, and it is off the[m
+[38;2;125;133;144mnext time rasp starts: it lives in this process and is written nowhere. Type[m
+[38;2;125;133;144m`/yolo confirm` to turn it on.[m
+[38;2;125;133;144m[Yolo is on. Nothing is put to the user before it runs: every edit, every write[m
+[38;2;125;133;144mand every command is approved the moment you ask for it. Take the care the[m
+[38;2;125;133;144mprompts were taking.][m
+[1;7m⚡ YOLO[m[38;2;125;133;144m · anthropic/claude-opus-5 · ctx 0 · in 0 · out 0 · cost —[m
+› 

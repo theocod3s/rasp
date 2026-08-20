@@ -124,7 +124,7 @@ internal/
 | `mcp` | Subprocess lifecycle, JSON-RPC over stdio, tool discovery, call proxying | Permission decisions. Schema *interpretation*. Any transport but stdio. **And: no MCP type, error code or protocol concept may leave this package — see §8.0** |
 | `workspace` | `os.Root` handle, path resolution, mtime tracking | Tool logic; permission decisions |
 | `wakelock` | Holding an idle-sleep inhibitor for the duration of a turn | Deciding *when* a turn runs; any UI or logging beyond debug |
-| `permission` | The ladder, session grants, **the four modes and their presets**, glob resolution, the yolo short-circuit | Any rendering. It publishes a request; someone else draws it |
+| `permission` | The ladder, session grants, **the three gated modes and their presets**, glob resolution, the yolo short-circuit ahead of all of it | Any rendering. It publishes a request; someone else draws it |
 | `session` | JSONL read/append, atomic write, listing | Compaction. Message semantics |
 | `compact` | Estimation, pruning, summarization | Storage. It transforms `[]Entry` and returns a new one |
 | `prompt` | Assembling ordered blocks with cache flags | Provider-specific cache syntax; the adapter applies that |
@@ -1083,24 +1083,7 @@ const (
     ModePlan   Mode = "plan"
     ModeManual Mode = "manual" // default
     ModeAuto   Mode = "auto"
-    ModeYolo   Mode = "yolo"   // NOT in the Shift+Tab cycle — see below
 )
-
-// cycleModes is the Shift+Tab rotation. ModeYolo is deliberately ABSENT from
-// this array, which is what makes it structurally unreachable by cycling
-// rather than merely discouraged. Reaching yolo requires --yolo or /yolo.
-var cycleModes = [...]Mode{ModePlan, ModeManual, ModeAuto}
-
-// Next advances the cycle. Cycling FROM yolo drops to manual — leaving yolo
-// should always be easy, and landing somewhere safe is the right default.
-func Next(m Mode) Mode {
-    for i, c := range cycleModes {
-        if c == m {
-            return cycleModes[(i+1)%len(cycleModes)]
-        }
-    }
-    return ModeManual
-}
 
 type Rule string
 
@@ -1124,6 +1107,18 @@ type PermissionSet struct {
     MCP   PatternRules
 }
 ```
+
+**There is no `ModeYolo`, and the Shift+Tab rotation is not in this package.** Yolo arms a
+bypass ahead of the ladder rather than naming a fourth preset (§7.7), so `permission` has no
+yolo value at all — which is what makes it unreachable by cycling rather than merely absent
+from an array. The rotation itself lives in `internal/tui` (`mode.go`), with the key it belongs
+to: three modes written out by hand, over an element type with no fourth value to write. It was
+sketched here first, and moving it changed nothing about the guarantee except where the reader
+finds it.
+
+Pressing the key while the bypass is armed disarms it and lands in manual rather than advancing
+the mode underneath — leaving yolo should always be easy, the mode under an armed bypass is not
+what the session is running, and manual asks about everything.
 
 ### 7.2 The presets, as data
 
@@ -1194,10 +1189,10 @@ var Presets = map[Mode]PermissionSet{
         MCP: PatternRules{"*": RuleAllow},
     },
 
-    // ModeYolo is listed for completeness and for `rasp config check` output.
-    // It is never consulted at runtime — the short-circuit in §7.7 answers
-    // first, so no pattern in this set is ever evaluated.
-    ModeYolo: allowEverything(),
+    // Yolo has no entry, and the absence is the design: it arms the bypass in
+    // §7.7 rather than naming the most permissive set. A mode with no entry
+    // comes back missing, for the caller to answer for, rather than resolving
+    // to a set that allows — which is why `"mode": "yolo"` starts no session.
 }
 ```
 
@@ -1285,16 +1280,27 @@ Synchronization against an in-flight turn is one `atomic.Pointer`:
 
 ```go
 type Service struct {
-    yolo    atomic.Bool                 // the short-circuit; see §7.7
-    mode    atomic.Pointer[compiledSet] // written by Update, read by Ask
-    grants  sync.Map                    // (tool, action, path) → granted
-    pending sync.Map                    // callID → chan Decision
+    yolo    atomic.Bool           // the short-circuit; see §7.7
+    rules   atomic.Pointer[Rules] // written by Update, read by Ask
+    grants  map[grant]bool        // (tool, action, path, command) → granted
+    pending sync.Map              // callID → chan Decision
 }
 
-func (s *Service) SetMode(m Mode) {
-    s.yolo.Store(m == ModeYolo)
-    s.mode.Store(compile(m, s.overrides))
+// Installing a mode's rules ends the bypass: the two are one statement about
+// how the session is gated, and a switch that left yolo armed would put a mode
+// on the status line that the ladder never reaches. The preset is compiled by
+// the composition root, which is what holds the user's `modes.<name>` overrides.
+func (s *Service) SetRules(r Rules) {
+    s.yolo.Store(false)
+    s.rules.Store(&r)
 }
+
+// Arming leaves those rules exactly as they are, which is what makes it one
+// call rather than two: no moment where the bypass has gone and nothing has
+// replaced it, and turning it off puts the session back under the mode it was
+// already in. In memory only — nothing writes it down, so the next run of rasp
+// starts gated whatever this one did.
+func (s *Service) SetYolo(on bool) { s.yolo.Store(on) }
 ```
 
 Because `Ask` loads the pointer at the moment of the check, a mid-turn switch **takes
@@ -1777,8 +1783,8 @@ and is not.
 > **`--yolo` is deliberately absent from that list.** It is not a config value that happens to
 > sit at the top of a precedence chain — it is a flag that arms the rung-0 bypass in §7.7,
 > which answers before any `PermissionSet` is consulted. Putting it in the precedence stack
-> would imply a lower layer could set it, and §10's "yolo may not be set by project config"
-> rule exists precisely to prevent that. The two mechanisms are different by design:
+> would imply a lower layer could set it, and §10's rule that no config layer starts a session
+> in yolo exists precisely to prevent that. The two mechanisms are different by design:
 > `--mode plan` selects a preset; `--yolo` disables the mechanism that reads presets.
 
 ### Schema
@@ -1850,10 +1856,13 @@ refused by the API, exactly as §3.1's ladder answers for an effort rung a model
 **Two constraints on `mode`, both about the same hazard.** A project config is a file in a
 repository — it arrives from `git clone`, and nobody reads it.
 
-1. **`"mode": "yolo"` is rejected in a *project* config.** It is accepted only in the global
-   config, from `--yolo`, or from `/yolo`. Otherwise cloning a repository could disable every
-   guardrail before the user has read a single line of it. rasp refuses to start and names the
-   file.
+1. **`"mode": "yolo"` starts no session, from any layer.** A project config is refused as it
+   loads, naming the file — otherwise cloning a repository could disable every guardrail before
+   the user has read a single line of it. Every other layer, the global config included, is
+   refused a step later: yolo has no preset to run under (§7.2), so startup stops there rather
+   than in the resolver. The reason is the same both ways round — a value in a config file is
+   back on every run after it, and the bypass may not be. It is armed per run instead, by
+   `--yolo` or `/yolo`, and it is gone with the process.
 2. **`modes.yolo` overrides are ignored entirely.** Yolo short-circuits ahead of pattern
    evaluation (§7.7), so an override could only ever create the false impression of a
    constraint that is not being enforced. Configuring one is a warning at startup, not a

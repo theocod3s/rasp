@@ -52,6 +52,46 @@ func TestRunEndsThePumpWithTheProgram(t *testing.T) {
 	}
 }
 
+// TestLaunchingWithTheBypassArmsTheService. `--yolo` arrives as one setting on
+// the Config the UI draws from, and Run is what installs it — a badge drawn from
+// a Config the service was never told about is the disagreement the indicator
+// exists to prevent, and the user would be reading it as proof.
+func TestLaunchingWithTheBypassArmsTheService(t *testing.T) {
+	answers := &recordingAnswers{armed: make(chan bool, 4)}
+	p := tui.New(tui.Config{Yolo: true}, headless(typing(ctrlC))...)
+
+	if err := p.Run(idleTurner{}, answers); err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+
+	select {
+	case on := <-answers.armed:
+		if !on {
+			t.Error("Run turned the bypass off, and the launch asked for it on")
+		}
+	default:
+		t.Error("Run never told the service, so --yolo would draw a badge over a session that " +
+			"still asks about everything")
+	}
+}
+
+// TestALaunchWithoutTheFlagArmsNothing is the negative control for the test
+// above: the same path, one field different, and nothing may reach the service.
+func TestALaunchWithoutTheFlagArmsNothing(t *testing.T) {
+	answers := &recordingAnswers{armed: make(chan bool, 4)}
+	p := tui.New(tui.Config{}, headless(typing(ctrlC))...)
+
+	if err := p.Run(idleTurner{}, answers); err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+
+	select {
+	case on := <-answers.armed:
+		t.Errorf("Run set the bypass to %v with no flag behind it", on)
+	default:
+	}
+}
+
 // TestTheUIKeepsHandlingKeysWhileATurnRuns is the acceptance criterion read the
 // way a user meets it: a turn that has not finished must not cost the user their
 // keyboard. The interrupt is what proves it — a Send called from Update would
@@ -267,7 +307,14 @@ func (a *askingTurner) Send(ctx context.Context, _ string) error {
 // recordingAnswers is the permission service's half of the seam. The send never
 // blocks: Resolve is called from Update, and a test that stopped reading would
 // take the whole UI with it rather than fail.
-type recordingAnswers struct{ given chan permission.Decision }
+type recordingAnswers struct {
+	given chan permission.Decision
+
+	// armed records what the bypass was set to, and is nil for the tests that
+	// never touch it — a send that would block, or has nowhere to go, is dropped
+	// for the reason the answers are.
+	armed chan bool
+}
 
 func (r *recordingAnswers) Resolve(_ string, d permission.Decision) bool {
 	select {
@@ -278,6 +325,13 @@ func (r *recordingAnswers) Resolve(_ string, d permission.Decision) bool {
 }
 
 func (r *recordingAnswers) SetMode(permission.Mode) error { return nil }
+
+func (r *recordingAnswers) SetYolo(on bool) {
+	select {
+	case r.armed <- on:
+	default:
+	}
+}
 
 // waitingTurner stays in Send until its turn is cancelled, and reports how the
 // context ended. release is nil for the ordinary case; a test that needs Send

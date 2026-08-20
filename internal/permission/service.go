@@ -56,9 +56,9 @@ var ErrDenied = errors.New("permission denied")
 type Service struct {
 	// yolo is rung 0, loaded before any map is touched: a field rather than a
 	// preset that allows everything, because a preset can be overridden into
-	// denying and this cannot. Whatever comes to turn it on has to set it and
-	// install the preset in one call (design §7.4) — two setters leave a window
-	// where the bypass and the mode disagree about which is in force.
+	// denying and this cannot. It moves in one call with the rules it answers
+	// ahead of — SetYolo leaves them standing, SetRules clears it — so the two
+	// can never be left disagreeing about which is in force (design §7.4).
 	yolo atomic.Bool
 
 	rules atomic.Pointer[Rules]
@@ -100,17 +100,34 @@ func New(p Prompter, allowed ...string) *Service {
 	return s
 }
 
-// SetRules installs the compiled preset that answers rungs 1 and 2. Ask loads it
-// at the moment of the check, so a mode switched mid-turn takes effect at the
-// next check and is never retroactive: a tool already running finishes under the
-// mode that approved it (design §7.4).
+// SetRules installs the compiled preset that answers rungs 1 and 2, and ends the
+// yolo bypass: a mode's rules and a bypass ahead of them are one statement about
+// how this session is gated, and rules installed under an armed bypass would be
+// a mode the ladder never reaches. Ask loads the rules at the moment of the
+// check, so a mode switched mid-turn takes effect at the next check and is never
+// retroactive: a tool already running finishes under the mode that approved it
+// (design §7.4).
 func (s *Service) SetRules(r Rules) {
+	// Ahead of the rules rather than after them: the instant between the two
+	// stores is then gated by the mode being replaced, where the other order
+	// leaves the bypass answering for the calls the new mode came to catch.
+	s.yolo.Store(false)
 	if r == nil {
 		s.rules.Store(nil)
 		return
 	}
 	s.rules.Store(&r)
 }
+
+// SetYolo arms or disarms rung 0, which answers ahead of every other check
+// (design §7.7). The rules stay exactly as they are, which is what makes this
+// one call and not two: there is no moment where the bypass has gone and nothing
+// has replaced it, and turning it off puts the session back under the mode it
+// was already in.
+//
+// Armed in memory and nowhere else. Nothing writes it down and nothing reads it
+// back, so the next run starts gated whatever this one did.
+func (s *Service) SetYolo(on bool) { s.yolo.Store(on) }
 
 // ClearGrants drops every grant taken so far and ends the session they were
 // given in, so an answer still on its way from a prompt open now records

@@ -46,6 +46,11 @@ func execute(args []string) int {
 	return 0
 }
 
+// yoloFlag arms the bypass ahead of the permission ladder for one run. It is not
+// a configuration binding and never becomes one: a value in a file would survive
+// every restart, and this may not (design §10).
+const yoloFlag = "yolo"
+
 // newRootCmd builds the command tree. `rasp` on its own is the TUI; the session
 // and mcp subcommands join it with the milestones that add them.
 func newRootCmd() *cobra.Command {
@@ -67,6 +72,12 @@ func newRootCmd() *cobra.Command {
 	for _, b := range config.FlagBindings() {
 		cmd.PersistentFlags().String(b.Flag, "", b.Usage)
 	}
+
+	// The root's own flag rather than a persistent one, because it is the session
+	// this arms and nothing else: `rasp config check --yolo` would otherwise be
+	// accepted and ignored, which is a flag that reads as applied and is not.
+	cmd.Flags().Bool(yoloFlag, false,
+		"skip every permission check for this run — no approval prompts at all")
 
 	cmd.AddCommand(newConfigCmd(), newRunCmd())
 	return cmd

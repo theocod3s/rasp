@@ -68,6 +68,11 @@ func (g *gate) SetMode(mode permission.Mode) error {
 	return nil
 }
 
+// SetYolo arms or disarms the bypass ahead of the ladder (design §7.7). Nothing
+// is compiled and nothing can fail: the mode's rules stay installed underneath,
+// and disarming is the session going back under them.
+func (g *gate) SetYolo(on bool) { g.service.SetYolo(on) }
+
 func (g *gate) Prompts(call llm.ToolCall) bool { return g.service.Prompts(g.request(call)) }
 
 func (g *gate) Approve(ctx context.Context, call llm.ToolCall) error {

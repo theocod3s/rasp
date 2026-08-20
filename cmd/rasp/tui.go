@@ -29,6 +29,16 @@ func startTUI(cmd *cobra.Command) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "rasp: %s\n", warning)
 	}
 
+	// Read rather than assumed, and ahead of everything slower: the only way this
+	// errors is the flag having been renamed out from under the name here, and a
+	// session that quietly started gated when the user asked for --yolo is a
+	// wrong answer given without a word.
+	yolo, err := cmd.Flags().GetBool(yoloFlag)
+	if err != nil {
+		return fmt.Errorf("--%s decides whether this run asks before it does anything, and it "+
+			"could not be read: %w", yoloFlag, err)
+	}
+
 	provider, model, err := buildProvider(cmd.Context(), res)
 	if err != nil {
 		return err
@@ -46,6 +56,7 @@ func startTUI(cmd *cobra.Command) error {
 	ui := tui.New(tui.Config{
 		Model: res.Config.Model,
 		Mode:  permission.Mode(res.Config.Mode),
+		Yolo:  yolo,
 	})
 	s, err := newSession(res.Config, provider, model, dir, ui, ui.Events)
 	if err != nil {

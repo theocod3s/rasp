@@ -10,7 +10,9 @@ var errNoPermissions = errors.New("this session has no permission service, so th
 
 // cycleModes is the rotation Shift+Tab walks (design §7.8). Yolo is absent, and
 // the absence is the mechanism: the cycle can only hand back an element of this
-// array, so no number of presses reaches it. Yolo is arrived at by being named.
+// array, and internal/permission has no yolo Mode for one to name — it arms a
+// bypass ahead of the ladder instead (permission/service.go). Yolo is arrived at
+// by being asked for.
 var cycleModes = [...]permission.Mode{permission.ModePlan, permission.ModeManual, permission.ModeAuto}
 
 // nextMode advances the cycle, and drops a mode outside it to manual: leaving
@@ -28,7 +30,15 @@ func nextMode(mode permission.Mode) permission.Mode {
 // at the moment of each permission check, so the call already running finishes
 // under the mode that approved it and the next meets this one (design §7.4).
 func (m Model) cycleMode() Model {
-	switched, err := m.setMode(nextMode(m.status.modeName()))
+	next := nextMode(m.status.modeName())
+	if m.status.yolo {
+		// The one press that leaves rather than advances. With the bypass armed
+		// the mode under it is not what the session is running, so "the next one
+		// along" would be advancing a name nothing is enforcing — and manual, which
+		// asks about everything, is where leaving yolo should land.
+		next = permission.ModeManual
+	}
+	switched, err := m.setMode(next)
 	if err != nil {
 		// Said out loud: a key that silently does nothing reads as a terminal
 		// eating it, and the user leans on it again.
@@ -50,6 +60,10 @@ func (m Model) setMode(mode permission.Mode) (Model, error) {
 		return m, err
 	}
 	m.status.mode = mode
+	// Installing a mode's rules ends the bypass in the service too
+	// (permission/service.go); the badge goes with it, or the line keeps saying
+	// yolo over a session that is gated again.
+	m.status.yolo = false
 
 	// The same words drawn and sent, so what the user reads and what the model is
 	// told cannot drift.

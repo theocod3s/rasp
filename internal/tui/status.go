@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theocod3s/rasp/internal/llm"
@@ -14,12 +15,24 @@ import (
 const (
 	statusSep = " · "
 
+	// yoloBadge stands where the mode name would be, rather than beside it: under
+	// yolo no preset is consulted at all (design §7.7), so a line still reading
+	// "plan" would name rules nothing is running.
+	yoloBadge = "⚡ YOLO"
+
 	// costSegment is the one thing here nothing can fill in: a price is per model
 	// and comes from the catalog (design §10.2), which nothing fetches yet. A
 	// table written here instead would put a wrong number where a reader looks
 	// for the bill, and that is worse than an absent one.
 	costSegment = "cost —"
 )
+
+// yoloStyle is inverse video rather than a palette token, and deliberately not
+// in styles.Palette: swapping the terminal's own foreground and background is
+// the one styling no theme can wash out, which is what design §7.8 asks of a
+// badge that has to stay loud for as long as it is on the screen. A colour would
+// have to be legible on a background nothing here has been told about.
+var yoloStyle = lipgloss.NewStyle().Reverse(true).Bold(true)
 
 // status is the line between the conversation and the input. View draws it from
 // the model's own fields rather than as an item in the conversation, which is
@@ -28,6 +41,11 @@ const (
 type status struct {
 	model string
 	mode  permission.Mode
+
+	// yolo is whether the bypass ahead of the ladder is armed. Separate from mode
+	// because it is not one: the mode underneath keeps standing, and is what the
+	// session goes back to when the bypass is turned off (yolo.go).
+	yolo bool
 
 	// context is what the last model call accounted for, prompt and reply
 	// together — a floor for the next request rather than the whole of it, since
@@ -56,13 +74,13 @@ func (s status) turnEnded(u llm.Usage) status {
 }
 
 // Render draws the line at width, dropping whole segments from the right until
-// it fits — elided, half a token count reads as a smaller one. The mode comes
-// first and survives every drop.
+// it fits — elided, half a token count reads as a smaller one. What is guarding
+// the session comes first and survives every drop.
 func (s status) Render(width int, bg styles.Background) string {
 	palette := styles.For(bg)
 	total := addUsage(s.spent, s.running)
 
-	segments := []string{string(s.modeName())}
+	segments := []string{s.head()}
 	if s.model != "" {
 		segments = append(segments, s.model)
 	}
@@ -76,17 +94,26 @@ func (s status) Render(width int, bg styles.Background) string {
 		segments = segments[:len(segments)-1]
 	}
 
-	mode := s.tint(segments[0], palette)
+	head := s.tint(segments[0], palette)
 	if len(segments) == 1 {
 		// The one place anything is cut. A terminal too narrow even for the mode
 		// says as much of it as fits, rather than dropping the line entirely on
 		// the screens with least room to work out the mode from anything else.
-		if width > 0 && ansi.StringWidth(mode) > width {
-			return ansi.Truncate(mode, width, "")
+		if width > 0 && ansi.StringWidth(head) > width {
+			return ansi.Truncate(head, width, "")
 		}
-		return mode
+		return head
 	}
-	return mode + palette.Muted.Render(statusSep+strings.Join(segments[1:], statusSep))
+	return head + palette.Muted.Render(statusSep+strings.Join(segments[1:], statusSep))
+}
+
+// head is the first segment: the mode the session is gated by, or the badge
+// saying nothing is.
+func (s status) head() string {
+	if s.yolo {
+		return yoloBadge
+	}
+	return string(s.modeName())
 }
 
 // modeName draws the default for a caller that named no mode, rather than a
@@ -99,10 +126,13 @@ func (s status) modeName() permission.Mode {
 	return s.mode
 }
 
-// tint colours the mode (design §7.8). Manual draws in the terminal's own
-// foreground, and so does a name this build has no token for: a colour would
+// tint colours the first segment (design §7.8). Manual draws in the terminal's
+// own foreground, and so does a name this build has no token for: a colour would
 // say something about a mode nothing here knows anything about.
 func (s status) tint(name string, palette styles.Palette) string {
+	if s.yolo {
+		return yoloStyle.Render(name)
+	}
 	switch permission.Mode(name) {
 	case permission.ModePlan:
 		return palette.ModePlan.Render(name)
