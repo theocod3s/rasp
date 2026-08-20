@@ -135,11 +135,12 @@ func TestWriteSurvivesTheFileBeingTakenAwayMidCall(t *testing.T) {
 	}
 }
 
-// TestWriteReportsAFileThatArrivedMidCallAsAReplacement is the other direction
-// of the same race, and it has to be believed too: the read is the later look,
-// so a call that reported a creation while diffing away somebody else's lines
-// would say one thing and show another.
-func TestWriteReportsAFileThatArrivedMidCallAsAReplacement(t *testing.T) {
+// TestWriteRefusesAFileThatArrivedMidCall is the other direction of the same
+// race, and it is the dangerous one. The stat said the path was empty, so the
+// read-before-overwrite guard was skipped; a file then appeared. Going ahead
+// would destroy contents this session has never seen — the exact thing the
+// tracker exists to refuse — and it would do it having had the bytes in hand.
+func TestWriteRefusesAFileThatArrivedMidCall(t *testing.T) {
 	f := newWriteFixture(t)
 
 	// Nothing at the path when the stat runs; a file there by the time the
@@ -155,28 +156,46 @@ func TestWriteReportsAFileThatArrivedMidCallAsAReplacement(t *testing.T) {
 	}
 
 	res := f.write("arrived.txt", "our line\n")
+	if !res.IsError {
+		t.Fatalf("the write went ahead over a file it had never read: %+v", res)
+	}
+	if !strings.Contains(res.Content, "has not been read") {
+		t.Errorf("Content = %q, want it to say the file was never read", res.Content)
+	}
+	f.wantContent("arrived.txt", "somebody else's line\n")
+}
+
+// TestWriteDoesNotReadABigFileBackJustToDrawIt. The read this tool does exists
+// only to build a card, so it is the one read here that must be bounded: a
+// generated file of a few hundred megabytes would otherwise be pulled into
+// memory, copied to a string, split into lines, and its diff held for the rest
+// of the session — all under the per-file lock, and none of it visible.
+func TestWriteDoesNotReadABigFileBackJustToDrawIt(t *testing.T) {
+	f := newWriteFixture(t)
+	f.seed("generated.txt", strings.Repeat("a line of a generated file\n", 12_000))
+
+	var read []string
+	f.spy.readFile = func(name string) ([]byte, error) {
+		read = append(read, name)
+		return f.spy.Workspace.ReadFile(name)
+	}
+
+	res := f.write("generated.txt", "one line now\n")
 	if res.IsError {
 		t.Fatalf("write failed: %s", res.Content)
 	}
-	f.wantContent("arrived.txt", "our line\n")
+	f.wantContent("generated.txt", "one line now\n")
 
+	if len(read) != 0 {
+		t.Errorf("the tool read %v back to diff it", read)
+	}
+	if res.Details != nil {
+		t.Errorf("Details is %#v, want nothing: no diff was taken", res.Details)
+	}
+	// And it is still a replacement, because a file too big to diff is still a
+	// file that was there.
 	if !strings.Contains(res.Content, "Replaced") {
-		t.Errorf("Content = %q, want it to report a replacement: there was a file there by the time "+
-			"this one read it", res.Content)
-	}
-	if d := f.details(res); d.Deletions != 1 {
-		t.Errorf("Details is +%d -%d, want the arrived line shown as taken away", d.Additions, d.Deletions)
-	}
-
-	// The wording is not the mode. Nothing stat'd the file that arrived, so
-	// there is no mode to preserve and the umask applies as it would to any new
-	// file — a "replacement" that chmod'd its way past the umask instead would
-	// leave the file more widely readable than anything the user asked for.
-	if runtime.GOOS != "windows" {
-		if want := 0o666 &^ umaskOf(t, f.dir); f.mode("arrived.txt") != want {
-			t.Errorf("mode is %v, want the %v a plain create gets: no mode was ever read to preserve",
-				f.mode("arrived.txt"), want)
-		}
+		t.Errorf("Content = %q, want it to report the replacement", res.Content)
 	}
 }
 

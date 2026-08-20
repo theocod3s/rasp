@@ -1,6 +1,7 @@
 package diffview_test
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -166,6 +167,27 @@ func TestACutNeverLandsWiderThanTheTerminal(t *testing.T) {
 	}
 }
 
+// TestABidiOverrideCannotReorderWhatTheCardShows. The Trojan Source trick, and
+// it is aimed at exactly this view: a right-to-left override makes a terminal
+// draw a line in an order the bytes are not in, so the card can show a guard
+// clause the file does not contain — in the one place a reader checks a change
+// before accepting it. They measure as no cells, so nothing else here sees
+// them, and rasp is not a security boundary: what this owes is that the diff it
+// draws is the bytes it was given, in their order.
+func TestABidiOverrideCannotReorderWhatTheCardShows(t *testing.T) {
+	// Every invisible directional control, in one line each.
+	for _, r := range []rune{0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069} {
+		t.Run(strconv.FormatInt(int64(r), 16), func(t *testing.T) {
+			trojan := lines("@@ -1,1 +1,1 @@", "+if (access) {"+string(r)+" // } "+string(r)+" nothing")
+
+			drawn := diffview.Render(trojan, wide, styles.For(styles.Dark))
+			if strings.ContainsRune(drawn, r) {
+				t.Errorf("U+%04X reached the terminal, which reorders the row around it: %q", r, drawn)
+			}
+		})
+	}
+}
+
 // TestALineThatFitsIsNotMarkedAsCut is the other half of measuring by cluster.
 // Summing rune widths over-counts a flag emoji — two cells together, two cells
 // each apart — so a line well inside the terminal was cut short and handed the
@@ -201,6 +223,24 @@ func TestTabsAreExpandedBeforeAnythingIsMeasured(t *testing.T) {
 	}
 	if strings.Contains(text(added), "\t") {
 		t.Errorf("the line still carries a tab, whose width the terminal alone decides: %q", text(added))
+	}
+}
+
+// TestATabAfterAClusterLandsOnTheRightStop. The stop is counted in cells, and a
+// cluster is not its runes: a flag emoji is two cells drawn and four summed, so
+// a tab after one lands three columns off if the column is added up per rune —
+// and every later tab on the line inherits the drift, so the indentation the
+// card shows is not the file's.
+func TestATabAfterAClusterLandsOnTheRightStop(t *testing.T) {
+	// `+` is column 0 and the flag covers 1 and 2, so the tab fills column 3
+	// alone and `value` starts at the stop.
+	diff := lines("@@ -1,1 +1,1 @@", "+\U0001F1FA\U0001F1F8\tvalue")
+
+	drawn := text(diffview.Render(diff, wide, styles.For(styles.Dark)))
+	added := strings.Split(drawn, "\n")[1]
+
+	if want := "+\U0001F1FA\U0001F1F8 value"; added != want {
+		t.Errorf("the line draws %q, want %q — the tab was placed by counting runes", added, want)
 	}
 }
 

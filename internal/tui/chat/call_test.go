@@ -260,14 +260,28 @@ func TestATerminalTooNarrowForTheIndentStillCuts(t *testing.T) {
 		}
 	}
 
-	// And at the widths no card fits, the cut still runs: what must not happen
-	// is a diff line going out at its full length because a real width was read
-	// as one nobody had reported.
+	// And at the widths no card fits, the diff rows are still cut: what must not
+	// happen is a diff line going out at its full length because a real width
+	// was read as one nobody had reported. The tolerance is the card's own
+	// two-column indent and nothing else — the summary row is exempt, since at
+	// these widths it is left whole deliberately.
+	const indent = 2
 	for width := 1; width <= 2; width++ {
-		for _, row := range strings.Split(call.Render(width), "\n") {
-			if n := ansi.StringWidth(row); n > width+len(chat.Caret) {
-				t.Errorf("at width %d a row measures %d, so it was never cut: %q", width, n, words(row))
+		rows := strings.Split(call.Render(width), "\n")
+		for _, row := range rows[1:] {
+			if n := ansi.StringWidth(row); n > width+indent {
+				t.Errorf("at width %d a diff row measures %d, so it was never cut: %q", width, n, words(row))
 			}
+		}
+
+		// And the summary stays one row. Clamping it to a column instead breaks
+		// it into one character per line, so a terminal that could show one bad
+		// row shows eighteen.
+		if head := strings.SplitN(call.Render(width), "\n", 2)[0]; strings.Contains(words(head), " e d i t") {
+			t.Errorf("at width %d the summary was broken up one character per row: %q", width, words(head))
+		}
+		if n := len(rows) - 1; n != 4 {
+			t.Errorf("at width %d the card drew %d rows under its summary, want the diff's 4", width, n)
 		}
 	}
 }

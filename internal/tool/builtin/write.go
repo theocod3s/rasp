@@ -36,6 +36,12 @@ type writeInput struct {
 	Content *string `json:"content" desc:"The file's entire new contents. An empty string writes an empty file."`
 }
 
+// maxDiffBytes is the largest file write will read back to diff. The read is
+// for the card and nothing else, so past this the write still happens and the
+// card says what it wrote — which beats holding a diff of a generated file for
+// the session and drawing more rows than a terminal has.
+const maxDiffBytes = 256 << 10
+
 const writeDescription = "Write a file, creating any parent directories that do not exist and replacing the " +
 	"file if it does. content is the file's entire new text, so prefer edit when changing part of a file. " +
 	"The replacement is atomic: anything reading the path sees either the whole old file or the whole new one."
@@ -109,43 +115,52 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 		perm = info.Mode().Perm()
 	}
 
-	// The bytes about to be replaced, read under the lock the rename also runs
-	// under, so the diff is of the file that actually goes away. Unconditional,
-	// because the stat above and this read are two moments and the lock is
-	// rasp's own: an editor saving, a checkout or a `make clean` can take a file
-	// away between them, or put one there. Whichever happened, the read is the
-	// later look and so the truer one, and both directions have to be believed
-	// or the call reports one thing and diffs another.
-	before, readErr := w.ws.ReadFile(rel)
+	// The bytes about to be replaced, read under the same lock as the rename.
+	// Bounded because this read is for the card alone: past the cap the write
+	// still happens and the diff is simply not taken.
+	var (
+		before   []byte
+		readErr  error
+		diffable = created || info.Size() <= maxDiffBytes
+	)
+	if diffable {
+		before, readErr = w.ws.ReadFile(rel)
+	}
 
-	// What the read found is what the call reports, since it is the later look
-	// and the stat can be stale by now. Not-there is the only answer meaning the
-	// path is empty: a mode that forbids reading still means a file is there.
+	// The stat and the read are two moments, and the lock is rasp's own — a
+	// checkout or an editor can take the file away between them or put one
+	// there. The read is the later look, so it decides all three questions
+	// below; not-there is the only answer meaning the path is empty.
 	existed := !errors.Is(readErr, fs.ErrNotExist)
-
-	// created stays a separate question, because it decides the mode rather than
-	// the wording — whether there is a mode to preserve. A file that left in
-	// that window leaves none behind, so the write is a creation for that
-	// purpose and the umask applies to it as to any new file. A file that
-	// arrived is the same story: nothing stat'd it, so nothing may chmod the
-	// replacement to a mode nobody read.
+	arrived := created && existed
 	if !created && !existed {
+		// created outlives the wording: it is whether a mode was read to
+		// preserve, and a file that left leaves none.
 		created, perm = true, 0o666
+	}
+
+	// A file that arrived is one this session never read, which is what the
+	// tracker refuses. Its guard was skipped because the stat found nothing.
+	if arrived {
+		info, err := w.ws.Stat(rel)
+		if err != nil {
+			return writeRefused(err.Error()), nil
+		}
+		if err := refuseUnread(w.reads, rel, info.ModTime(), "overwriting it"); err != nil {
+			return writeRefused(err.Error()), nil
+		}
 	}
 
 	data := []byte(*in.Content)
 
 	// A payload for the UI decides how the write is drawn, never whether it
-	// happens: a file readable only by root is one whose diff cannot be shown
-	// and whose replacement still succeeds, since that needs the directory
-	// rather than the file. Nothing to diff against is a card that says what
-	// was written, which is honest, where a diff taken against nothing would
-	// claim every line is new.
-	//
-	// Diffed before writing: a failure here would otherwise be a file already
-	// changed and a caller told the tool could not run.
+	// happens — replacing a file needs its directory, not the file, so one
+	// readable only by root is still replaceable. Without the old bytes there is
+	// no diff at all rather than one against nothing, which would claim every
+	// line is new. Built before the write, so a failure here is not a file
+	// already changed and a caller told the tool could not run.
 	var details *tool.DiffDetails
-	if readErr == nil || errors.Is(readErr, fs.ErrNotExist) {
+	if diffable && (readErr == nil || errors.Is(readErr, fs.ErrNotExist)) {
 		// Failing to build one is the same as not having the bytes to build it
 		// from, and goes the same way: no Details, and the write still happens.
 		details, _ = diffDetails(rel, string(before), string(data), false)

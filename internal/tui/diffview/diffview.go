@@ -12,19 +12,16 @@ import (
 const (
 	elision = "…"
 
-	// Four rather than the terminal's usual eight: a diff is already two columns
-	// in, between the card's indent and the +/- marker, and eight puts a
-	// doubly-indented Go line past 80 columns on its whitespace alone.
+	// Four, not the terminal's eight: a diff is already two columns in, and eight
+	// puts a doubly-indented Go line past 80 columns on whitespace alone.
 	tabWidth = 4
 )
 
 // Render draws a unified diff, one screen line per line of it, in p's colours.
 // Nothing wraps: a changed line broken across two rows reads as two changed
-// lines, so a line past width is cut and marked instead. The whole of it stays
-// in the tool's Details, where a horizontal scroll will read it from — there is
-// no binding for that yet, so the mark is all a reader gets today.
-//
-// A width of zero or less is a terminal that has not reported its size, and
+// lines, so a line past width is cut and marked instead, the whole of it left
+// in the tool's Details for a horizontal scroll that has no binding yet. A
+// width of zero or less is a terminal that has not reported its size, and
 // nothing is cut.
 func Render(unified string, width int, p styles.Palette) string {
 	lines := body(unified)
@@ -43,15 +40,12 @@ func Render(unified string, width int, p styles.Palette) string {
 }
 
 // Draws reports that unified has lines a reader would see. Exported so that
-// asking and drawing cannot disagree: what counts as nothing to show is the
-// header-stripping below, and a caller deciding for itself would call a
-// header-only diff a diff and open a card onto an empty body.
+// asking and drawing cannot disagree about a diff with only a header in it.
 func Draws(unified string) bool { return len(body(unified)) > 0 }
 
-// body is the diff's lines with the `--- a/x` and `+++ b/x` pair above the
-// first hunk dropped, since the card this is drawn under already names the
-// file. Positional rather than by prefix: a deleted line reading `-- x` is a
-// deletion, and it can only be one below a hunk header.
+// body drops the `--- a/x` and `+++ b/x` pair, which the card's own line
+// already says. Positional rather than by prefix: a deleted line reading `-- x`
+// is a deletion, and it can only be one below a hunk header.
 func body(unified string) []string {
 	unified = strings.TrimSuffix(unified, "\n")
 	if unified == "" {
@@ -73,9 +67,9 @@ func draw(line string, width int, p styles.Palette) string {
 	return drawn
 }
 
-// classify reads a line's class off the character the format puts it in. The
-// `\` is the one that is not a class of source line: it opens "\ No newline at
-// end of file", the format talking about the file rather than a line out of it.
+// classify reads a line's class off the character the format puts it in. `\` is
+// the one that is not source: "\ No newline at end of file" is the format
+// talking about the file rather than a line out of it.
 func classify(line string, p styles.Palette) lipgloss.Style {
 	switch {
 	case strings.HasPrefix(line, "@@"):
@@ -93,36 +87,45 @@ func classify(line string, p styles.Palette) lipgloss.Style {
 // expand turns a diff line into something a terminal draws rather than acts on:
 // tabs become spaces to the next stop, every other control character goes.
 //
-// One problem, since a file is arbitrary bytes and this draws them. A tab
-// measures as no cells, so a tab-indented line — most Go — measures short,
-// survives the cut and wraps anyway. The rest a terminal obeys: ESC lets a file
-// recolour the screen or swallow what follows, BEL sounds on every frame, CR
-// writes the next characters back over the line — and every line of a CRLF file
-// ends with one. C1 goes too, since U+009B is CSI on its own and U+0085 a line
-// break, both of them past where dropping ESC would stop. Dropping ESC alone
-// leaves the rest of its sequence as literal text, visible and inert.
+// One problem, since a file is arbitrary bytes and this draws them. Each of
+// these is a byte a terminal acts on instead of drawing, and none is visible in
+// the diff it corrupts:
+//
+//   - a tab measures as no cells, so a tab-indented line — most Go — measures
+//     short, survives the cut and wraps anyway;
+//   - CR writes what follows back over the line, and ends every line of a CRLF
+//     file; BEL sounds on every frame; ESC recolours the screen or swallows the
+//     rest of the row;
+//   - C1 does the last of those in one byte, U+009B being CSI and U+0085 a line
+//     break, past where dropping ESC stops;
+//   - a bidi override reorders the row, so the card can show a guard clause the
+//     file does not contain — Trojan Source, aimed squarely at the view a reader
+//     checks a change in.
+//
+// Dropping ESC alone leaves the rest of its sequence as literal text, which is
+// visible and inert.
 func expand(line string) string {
-	var (
-		b   strings.Builder
-		col int
-	)
+	var b strings.Builder
 	for _, r := range line {
 		switch {
 		case r == '\t':
-			n := tabWidth - col%tabWidth
+			// Measured off what is written rather than summed per rune, since a rune
+			// is not a cell: a flag emoji is four cells apart and two together, and
+			// a tab after one would land at a stop the file does not have.
+			n := tabWidth - ansi.StringWidth(b.String())%tabWidth
 			b.WriteString(strings.Repeat(" ", n))
-			col += n
-		case r < 0x20 || (r >= 0x7f && r <= 0x9f):
+		case r < 0x20 || (r >= 0x7f && r <= 0x9f) || bidi(r):
 		default:
-			w := 1
-			if r > 0x7f {
-				w = ansi.StringWidth(string(r))
-			}
 			b.WriteRune(r)
-			col += w
 		}
 	}
 	return b.String()
+}
+
+// bidi reports the invisible directional formatting: embeddings and overrides,
+// and the isolates that replaced them.
+func bidi(r rune) bool {
+	return (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069)
 }
 
 // fit cuts line to width, keeping a column back for the mark, and reports

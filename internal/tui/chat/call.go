@@ -72,7 +72,12 @@ func (c Call) Render(width int) string {
 	// The headline is set in like the body and then gives its first two columns
 	// back to the marker. Wrapped whole instead, a summary too long for the
 	// terminal continues at column zero and reads as a line of its own.
-	head := inset(wrap(c.headline(), inner(width)), cardIndent)
+	// The headline keeps the plain subtraction: a terminal too narrow for the
+	// indent leaves it zero or less, wrap reads that as "no size reported" and
+	// leaves the line whole. One over-long row is what a 2-column terminal gets
+	// either way, and clamping to a column instead shreds the summary into one
+	// character per row — eighteen over-long rows in place of one.
+	head := inset(wrap(c.headline(), width-len(cardIndent)), cardIndent)
 	head = c.marker(c.opens()) + strings.TrimPrefix(head, cardIndent)
 
 	if !c.Expanded {
@@ -89,10 +94,10 @@ func (c Call) Render(width int) string {
 	return head + "\n" + inset(body, cardIndent)
 }
 
-// inner is the width left inside the card's indent, and never zero or less —
-// which everything downstream reads as "no size reported yet, do not cut". A
-// real terminal too narrow for the indent must not arrive spelled that way, or
-// its diff lines go out at full length and wrap.
+// inner is the width left inside the card's indent, for the body alone, and
+// never zero or less — which the diff renderer reads as "no size reported yet,
+// do not cut". A real terminal too narrow for the indent must not arrive
+// spelled that way, or every diff line goes out at full length and wraps.
 func inner(width int) int {
 	if width <= 0 {
 		return width
@@ -176,8 +181,10 @@ func (c Call) opens() bool {
 
 // body is what expanding the card shows, already drawn to width: the diff a
 // file change produced, or the output the model was given.
-// The guard is the cheap half of opens rather than a call to it, which would
-// split the diff a second time. Empty here and false there stay the same set.
+// The guard repeats the cheap half of opens rather than calling it, so that
+// empty here and false there stay the same set without a second pass over the
+// diff. Two passes remain — the marker asks opens, the body asks HasDiff — and
+// each splits the whole of Unified.
 func (c Call) body(width int) string {
 	if c.State != CallDone || c.Result == nil {
 		return ""
@@ -193,6 +200,9 @@ func (c Call) body(width int) string {
 // line carries its content's first line, and where that is all there is,
 // opening the card would say the same sentence twice.
 func (c Call) text() string {
+	if c.Result == nil {
+		return ""
+	}
 	content := strings.Trim(c.Result.Content, "\n")
 	if c.Result.IsError && c.Result.Title == "" && content == firstLine(content) {
 		return ""

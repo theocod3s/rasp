@@ -15,6 +15,11 @@ import (
 // udiff.Unified is the obvious call and the wrong one: it turns the error
 // handled here into log.Fatalf, which would end the process over one tool call
 // and print to a stdout the TUI owns.
+//
+// The two callers answer that error differently, deliberately. write drops the
+// payload and writes anyway, because its diff is decoration. edit refuses,
+// because its counts go into the Content and Title the model reads: a diff it
+// cannot build is a result it cannot describe.
 func diffDetails(path, before, after string, fuzzy bool) (*tool.DiffDetails, error) {
 	u, err := udiff.ToUnifiedDiff("a/"+path, "b/"+path, before, udiff.Lines(before, after), udiff.DefaultContextLines)
 	if err != nil {
