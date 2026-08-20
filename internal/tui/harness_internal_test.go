@@ -34,9 +34,14 @@ var goldenNow = time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 // goldenConfig is the session every frame here is drawn for. The default mode,
 // so the frames record what a session that configured nothing looks like; the
 // two modes with a colour of their own are asserted rather than recorded
-// (status_internal_test.go).
+// (status_internal_test.go). The depth is one provider's published subset with a
+// level already picked, which is what gives the picker a list and a mark to draw.
 func goldenConfig() Config {
-	return Config{Model: "anthropic/claude-opus-5", Mode: permission.ModeManual}
+	return Config{
+		Model: "anthropic/claude-opus-5",
+		Mode:  permission.ModeManual,
+		Depth: &depths{current: llm.EffortHigh, lists: [][]llm.Effort{anthropicish}},
+	}
 }
 
 // snapshot is one state of the UI worth freezing: the prompt that starts a turn,
@@ -136,6 +141,11 @@ func snapshots() []snapshot {
 		// added, renamed or newly able to do its job shows up here as a diff in the
 		// words a user will actually read.
 		{name: "help", keys: typedLine("/help")},
+		// The effort picker. Recorded because the levels are the provider's rather
+		// than this package's, so a frame is where a list that stopped following
+		// the provider — a rung missing, a mark on the wrong line — is visible as
+		// something other than an unchanged green run.
+		{name: "effort", keys: typedLine("/effort")},
 		// A mode switched from the keyboard. Recorded because it is the one place
 		// the words a switch tells the model are visible to a reader, and they are
 		// the same words the next turn carries (design §7.5) — so an edit to them

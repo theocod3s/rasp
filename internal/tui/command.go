@@ -29,6 +29,7 @@ type command struct {
 func commands() []command {
 	return []command{
 		{"model", "show the model in use — switching needs the model catalog", showModel},
+		{"effort", "how much depth a turn asks for — /effort <level> sets it", effort},
 		{"new", "clear the screen; a conversation that starts over needs sessions", startNew},
 		{"resume", "reopen an earlier session — needs session support", resume},
 		{"compact", "summarize the conversation to free context — needs compaction", compact},

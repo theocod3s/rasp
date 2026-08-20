@@ -1,0 +1,10 @@
+[38;2;125;133;144mEffort is how much depth a turn is asked for, and this provider can send:[m
+[38;2;125;133;144m    low[m
+[38;2;125;133;144m    medium[m
+[38;2;125;133;144m  > high[m
+[38;2;125;133;144m    xhigh[m
+[38;2;125;133;144m    max[m
+[38;2;125;133;144m[m
+[38;2;125;133;144m/effort <level> picks another, for the rest of the session.[m
+manual[38;2;125;133;144m · anthropic/claude-opus-5 · ctx 0 · in 0 · out 0 · cost —[m
+› 
