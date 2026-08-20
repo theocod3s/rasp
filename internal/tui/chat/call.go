@@ -205,10 +205,17 @@ func (c Call) text() string {
 	if c.Result == nil {
 		return ""
 	}
-	// All whitespace, not just newlines: wrap trims a line's trailing spaces
-	// away to nothing, so content that survived here and vanished there would
-	// hang a marker over a card that opens onto a blank line.
-	content := strings.TrimSpace(c.Result.Content)
+	// Newlines only: leading spaces on the first line are output, not padding,
+	// and a column of right-aligned counts loses its top row to a trim.
+	content := strings.Trim(c.Result.Content, "\n")
+
+	// Whether there is anything to show is the other question, and that one does
+	// ask about whitespace: wrap takes trailing spaces away to nothing, so output
+	// kept here and lost there hangs a marker over a card that opens onto a
+	// blank line.
+	if strings.TrimSpace(content) == "" {
+		return ""
+	}
 	if c.Result.IsError && c.Result.Title == "" && content == firstLine(content) {
 		return ""
 	}

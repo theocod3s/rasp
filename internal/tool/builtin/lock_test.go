@@ -176,14 +176,11 @@ func TestWriteHoldsTheFileLockAcrossItsStatAndRename(t *testing.T) {
 	}
 }
 
+// editMode is a file's permission bits, for the tests that build a workspace
+// with editWorkspace rather than with a writeFixture.
 func editMode(t *testing.T, dir, rel string) fs.FileMode {
 	t.Helper()
-
-	info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel)))
-	if err != nil {
-		t.Fatalf("stat %s: %v", rel, err)
-	}
-	return info.Mode().Perm()
+	return (&writeFixture{t: t, dir: dir}).mode(rel)
 }
 
 func lock(t *testing.T, ws *workspace.Workspace, name string) func() {

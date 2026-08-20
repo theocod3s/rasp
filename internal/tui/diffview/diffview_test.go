@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -167,6 +168,41 @@ func TestACutNeverLandsWiderThanTheTerminal(t *testing.T) {
 	}
 }
 
+// TestBytesThatAreNotTextAreNotHandedToTheTerminal. A file is bytes, not
+// necessarily UTF-8, and the checks that drop control characters decode a rune
+// before they look — so a byte that is not a rune reaches the default arm and
+// goes out as it arrived. The one that matters is a lone 0x9b, which is CSI in
+// a terminal reading eight-bit controls: the same escape the C1 range exists to
+// stop, arriving by the one route that skips the range.
+func TestBytesThatAreNotTextAreNotHandedToTheTerminal(t *testing.T) {
+	for name, content := range map[string]string{
+		"a lone eight-bit CSI":     "+before\x9bafter",
+		"a truncated rune":         "+before\xe2\x82after",
+		"a stray continuation":     "+before\xbfafter",
+		"an overlong encoding":     "+before\xc0\xafafter",
+		"a byte no encoding holds": "+before\xffafter",
+	} {
+		t.Run(name, func(t *testing.T) {
+			drawn := diffview.Render(lines("@@ -1,1 +1,1 @@", content), wide, styles.For(styles.Dark))
+
+			if !utf8.ValidString(drawn) {
+				t.Errorf("the row is not text: %q", drawn)
+			}
+			for _, b := range []byte(drawn) {
+				if b >= 0x80 && b <= 0x9f {
+					t.Errorf("the row carries the raw byte %#x, which a terminal reading eight-bit "+
+						"controls obeys: %q", b, drawn)
+				}
+			}
+			// The line still says what surrounded the byte, so a reader is not
+			// silently shown less of the file than it holds.
+			if got := text(drawn); !strings.Contains(got, "before") || !strings.Contains(got, "after") {
+				t.Errorf("the row lost the text around the byte: %q", got)
+			}
+		})
+	}
+}
+
 // TestABidiOverrideCannotReorderWhatTheCardShows. The Trojan Source trick, and
 // it is aimed at exactly this view: a right-to-left override makes a terminal
 // draw a line in an order the bytes are not in, so the card can show a guard
@@ -175,10 +211,11 @@ func TestACutNeverLandsWiderThanTheTerminal(t *testing.T) {
 // them, and rasp is not a security boundary: what this owes is that the diff it
 // draws is the bytes it was given, in their order.
 func TestABidiOverrideCannotReorderWhatTheCardShows(t *testing.T) {
-	// Named from the threat rather than from the implementation: this is the set
-	// Rust's text_direction_codepoint_in_literal lint refuses, written out here
-	// so the test cannot become a copy of whatever the renderer happens to check
-	// — which is the shape that can never find a gap.
+	// Written out from the threat rather than read off the implementation, so
+	// the test cannot become a copy of whatever the renderer happens to check —
+	// which is the shape that can never find a gap. The nine explicit controls
+	// are the Trojan Source set; the three marks reorder a neutral run by a
+	// weaker mechanism, to the same end.
 	//
 	//	LRM RLM ALM, the marks; LRE RLE PDF LRO RLO, the embeddings and
 	//	overrides; LRI RLI FSI PDI, the isolates that replaced them.

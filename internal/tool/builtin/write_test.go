@@ -165,6 +165,57 @@ func TestWriteRefusesAFileThatArrivedMidCall(t *testing.T) {
 	f.wantContent("arrived.txt", "somebody else's line\n")
 }
 
+// TestWriteKeepsTheModeOfAFileThatArrivedMidCall. Once the guard has let the
+// write through, the arrived file is a file like any other: it has a mode, and
+// this replaces it. Treating the call as the creation the stat thought it was
+// lands the replacement at the umask default — a script losing its executable
+// bit, a secret gaining readers — which is the failure the chmod on the
+// ordinary overwrite path exists to prevent, reached by a different route.
+func TestWriteKeepsTheModeOfAFileThatArrivedMidCall(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no mode bits to preserve")
+	}
+	f := newWriteFixture(t)
+
+	// Arrives after the stat, and is recorded as read — rasp's own earlier write
+	// is how a file legitimately comes to be there and known.
+	const mode = fs.FileMode(0o755)
+	var once sync.Once
+	f.spy.afterStat = func(name string) {
+		once.Do(func() {
+			full := filepath.Join(f.dir, filepath.FromSlash(name))
+			if err := os.WriteFile(full, []byte("#!/bin/sh\necho old\n"), mode); err != nil {
+				t.Fatalf("putting %s there mid-call: %v", name, err)
+			}
+			if err := os.Chmod(full, mode); err != nil {
+				t.Fatalf("chmod: %v", err)
+			}
+			info, err := os.Stat(full)
+			if err != nil {
+				t.Fatalf("stat %s: %v", name, err)
+			}
+			f.reads.Record(name, info.ModTime())
+		})
+	}
+
+	res := f.write("run.sh", "#!/bin/sh\necho new\n")
+	if res.IsError {
+		t.Fatalf("write failed: %s", res.Content)
+	}
+	f.wantContent("run.sh", "#!/bin/sh\necho new\n")
+
+	if got := f.mode("run.sh"); got != mode {
+		t.Errorf("mode is %v, want the %v the file had: the write treated it as a creation and "+
+			"let the umask decide", got, mode)
+	}
+	if !strings.Contains(res.Content, "Replaced") {
+		t.Errorf("Content = %q, want a replacement: there was a file there when it was read", res.Content)
+	}
+	if d := f.details(res); d.Deletions == 0 {
+		t.Errorf("Details is +%d -%d, want the arrived line shown as taken away", d.Additions, d.Deletions)
+	}
+}
+
 // TestWriteReportsAFileThatArrivedAndLeftAgainAsACreation. The same race turned
 // twice: nothing at the stat, a file at the read, nothing again by the time the
 // guard looks. Going ahead is right — there is nothing left to protect — but
@@ -200,6 +251,18 @@ func TestWriteReportsAFileThatArrivedAndLeftAgainAsACreation(t *testing.T) {
 
 	if !strings.Contains(res.Content, "Created") {
 		t.Errorf("Content = %q, want a creation: the path was empty when the write ran", res.Content)
+	}
+
+	// And the diff says the same thing. The bytes read out of the file that was
+	// briefly there have to go with the wording, or Details deletes lines the
+	// path never held under a headline saying it was created — the two halves of
+	// one card disagreeing about what happened.
+	d := f.details(res)
+	if d.Deletions != 0 {
+		t.Errorf("Details is +%d -%d, want no deletions:\n%s", d.Additions, d.Deletions, d.Unified)
+	}
+	if strings.Contains(d.Unified, "here for a moment") {
+		t.Errorf("the diff still takes away the line that was briefly there:\n%s", d.Unified)
 	}
 }
 

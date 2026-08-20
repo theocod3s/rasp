@@ -88,28 +88,21 @@ func classify(line string, p styles.Palette) lipgloss.Style {
 // expand turns a diff line into something a terminal draws rather than acts on:
 // tabs become spaces to the next stop, every other control character goes.
 //
-// One problem, since a file is arbitrary bytes and this draws them. Each of
-// these is a byte a terminal acts on instead of drawing, and none is visible in
-// the diff it corrupts:
+// One problem, since a file is arbitrary bytes and this draws them, and none of
+// it is visible in the diff it corrupts. A tab measures as no cells, so a
+// tab-indented line — most Go — measures short, survives the cut and wraps
+// anyway. CR writes what follows back over the line and ends every line of a
+// CRLF file, BEL sounds on every frame, ESC recolours the screen or swallows
+// the rest of the row; C1 does that last one in a single byte, U+009B being CSI
+// and U+0085 a line break, past where dropping ESC stops. And a bidi override
+// reorders the row, so the card can show a guard clause the file does not
+// contain — Trojan Source, aimed at the view a reader checks a change in.
+// Dropping ESC alone leaves the rest of its sequence as inert literal text.
 //
-//   - a tab measures as no cells, so a tab-indented line — most Go — measures
-//     short, survives the cut and wraps anyway;
-//   - CR writes what follows back over the line, and ends every line of a CRLF
-//     file; BEL sounds on every frame; ESC recolours the screen or swallows the
-//     rest of the row;
-//   - C1 does the last of those in one byte, U+009B being CSI and U+0085 a line
-//     break, past where dropping ESC stops;
-//   - a bidi override reorders the row, so the card can show a guard clause the
-//     file does not contain — Trojan Source, aimed squarely at the view a reader
-//     checks a change in.
-//
-// Dropping ESC alone leaves the rest of its sequence as literal text, which is
-// visible and inert.
 // Walked by grapheme cluster, which is what the column has to count: a flag
-// emoji is two cells drawn and four summed per rune, so a tab after one would
-// otherwise land at a stop the file does not have — and every later tab on the
-// line inherits the drift. Counted as it goes rather than re-measured at each
-// tab, or a line of a minified file pays a scan of itself per tab.
+// emoji is two cells drawn and four summed per rune, so a tab after one lands
+// at a stop the file does not have and every later tab inherits the drift.
+// Counted as it goes, or a minified line pays a scan of itself per tab.
 func expand(line string) string {
 	var (
 		b   strings.Builder
@@ -125,6 +118,15 @@ func expand(line string) string {
 			n := tabWidth - col%tabWidth
 			b.WriteString(strings.Repeat(" ", n))
 			col += n
+
+		// Bytes that are not text. A cluster walk hands these back as they came,
+		// and the checks below decode a rune first, so a lone 0x9b — the one-byte
+		// CSI named above — would go straight out. Replaced rather than dropped,
+		// since U+FFFD is one inert cell saying something was there.
+		case !utf8.ValidString(cluster):
+			b.WriteRune(utf8.RuneError)
+			col++
+
 		case size == len(cluster) && (r < 0x20 || (r >= 0x7f && r <= 0x9f) || bidi(r)):
 		default:
 			b.WriteString(cluster)
@@ -134,10 +136,12 @@ func expand(line string) string {
 	return b.String()
 }
 
-// bidi reports the invisible directional formatting characters: the embeddings
-// and overrides, the isolates that replaced them, and the three marks — LRM,
-// RLM and the Arabic letter mark — which reorder a neutral run just as well.
-// Rust's text_direction_codepoint_in_literal lint covers exactly this set.
+// bidi reports the invisible directional formatting characters. The nine
+// embeddings, overrides and isolates are the Trojan Source set; the three marks
+// — LRM, RLM, ALM — reorder a neutral run by a weaker mechanism, to the same
+// end. Tools disagree about the marks, rustc's text_direction_codepoint_in_
+// literal covering only the nine, so the wider set is a choice made here: a
+// code diff loses nothing by dropping them.
 func bidi(r rune) bool {
 	switch r {
 	case 0x061c, 0x200e, 0x200f:

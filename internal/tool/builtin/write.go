@@ -158,15 +158,26 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 	if arrived {
 		switch info, err := w.ws.Stat(rel); {
 		case errors.Is(err, fs.ErrNotExist):
-			// Gone again, so this is a creation once more — and has to be reported
-			// as one, or the card claims to have replaced an empty path and the
-			// diff shows lines nothing on disk had.
-			existed = false
+			// Gone again, so this is a creation once more, and everything read off
+			// the file that was briefly there goes with it: reported as a creation,
+			// and diffed against nothing, or Details carries deletions of lines the
+			// path never had under a headline saying it was created.
+			existed, before = false, nil
 		case err != nil:
 			return writeRefused(err.Error()), nil
 		default:
 			if err := refuseUnread(w.reads, rel, info.ModTime(), "overwriting it"); err != nil {
 				return writeRefused(err.Error()), nil
+			}
+			// It is there, so it has a mode and this is a replacement. Left as the
+			// creation the stat thought it was, the write lands at the umask
+			// default: a 0755 script loses its bit, a 0600 secret gains readers.
+			created, perm = false, info.Mode().Perm()
+
+			// And the cap applies again, having been decided against a path the
+			// stat found empty — so the read above was allowed any size.
+			if info.Size() > maxDiffBytes {
+				diffable, before = false, nil
 			}
 		}
 	}

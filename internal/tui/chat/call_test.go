@@ -260,6 +260,27 @@ func TestACardWhoseOutputIsOnlyWhitespaceDoesNotOfferToOpen(t *testing.T) {
 	}
 }
 
+// TestLeadingWhitespaceIsPartOfTheOutput. A card draws what a tool printed, and
+// for a column of right-aligned numbers the spaces before the first one are the
+// alignment. Trimming them takes the top row out of line with every row under
+// it — and does it exactly where the eye starts.
+func TestLeadingWhitespaceIsPartOfTheOutput(t *testing.T) {
+	const output = "   4 auth.go\n  42 middleware.go\n 100 handler.go"
+
+	// The two columns every card body is set in by, spelled out because the
+	// card's own constant is unexported.
+	const indent = "  "
+
+	call := opened(answered("bash", &tool.Result{Title: "wc -l *.go", Content: output}))
+
+	body := strings.SplitN(call.Render(wide), "\n", 2)[1]
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.Contains(body, indent+line) {
+			t.Errorf("the card does not draw %q as it was printed:\n%s", line, body)
+		}
+	}
+}
+
 // TestANarrowTerminalDoesNotShredATextBody is the diff's own narrow-width rule
 // read across to everything else a card draws. The diff is cut, so it needs a
 // column to cut to; text is wrapped, and wrapping to one column is one
