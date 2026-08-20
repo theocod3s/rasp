@@ -117,15 +117,20 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 	// later look and so the truer one, and both directions have to be believed
 	// or the call reports one thing and diffs another.
 	before, readErr := w.ws.ReadFile(rel)
-	switch {
-	case !created && errors.Is(readErr, fs.ErrNotExist):
-		// It left. Calling that a replacement would name a file this write never
-		// touched, and give the new one the mode of one that is gone.
+
+	// What the read found is what the call reports, since it is the later look
+	// and the stat can be stale by now. Not-there is the only answer meaning the
+	// path is empty: a mode that forbids reading still means a file is there.
+	existed := !errors.Is(readErr, fs.ErrNotExist)
+
+	// created stays a separate question, because it decides the mode rather than
+	// the wording — whether there is a mode to preserve. A file that left in
+	// that window leaves none behind, so the write is a creation for that
+	// purpose and the umask applies to it as to any new file. A file that
+	// arrived is the same story: nothing stat'd it, so nothing may chmod the
+	// replacement to a mode nobody read.
+	if !created && !existed {
 		created, perm = true, 0o666
-	case created && readErr == nil:
-		// One arrived, and this is about to destroy it. perm stays the default
-		// because its mode was never read — there was nothing there to stat.
-		created = false
 	}
 
 	data := []byte(*in.Content)
@@ -158,9 +163,9 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 	}
 	recordRead(w.reads, rel, w.ws.Stat)
 
-	summary := fmt.Sprintf("Replaced %s", rel)
-	if created {
-		summary = fmt.Sprintf("Created %s", rel)
+	summary := fmt.Sprintf("Created %s", rel)
+	if existed {
+		summary = fmt.Sprintf("Replaced %s", rel)
 	}
 	result := tool.Result{
 		// The diff stays in Details: it is what the UI draws, and the model just

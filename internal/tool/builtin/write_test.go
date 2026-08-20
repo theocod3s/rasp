@@ -88,6 +88,14 @@ func TestWriteSurvivesTheFileBeingTakenAwayMidCall(t *testing.T) {
 	f := newWriteFixture(t)
 	f.seed("notes.txt", "the old contents")
 
+	// A mode the umask default is not, so the assertion below can tell "the mode
+	// of the file that left" from "the mode a new file gets".
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(filepath.Join(f.dir, "notes.txt"), 0o600); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+	}
+
 	// Once: the tool stats again after the write to record what it left behind,
 	// and a second removal would delete the file this test is about to read.
 	var once sync.Once
@@ -114,6 +122,16 @@ func TestWriteSurvivesTheFileBeingTakenAwayMidCall(t *testing.T) {
 	// is given the mode of the one that has gone.
 	if !strings.Contains(res.Content, "Created") {
 		t.Errorf("Content = %q, want it to report a creation: there was nothing there to replace", res.Content)
+	}
+
+	// And the file it wrote is a new file's, not the departed one's. Preserving
+	// 0o600 here would carry a mode forward from a file nothing on disk has any
+	// more, which is the same mistake in the other direction.
+	if runtime.GOOS != "windows" {
+		if want := 0o666 &^ umaskOf(t, f.dir); f.mode("notes.txt") != want {
+			t.Errorf("mode is %v, want the %v a plain create gets: the file it was read from is gone",
+				f.mode("notes.txt"), want)
+		}
 	}
 }
 
@@ -148,6 +166,17 @@ func TestWriteReportsAFileThatArrivedMidCallAsAReplacement(t *testing.T) {
 	}
 	if d := f.details(res); d.Deletions != 1 {
 		t.Errorf("Details is +%d -%d, want the arrived line shown as taken away", d.Additions, d.Deletions)
+	}
+
+	// The wording is not the mode. Nothing stat'd the file that arrived, so
+	// there is no mode to preserve and the umask applies as it would to any new
+	// file — a "replacement" that chmod'd its way past the umask instead would
+	// leave the file more widely readable than anything the user asked for.
+	if runtime.GOOS != "windows" {
+		if want := 0o666 &^ umaskOf(t, f.dir); f.mode("arrived.txt") != want {
+			t.Errorf("mode is %v, want the %v a plain create gets: no mode was ever read to preserve",
+				f.mode("arrived.txt"), want)
+		}
 	}
 }
 
