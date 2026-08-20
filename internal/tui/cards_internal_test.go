@@ -233,10 +233,18 @@ func TestAFileChangeIsDrawnWithoutAnyoneAskingForIt(t *testing.T) {
 		t.Fatalf("the diff is behind a keypress:\n%s", frame)
 	}
 
-	m, _ = m.Update(expandKey)
+	// One press, not two. A toggle that remembered the last press rather than
+	// reading the cards would do nothing here — the flag would say closed while
+	// the screen said open, and the press would only bring the two into
+	// agreement — so the reader presses the close key and the frame stands.
 	m, _ = m.Update(expandKey)
 	if frame := words(m.View().Content); strings.Contains(frame, line) {
-		t.Errorf("the toggle cannot close a card that opened itself:\n%s", frame)
+		t.Errorf("the first press did not close a card that opened itself:\n%s", frame)
+	}
+
+	m, _ = m.Update(expandKey)
+	if frame := words(m.View().Content); !strings.Contains(frame, line) {
+		t.Errorf("the next press did not open it again:\n%s", frame)
 	}
 }
 

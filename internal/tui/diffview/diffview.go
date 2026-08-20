@@ -2,9 +2,9 @@ package diffview
 
 import (
 	"strings"
-	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theocod3s/rasp/internal/tui/styles"
 )
@@ -90,20 +90,16 @@ func classify(line string, p styles.Palette) lipgloss.Style {
 	return p.DiffContext
 }
 
-// expand turns a diff line into something a terminal will draw rather than act
-// on: tabs become spaces to the next stop, and every other control character is
-// dropped.
+// expand turns a diff line into something a terminal draws rather than acts on:
+// tabs become spaces to the next stop, every other control character goes.
 //
-// Both are the same problem — a file is arbitrary bytes and this draws them.
-// Cell measurement counts a tab as nothing, so a tab-indented line, which most
-// Go is, measures short, survives the cut and then wraps: the failure the cut
-// exists to prevent, arriving through the check meant to catch it. The rest a
-// terminal obeys instead of printing — an ESC lets a file's own contents
-// recolour the screen or swallow what follows it, a BEL sounds on every frame
-// the line is drawn in, and a CR writes the next characters back over this one.
-// The trailing CR on every line of a CRLF file makes that ordinary rather than
-// exotic. Dropping the ESC alone leaves the rest of a sequence as literal text,
-// which is visible and inert.
+// One problem, since a file is arbitrary bytes and this draws them. A tab
+// measures as no cells, so a tab-indented line — most Go — measures short,
+// survives the cut and wraps anyway. The rest a terminal obeys: an ESC lets a
+// file recolour the screen or swallow what follows, a BEL sounds on every frame
+// the line is in, and a CR writes the next characters back over it — which
+// every line of every CRLF file ends with. Dropping the ESC alone leaves the
+// rest of its sequence as literal text, visible and inert.
 func expand(line string) string {
 	var (
 		b   strings.Builder
@@ -119,7 +115,7 @@ func expand(line string) string {
 		default:
 			w := 1
 			if r > 0x7f {
-				w = lipgloss.Width(string(r))
+				w = ansi.StringWidth(string(r))
 			}
 			b.WriteRune(r)
 			col += w
@@ -128,39 +124,18 @@ func expand(line string) string {
 	return b.String()
 }
 
-// fit cuts line to width and reports whether it had to, measuring in terminal
-// cells rather than in runes: a line measured one cell wrong is a line the
-// terminal wraps.
+// fit cuts line to width, keeping a column back for the mark, and reports
+// whether it had to.
+//
+// By grapheme cluster rather than by rune, which is not a detail: a flag emoji
+// is two runes and two cells together but two cells *each* apart, and a sun
+// plus the variation selector that makes it emoji is one rune of width and two
+// cells drawn. Measuring by rune therefore calls a line too wide when it fits —
+// cutting text and blaming the terminal — and calls one narrow enough when it
+// is not, which is the wrap this exists to prevent.
 func fit(line string, width int) (string, bool) {
-	if width <= 0 || lipgloss.Width(line) <= width {
+	if width <= 0 || ansi.StringWidth(line) <= width {
 		return line, false
 	}
-
-	// Rune by rune, stopping at the limit rather than measuring the whole line,
-	// so a minified file's one 500KB line costs the width of the terminal and
-	// not its own length.
-	limit := width - lipgloss.Width(elision)
-	var (
-		b     strings.Builder
-		cells int
-	)
-	for _, r := range line {
-		w := lipgloss.Width(string(r))
-		if cells+w > limit {
-			break
-		}
-		cells += w
-		b.WriteRune(r)
-	}
-
-	// Measured once more whole, because a sum of rune widths is not the width of
-	// what they spell: a flag emoji is two runes and two cells together, and two
-	// cells each once the cut falls between them. The result is a terminal's
-	// width at most, so shrinking it here is cheap however long the line was.
-	out := b.String()
-	for out != "" && lipgloss.Width(out) > limit {
-		_, n := utf8.DecodeLastRuneInString(out)
-		out = out[:len(out)-n]
-	}
-	return out, true
+	return ansi.Truncate(line, width-ansi.StringWidth(elision), ""), true
 }

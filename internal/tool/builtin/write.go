@@ -112,9 +112,17 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 	// The bytes about to be replaced, read under the lock the rename also runs
 	// under, so the diff is of the file that actually goes away. A creation has
 	// nothing before it, which is a diff of every line added.
+	//
+	// The lock is rasp's own, so it orders rasp's writes and nothing else: an
+	// editor saving, a checkout or a `make clean` can still take the file away
+	// between the stat above and this read. That is the creation case arriving
+	// late, not a reason to refuse a write that would otherwise have gone ahead.
 	var before []byte
 	if !created {
-		if before, err = w.ws.ReadFile(rel); err != nil {
+		switch before, err = w.ws.ReadFile(rel); {
+		case errors.Is(err, fs.ErrNotExist):
+			before = nil
+		case err != nil:
 			return writeRefused(err.Error()), nil
 		}
 	}

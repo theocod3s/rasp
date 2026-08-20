@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/theocod3s/rasp/internal/tool"
 	"github.com/theocod3s/rasp/internal/tui/chat"
 	"github.com/theocod3s/rasp/internal/tui/styles"
@@ -167,11 +169,20 @@ func TestADiffLineIsCutAtTheWidthRatherThanWrapped(t *testing.T) {
 		Details: &tool.DiffDetails{Path: "auth.go", Unified: unified},
 	}))
 
-	drawn := call.Render(narrow)
-	// One line for the card's own summary and one per line of the diff below the
-	// header pair, which is four.
-	if rows, want := strings.Split(drawn, "\n"), 5; len(rows) != want {
-		t.Errorf("the card drew %d rows, want %d — a diff line wrapped:\n%s", len(rows), want, drawn)
+	// One row for the card's own summary and one per line of the diff below the
+	// header pair, which is four — and every one of them has to fit the terminal
+	// it was drawn for, or the terminal does the wrapping this is here to avoid.
+	// The row count alone would not notice: the card's own indent arithmetic can
+	// be off by two with all five rows still present.
+	rows := strings.Split(call.Render(narrow), "\n")
+	if want := 5; len(rows) != want {
+		t.Fatalf("the card drew %d rows, want %d — a diff line wrapped:\n%s",
+			len(rows), want, call.Render(narrow))
+	}
+	for _, row := range rows {
+		if n := ansi.StringWidth(row); n > narrow {
+			t.Errorf("a row runs %d columns into a terminal %d wide: %q", n, narrow, words(row))
+		}
 	}
 }
 

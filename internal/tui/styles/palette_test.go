@@ -1,6 +1,8 @@
 package styles_test
 
 import (
+	"image/color"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -37,6 +39,87 @@ func TestEveryTokenIsADifferentColourInEachPalette(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEveryTokenStandsOutFromTheBackgroundItIsFor is the assertion the test
+// above cannot make. Two colours differing is not two colours being legible: a
+// pair written the wrong way round — the light value on the dark palette — is
+// distinct on both and invisible on both, and that is not hypothetical. The
+// light Muted shipped at #8c959f, under 3:1 on white, with every assertion
+// above green. It carries the mark saying a line was cut off, so a reader who
+// cannot see it reads a shortened line as the whole of it.
+//
+// The floor is WCAG AA for normal text, which is what a diff is. The tokens
+// clear it with room — 4.55:1 at the tightest — so it is a floor on the palette
+// as chosen, not a bar it was tuned to scrape past; #8c959f came in at 3.04:1.
+func TestEveryTokenStandsOutFromTheBackgroundItIsFor(t *testing.T) {
+	const floor = 4.5
+
+	// What each palette assumes it is drawn on: paper, and the near-black most
+	// terminal themes settle on. Contrast is worse on a lighter dark background,
+	// so the darker one is the generous case and this is a floor, not a promise.
+	for _, bg := range []struct {
+		name    string
+		palette styles.Palette
+		on      [3]float64
+	}{
+		{"light", styles.For(styles.Light), rgb(0xff, 0xff, 0xff)},
+		{"dark", styles.For(styles.Dark), rgb(0x0d, 0x11, 0x17)},
+	} {
+		v := reflect.TypeOf(bg.palette)
+		for i := range v.NumField() {
+			name := v.Field(i).Name
+			t.Run(bg.name+"/"+name, func(t *testing.T) {
+				fg, ok := foreground(bg.palette, name)
+				if !ok {
+					t.Fatalf("%s sets no foreground colour, so there is no contrast to measure", name)
+				}
+				if got := contrast(fg, bg.on); got < floor {
+					t.Errorf("%s draws at %.2f:1 on a %s background, under the %.1f:1 floor — most "+
+						"likely the light and dark values are the wrong way round", name, got, bg.name, floor)
+				}
+			})
+		}
+	}
+}
+
+// foreground is a token's colour as three channels in 0..1.
+func foreground(p styles.Palette, name string) ([3]float64, bool) {
+	c := reflect.ValueOf(p).FieldByName(name).Interface().(interface{ GetForeground() color.Color })
+	fg := c.GetForeground()
+	if fg == nil {
+		return [3]float64{}, false
+	}
+	r, g, b, a := fg.RGBA()
+	if a == 0 {
+		return [3]float64{}, false
+	}
+	return [3]float64{float64(r) / 65535, float64(g) / 65535, float64(b) / 65535}, true
+}
+
+func rgb(r, g, b uint8) [3]float64 {
+	return [3]float64{float64(r) / 255, float64(g) / 255, float64(b) / 255}
+}
+
+// contrast is the WCAG ratio between two colours, from 1 (identical) to 21.
+func contrast(a, b [3]float64) float64 {
+	x, y := luminance(a)+0.05, luminance(b)+0.05
+	if x < y {
+		x, y = y, x
+	}
+	return x / y
+}
+
+// luminance is WCAG relative luminance: each channel linearised out of sRGB,
+// then weighted by how much the eye takes from it.
+func luminance(c [3]float64) float64 {
+	lin := func(v float64) float64 {
+		if v <= 0.04045 {
+			return v / 12.92
+		}
+		return math.Pow((v+0.055)/1.055, 2.4)
+	}
+	return 0.2126*lin(c[0]) + 0.7152*lin(c[1]) + 0.0722*lin(c[2])
 }
 
 // TestABackgroundNobodyReportedDrawsTheDarkPalette. The query is answered after

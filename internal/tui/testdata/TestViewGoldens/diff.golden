@@ -5,7 +5,7 @@
   [38;2;145;152;161m func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {[m
   [38;2;248;81;73m-   claims, err := parse(r.Header.Get("Authorization"))[m
   [38;2;63;185;80m+   claims, err := m.claims(r)[m
-  [38;2;63;185;80m+   r = r.WithContext(context.WithValue(r.Context(), claimsKey, claims)) // t[m[38;2;110;118;129m…[m
+  [38;2;63;185;80m+   r = r.WithContext(context.WithValue(r.Context(), claimsKey, claims)) // t[m[38;2;125;133;144m…[m
   [38;2;145;152;161m    if err != nil {[m
   [38;2;145;152;161m        unauthorized(w)[m
 ▾ write Created middleware_test.go

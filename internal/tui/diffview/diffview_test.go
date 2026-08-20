@@ -157,6 +157,23 @@ func TestACutNeverLandsWiderThanTheTerminal(t *testing.T) {
 	}
 }
 
+// TestALineThatFitsIsNotMarkedAsCut is the other half of measuring by cluster.
+// Summing rune widths over-counts a flag emoji — two cells together, two cells
+// each apart — so a line well inside the terminal was cut short and handed the
+// mark that says the terminal did it, which is a renderer lying about the file.
+func TestALineThatFitsIsNotMarkedAsCut(t *testing.T) {
+	// Nineteen cells: three of text and sixteen of emoji.
+	fits := lines("@@ -1,1 +1,1 @@", "+ab"+strings.Repeat("\U0001F1FA\U0001F1F8", 8))
+
+	drawn := diffview.Render(fits, 30, styles.For(styles.Dark))
+	if strings.Contains(text(drawn), "…") {
+		t.Errorf("a 19-cell line in a 30-column terminal is marked as cut:\n%s", text(drawn))
+	}
+	if n := strings.Count(text(drawn), "\U0001F1FA"); n != 8 {
+		t.Errorf("the line drew %d flags of 8, so it was shortened as well as mismeasured", n)
+	}
+}
+
 // TestTabsAreExpandedBeforeAnythingIsMeasured. Cell measurement counts a tab as
 // nothing, so a tab-indented line — which most Go is — measures short, is left
 // uncut, and then wraps in the terminal: the failure the cut exists to prevent,

@@ -57,6 +57,6 @@ func build(isDark bool) Palette {
 		DiffHunk:    fg(lipgloss.Color("#0550ae"), lipgloss.Color("#58a6ff")),
 		// Muted, not faint. It carries the mark saying a line was cut off, and a
 		// reader who cannot see that mark reads a shortened line as the whole one.
-		Muted: fg(lipgloss.Color("#6e7781"), lipgloss.Color("#6e7681")),
+		Muted: fg(lipgloss.Color("#6e7781"), lipgloss.Color("#7d8590")),
 	}
 }

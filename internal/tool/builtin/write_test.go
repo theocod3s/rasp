@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/theocod3s/rasp/internal/tool"
@@ -74,6 +75,39 @@ func TestWriteReturnsTheDiffOfWhatItReplaced(t *testing.T) {
 	}
 	if details.Fuzzy {
 		t.Error("Details.Fuzzy is set; a write matches nothing, so nothing about it can be approximate")
+	}
+}
+
+// TestWriteSurvivesTheFileBeingTakenAwayMidCall. The per-file lock is rasp's
+// own, so it orders rasp's writes and nothing else: an editor saving, a git
+// checkout or a `make clean` can take the file away between the stat and the
+// read the diff is taken from. That is the creation case arriving late, and
+// refusing it would fail a write that used to succeed, for a reason the model
+// can do nothing about.
+func TestWriteSurvivesTheFileBeingTakenAwayMidCall(t *testing.T) {
+	f := newWriteFixture(t)
+	f.seed("notes.txt", "the old contents")
+
+	// Once: the tool stats again after the write to record what it left behind,
+	// and a second removal would delete the file this test is about to read.
+	var once sync.Once
+	f.spy.afterStat = func(name string) {
+		once.Do(func() {
+			if err := os.Remove(filepath.Join(f.dir, filepath.FromSlash(name))); err != nil {
+				t.Errorf("taking %s away mid-call: %v", name, err)
+			}
+		})
+	}
+
+	res := f.write("notes.txt", "the new contents")
+	if res.IsError {
+		t.Fatalf("the write was refused because the file went away: %s", res.Content)
+	}
+	f.wantContent("notes.txt", "the new contents")
+
+	if d := f.details(res); d.Deletions != 0 {
+		t.Errorf("Details is +%d -%d, and there was nothing left to delete by the time it was read",
+			d.Additions, d.Deletions)
 	}
 }
 
@@ -502,8 +536,20 @@ type writeSpy struct {
 	rename   func(oldname, newname string) error
 	mkdirAll func(name string, perm fs.FileMode) error
 
+	// afterStat runs once the stat has answered, which is where a test stages
+	// something happening to the file between the calls the tool makes about it.
+	afterStat func(name string)
+
 	opened  []string
 	renamed [][2]string
+}
+
+func (s *writeSpy) Stat(name string) (fs.FileInfo, error) {
+	info, err := s.Workspace.Stat(name)
+	if s.afterStat != nil {
+		s.afterStat(name)
+	}
+	return info, err
 }
 
 func (s *writeSpy) OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error) {

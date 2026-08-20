@@ -65,8 +65,15 @@ type Model struct {
 	expanded bool
 
 	// background is what the terminal answered the background query with, and
-	// picks the palette a diff is drawn from. Dark until it answers, and forever
-	// on a terminal that never does.
+	// picks the palette a diff is drawn from.
+	//
+	// Nothing asks yet, so this is Dark for every real session: Bubble Tea sends
+	// the query only for tea.RequestBackgroundColor, and issuing that command is
+	// deliberately not done here. Glamour is still built with its own dark style
+	// (chat/markdown.go), so a light terminal answering today would paint the
+	// diffs light and leave every reply near-white on white — worse than the one
+	// palette it has now. The command belongs in the change that gives glamour a
+	// theme, and this side is ready for it.
 	background styles.Background
 
 	// beating says a redraw of the running cards is already on its way. Four
@@ -258,16 +265,28 @@ func (m Model) draw(id string, c card) Model {
 
 // expand shows or hides every card's body. The whole conversation rather than
 // the card under a selection, because nothing selects one yet: the transcript
-// has no cursor over it, so there is no "this card" to mean. It overrides the
-// diff cards that opened themselves, so a reader who wants the transcript small
-// can have it.
+// has no cursor over it, so there is no "this card" to mean.
+//
+// Which way it goes is read off the cards rather than off the last press, so
+// the first press after a diff opened itself closes it. Tracking the press
+// instead makes the key do nothing that first time — the flag says closed, the
+// screen says open, and the press only brings the two into agreement.
 func (m Model) expand() Model {
-	m.expanded = !m.expanded
+	m.expanded = !m.anyExpanded()
 	for id, c := range m.cards {
 		c.item.Expanded = m.expanded
 		m = m.draw(id, c)
 	}
 	return m
+}
+
+func (m Model) anyExpanded() bool {
+	for _, c := range m.cards {
+		if c.item.Expanded {
+			return true
+		}
+	}
+	return false
 }
 
 // tickInterval is how often a running call's elapsed time is redrawn, at the
