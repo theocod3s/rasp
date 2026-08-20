@@ -187,14 +187,15 @@ func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 // running has nothing to arm, the first press against a running turn only
 // arms, and the second confirms it by cancelling.
 func (m Model) escape() Model {
-	switch {
-	case !m.busy:
-	case !m.armed:
-		m.armed = true
-	default:
-		m.interrupt()
-		m.armed = false
+	if !m.busy {
+		return m
 	}
+	if !m.armed {
+		m.armed = true
+		return m
+	}
+	m.interrupt()
+	m.armed = false
 	return m
 }
 
@@ -250,7 +251,13 @@ func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
 		m = m.report(ev.Err)
 
 	case agent.EventTurnEnd:
+		// EventTurnEnd and turnDone (finish, turn.go) both mark the same turn
+		// over, and arrive by different routes that make no promise about which
+		// lands first — so busy and armed are cleared on both rather than one.
+		// Leaving armed here would strand the hint on screen between this event
+		// and finish for a turn there is nothing left to confirm a cancel on.
 		m.busy = false
+		m.armed = false
 		m.status = m.status.turnEnded(ev.Usage)
 		m = m.settle()
 	}
@@ -449,7 +456,7 @@ func (m Model) View() tea.View {
 	}
 	switch {
 	case m.armed:
-		writeLine(&b, "esc again to cancel")
+		writeLine(&b, "press esc again to cancel")
 	case m.busy:
 		writeLine(&b, "working…")
 	}

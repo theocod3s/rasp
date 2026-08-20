@@ -200,6 +200,31 @@ func TestArmedClearsWhenTheTurnEndsOnItsOwn(t *testing.T) {
 	}
 }
 
+// TestArmedClearsOnEventTurnEndAheadOfFinish. EventTurnEnd and finish's own
+// turnDone both say a turn is over, and arrive by separate routes — the bridge
+// pump for one, Bubble Tea's command delivery for the other — that make no
+// promise about which lands first. An arm cleared only in finish would strand
+// the hint on screen for however long the gap to turnDone runs.
+func TestArmedClearsOnEventTurnEndAheadOfFinish(t *testing.T) {
+	turner := newTurner(nil)
+	m := typed(newModel(t.Context(), turner, Config{}), "go")
+
+	m, _ = m.press(key(tea.KeyEnter))
+	m, _ = m.press(key(tea.KeyEscape))
+	if !m.armed {
+		t.Fatal("the first Esc against a running turn left the model unarmed")
+	}
+
+	m = update(m, agentMsg{event: agent.Event{Kind: agent.EventTurnEnd}})
+
+	if m.armed {
+		t.Error("EventTurnEnd left the model armed; finish is not the only route a turn ends by")
+	}
+	if frame := m.View().Content; strings.Contains(frame, "cancel") {
+		t.Errorf("the frame still hints at a cancel after EventTurnEnd:\n%s", frame)
+	}
+}
+
 // TestAFinishedTurnReleasesItsContext. Every turn's context is a child of the
 // program's, and a child nobody cancels is held by its parent until the parent
 // is cancelled — which here is the end of the session.

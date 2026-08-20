@@ -65,7 +65,10 @@ func (p *Program) Run(a Turner) error {
 
 	// Waited on because Bubble Tea's own shutdown does not (model.go turns) —
 	// without this, Run can return while the turn ctrl+c just cancelled is
-	// still committing what it has.
+	// still committing what it has. No timeout: design §6 rule 7 threads the
+	// context into everything a turn can be waiting on, so this is meant to
+	// return as soon as that cancellation does — a bound here would let Run
+	// exit before the commit again, on whichever call is the one that is slow.
 	if m, ok := final.(Model); ok && m.turns != nil {
 		m.turns.Wait()
 	}

@@ -137,7 +137,8 @@ func TestAProgramStoppedWithoutUpdateStillEndsItsTurn(t *testing.T) {
 // the goroutine running a tea.Cmd is deliberately not waited on at shutdown,
 // so ctrl+c's own key handling has to hold Run open until Send itself returns.
 func TestRunWaitsForTheInFlightTurnBeforeReturning(t *testing.T) {
-	turner := newGatedTurner()
+	turner := newWaitingTurner()
+	turner.release = make(chan struct{})
 	p := tui.New(tui.Config{}, headless(typing("hi"+enter+ctrlC))...)
 
 	stopped := make(chan error, 1)
@@ -184,10 +185,14 @@ type idleTurner struct{}
 func (idleTurner) Send(context.Context, string) error { return nil }
 
 // waitingTurner stays in Send until its turn is cancelled, and reports how the
-// context ended.
+// context ended. release is nil for the ordinary case; a test that needs Send
+// held open past the cancellation itself sets it, which is what turns "Run and
+// the turn both eventually finish" into "Run does not finish before the turn
+// does" — waiting for each separately would still pass if Run returned first.
 type waitingTurner struct {
 	entered chan struct{}
 	ran     chan error
+	release chan struct{}
 }
 
 func newWaitingTurner() *waitingTurner {
@@ -197,26 +202,9 @@ func newWaitingTurner() *waitingTurner {
 func (w *waitingTurner) Send(ctx context.Context, _ string) error {
 	close(w.entered)
 	<-ctx.Done()
+	if w.release != nil {
+		<-w.release
+	}
 	w.ran <- ctx.Err()
-	return agent.ErrInterrupted
-}
-
-// gatedTurner stays in Send past its context's cancellation until a test lets
-// it go, which is what turns "Run and the turn both eventually finish" into
-// "Run does not finish before the turn does" — a test that only waited for
-// each separately would still pass if Run returned first.
-type gatedTurner struct {
-	entered chan struct{}
-	release chan struct{}
-}
-
-func newGatedTurner() *gatedTurner {
-	return &gatedTurner{entered: make(chan struct{}), release: make(chan struct{})}
-}
-
-func (g *gatedTurner) Send(ctx context.Context, _ string) error {
-	close(g.entered)
-	<-ctx.Done()
-	<-g.release
 	return agent.ErrInterrupted
 }
