@@ -180,11 +180,9 @@ func (c Call) opens() bool {
 }
 
 // body is what expanding the card shows, already drawn to width: the diff a
-// file change produced, or the output the model was given.
-// The guard repeats the cheap half of opens rather than calling it, so that
-// empty here and false there stay the same set without a second pass over the
-// diff. Two passes remain — the marker asks opens, the body asks HasDiff — and
-// each splits the whole of Unified.
+// file change produced, or the output the model was given. The guard repeats
+// the cheap half of opens rather than calling it, so empty here and false there
+// stay the same set without a second pass over the diff.
 func (c Call) body(width int) string {
 	if c.State != CallDone || c.Result == nil {
 		return ""
