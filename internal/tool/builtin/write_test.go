@@ -117,6 +117,40 @@ func TestWriteSurvivesTheFileBeingTakenAwayMidCall(t *testing.T) {
 	}
 }
 
+// TestWriteReportsAFileThatArrivedMidCallAsAReplacement is the other direction
+// of the same race, and it has to be believed too: the read is the later look,
+// so a call that reported a creation while diffing away somebody else's lines
+// would say one thing and show another.
+func TestWriteReportsAFileThatArrivedMidCallAsAReplacement(t *testing.T) {
+	f := newWriteFixture(t)
+
+	// Nothing at the path when the stat runs; a file there by the time the
+	// contents are read.
+	var once sync.Once
+	f.spy.afterStat = func(name string) {
+		once.Do(func() {
+			full := filepath.Join(f.dir, filepath.FromSlash(name))
+			if err := os.WriteFile(full, []byte("somebody else's line\n"), 0o644); err != nil {
+				t.Errorf("putting %s there mid-call: %v", name, err)
+			}
+		})
+	}
+
+	res := f.write("arrived.txt", "our line\n")
+	if res.IsError {
+		t.Fatalf("write failed: %s", res.Content)
+	}
+	f.wantContent("arrived.txt", "our line\n")
+
+	if !strings.Contains(res.Content, "Replaced") {
+		t.Errorf("Content = %q, want it to report a replacement: there was a file there by the time "+
+			"this one read it", res.Content)
+	}
+	if d := f.details(res); d.Deletions != 1 {
+		t.Errorf("Details is +%d -%d, want the arrived line shown as taken away", d.Additions, d.Deletions)
+	}
+}
+
 // TestWriteStillWritesWhenTheOldContentsCannotBeRead. Details is drawn by the
 // UI and read by nobody else, so failing to build one must not decide whether
 // the file is written: replacing a file needs its directory, not the file, and

@@ -113,13 +113,19 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 	// under, so the diff is of the file that actually goes away. Unconditional,
 	// because the stat above and this read are two moments and the lock is
 	// rasp's own: an editor saving, a checkout or a `make clean` can take a file
-	// away between them, or put one there.
+	// away between them, or put one there. Whichever happened, the read is the
+	// later look and so the truer one, and both directions have to be believed
+	// or the call reports one thing and diffs another.
 	before, readErr := w.ws.ReadFile(rel)
-	if !created && errors.Is(readErr, fs.ErrNotExist) {
-		// It left between the two. That is a creation, and calling it a
-		// replacement would report a file this write never touched and give the
-		// new one the mode of one that is gone.
+	switch {
+	case !created && errors.Is(readErr, fs.ErrNotExist):
+		// It left. Calling that a replacement would name a file this write never
+		// touched, and give the new one the mode of one that is gone.
 		created, perm = true, 0o666
+	case created && readErr == nil:
+		// One arrived, and this is about to destroy it. perm stays the default
+		// because its mode was never read — there was nothing there to stat.
+		created = false
 	}
 
 	data := []byte(*in.Content)
