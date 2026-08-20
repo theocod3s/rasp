@@ -129,6 +129,10 @@ func snapshots() []snapshot {
 	return []snapshot{
 		{name: "empty"},
 		{name: "busy", prompt: prompt},
+		// The first Esc against a running turn, which arms rather than cancels
+		// (design §6 rule 7) — the hint replacing "working…" is the only thing
+		// this state exists to draw.
+		{name: "armed", prompt: prompt, keys: []tea.KeyPressMsg{key(tea.KeyEscape)}},
 		{name: "streaming", prompt: prompt, events: []agent.Event{
 			{Kind: agent.EventAssistantDelta, Message: fragment},
 		}},

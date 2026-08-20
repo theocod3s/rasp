@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -46,8 +47,16 @@ func (m Model) begin() (Model, tea.Cmd) {
 		Done: true,
 	})
 
-	turner := m.turner
-	return m, func() tea.Msg { return turnDone{err: turner.Send(ctx, text)} }
+	if m.turns == nil {
+		m.turns = &sync.WaitGroup{}
+	}
+	m.turns.Add(1)
+
+	turner, turns := m.turner, m.turns
+	return m, func() tea.Msg {
+		defer turns.Done()
+		return turnDone{err: turner.Send(ctx, text)}
+	}
 }
 
 // interrupt cancels the running turn. The agent commits what arrived before it
@@ -64,6 +73,7 @@ func (m Model) finish(done turnDone) Model {
 	m.interrupt()
 	m.cancel = nil
 	m.busy = false
+	m.armed = false
 	return m.report(done.err)
 }
 

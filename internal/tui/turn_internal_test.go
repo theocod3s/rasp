@@ -63,10 +63,12 @@ func TestEnterHandsTheTurnToACommandRatherThanRunningIt(t *testing.T) {
 	}
 }
 
-// TestEscCancelsTheTurnAndTheUIStaysQuietAboutIt covers both halves of the one
-// decision a frontend gets to make here: the cancel func on the model is what
-// Esc reaches (design §6 rule 7), and an interruption is the one failure the UI
-// does not draw, because the person who caused it is watching (decisions.md).
+// TestEscCancelsTheTurnAndTheUIStaysQuietAboutIt covers three things a
+// frontend gets to decide here: Esc is two-stage against a running turn, so
+// the first press only arms (design §6 rule 7); the cancel func on the model
+// is what the second press reaches; and an interruption is the one failure
+// the UI does not draw, because the person who caused it is watching
+// (decisions.md).
 func TestEscCancelsTheTurnAndTheUIStaysQuietAboutIt(t *testing.T) {
 	turner := newTurner(fmt.Errorf("the turn stopped: %w", agent.ErrInterrupted))
 	m := typed(newModel(t.Context(), turner, Config{}), "read every file")
@@ -75,11 +77,24 @@ func TestEscCancelsTheTurnAndTheUIStaysQuietAboutIt(t *testing.T) {
 	done := run(cmd)
 	ctx := started(t, turner.started)
 
+	// cancel closes ctx.Done() synchronously, so a check right after press
+	// needs no wait: had the first Esc cancelled outright, the channel would
+	// already be closed.
+	m, _ = m.press(key(tea.KeyEscape))
+	select {
+	case <-ctx.Done():
+		t.Fatal("the first Esc cancelled the turn outright; it should only arm")
+	default:
+	}
+	if !m.armed {
+		t.Fatal("the first Esc against a running turn left the model unarmed")
+	}
+
 	m, _ = m.press(key(tea.KeyEscape))
 	select {
 	case <-ctx.Done():
 	case <-time.After(settle):
-		t.Fatal("Esc left the turn's context live, so nothing below the UI was ever told to stop")
+		t.Fatal("the second Esc left the turn's context live, so nothing below the UI was ever told to stop")
 	}
 
 	// Through Update, because that is the only route the outcome takes in a
@@ -99,6 +114,89 @@ func TestEscCancelsTheTurnAndTheUIStaysQuietAboutIt(t *testing.T) {
 	// conversation, not something taken back off the screen.
 	if frame := m.View().Content; !strings.Contains(frame, chat.Caret+"read every file") {
 		t.Errorf("the interrupted turn's prompt is gone from the frame:\n%s", frame)
+	}
+}
+
+// TestEscWithNoTurnRunningArmsNothing. Esc's two stages only mean something
+// against a turn there is something to cancel; arming one against an idle
+// model would confirm on the next press with nothing left to stop.
+func TestEscWithNoTurnRunningArmsNothing(t *testing.T) {
+	m := newModel(t.Context(), newTurner(nil), Config{})
+
+	m, cmd := m.press(key(tea.KeyEscape))
+	if cmd != nil {
+		t.Error("Esc with no turn running returned a command; there is nothing for it to do")
+	}
+	if m.armed {
+		t.Error("Esc with no turn running armed anyway, so the next press would confirm nothing")
+	}
+	if frame := m.View().Content; strings.Contains(frame, "cancel") {
+		t.Errorf("the frame hints at a cancel with no turn running to cancel:\n%s", frame)
+	}
+}
+
+// TestArmedClearsOnAnyOtherKey. The hint only means something for the key
+// press right after it; anything else — typing, a backspace, Enter — is the
+// user doing something other than confirming the cancel, and the next Esc
+// has to start the two stages over rather than land as the second one.
+func TestArmedClearsOnAnyOtherKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  tea.KeyPressMsg
+	}{
+		{"a printable key", tea.KeyPressMsg{Code: 'x', Text: "x"}},
+		{"backspace", key(tea.KeyBackspace)},
+		{"enter", key(tea.KeyEnter)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			turner := newTurner(nil)
+			m := typed(newModel(t.Context(), turner, Config{}), "go")
+			m, cmd := m.press(key(tea.KeyEnter))
+			run(cmd)
+			started(t, turner.started)
+
+			m, _ = m.press(key(tea.KeyEscape))
+			if !m.armed {
+				t.Fatal("the first Esc did not arm, so this test is not exercising the clear at all")
+			}
+			if frame := m.View().Content; !strings.Contains(frame, "cancel") {
+				t.Fatalf("arming left no hint on the frame:\n%s", frame)
+			}
+
+			m, _ = m.press(tc.key)
+			if m.armed {
+				t.Errorf("%s did not clear the armed state", tc.name)
+			}
+			if frame := m.View().Content; strings.Contains(frame, "cancel") {
+				t.Errorf("%s left the cancel hint on the frame:\n%s", tc.name, frame)
+			}
+		})
+	}
+}
+
+// TestArmedClearsWhenTheTurnEndsOnItsOwn. A turn can end before a second Esc
+// ever arrives — it finished, or failed outright — and an arm nothing clears
+// then would confirm a cancel on the next Esc with no turn left to stop, and
+// would leave the hint on screen for a turn no longer running.
+func TestArmedClearsWhenTheTurnEndsOnItsOwn(t *testing.T) {
+	turner := newTurner(nil)
+	m := typed(newModel(t.Context(), turner, Config{}), "go")
+
+	m, _ = m.press(key(tea.KeyEnter))
+	m, _ = m.press(key(tea.KeyEscape))
+	if !m.armed {
+		t.Fatal("the first Esc against a running turn left the model unarmed")
+	}
+
+	// Driven directly rather than through a real turnDone: what matters here is
+	// finish's own bookkeeping, and nothing about how its message arrived.
+	m = m.finish(turnDone{})
+
+	if m.armed {
+		t.Error("the model is still armed after the turn it was armed against ended on its own")
+	}
+	if frame := m.View().Content; strings.Contains(frame, "cancel") {
+		t.Errorf("the frame still hints at a cancel for a turn that already ended:\n%s", frame)
 	}
 }
 
@@ -272,7 +370,8 @@ func TestInterruptingFromTheUILeavesATranscriptTheNextRequestCanBeBuiltFrom(t *t
 	case <-time.After(settle):
 		t.Fatal("the turn never reached the tool, so there is no in-flight turn to interrupt")
 	}
-	m, _ = m.press(key(tea.KeyEscape))
+	m, _ = m.press(key(tea.KeyEscape)) // arms
+	m, _ = m.press(key(tea.KeyEscape)) // confirms
 
 	outcome := waitFor(t, done)
 	if !errors.Is(outcome.err, agent.ErrInterrupted) {
