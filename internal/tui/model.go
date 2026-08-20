@@ -12,6 +12,7 @@ import (
 	"github.com/theocod3s/rasp/internal/agent"
 	"github.com/theocod3s/rasp/internal/llm"
 	"github.com/theocod3s/rasp/internal/tui/chat"
+	"github.com/theocod3s/rasp/internal/tui/styles"
 )
 
 // Model is the root Bubble Tea model.
@@ -58,10 +59,22 @@ type Model struct {
 	// of the model as chat.View's own map is, and for the same reason.
 	cards map[string]card
 
-	// expanded is the last thing the user asked for, and what a card added after
-	// that inherits — so a call starting mid-turn arrives in the state the rest
-	// of the conversation is already in.
-	expanded bool
+	// open is whether the reader has overridden how much of a card is shown, and
+	// which way. Its zero value is "they have not", which is what lets a card
+	// carry its own default: a file change opens and nothing else does.
+	open openness
+
+	// background is what the terminal answered the background query with, and
+	// picks the palette a diff is drawn from.
+	//
+	// Nothing asks yet, so this is Dark for every real session: Bubble Tea sends
+	// the query only for tea.RequestBackgroundColor, and issuing that command is
+	// deliberately not done here. Glamour is still built with its own dark style
+	// (chat/markdown.go), so a light terminal answering today would paint the
+	// diffs light and leave every reply near-white on white — worse than the one
+	// palette it has now. The command belongs in the change that gives glamour a
+	// theme, and this side is ready for it.
+	background styles.Background
 
 	// beating says a redraw of the running cards is already on its way. Four
 	// calls starting at once would otherwise leave four timers running, each
@@ -106,6 +119,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+	case tea.BackgroundColorMsg:
+		return m.repaint(msg.IsDark()), nil
 	case tea.KeyPressMsg:
 		return m.press(msg)
 	case agentMsg:
@@ -178,6 +193,9 @@ func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
 		m = m.announced(ev.CallID, ev.Tool)
 		c := m.cards[ev.CallID]
 		c.item.State, c.item.Result = chat.CallDone, ev.Result
+		// Asked again now the result is here: whether the card opens itself is a
+		// question about what it holds, and it held nothing until this event.
+		c.item.Expanded = m.open.shows(c.item)
 		if !c.started.IsZero() {
 			c.item.Elapsed = m.clock().Sub(c.started)
 		}
@@ -217,7 +235,30 @@ func (m Model) announced(id, name string) Model {
 	if m.cards == nil {
 		m.cards = make(map[string]card)
 	}
-	return m.draw(id, card{item: chat.Call{Name: name, Expanded: m.expanded}})
+	item := chat.Call{Name: name, Background: m.background}
+	item.Expanded = m.open.shows(item)
+	return m.draw(id, card{item: item})
+}
+
+// repaint moves every card onto the terminal's own palette. The whole list
+// rather than the cards drawn after the answer, because a terminal answers the
+// background query once the program is already running and a finished card's
+// render is frozen at the colours it was first drawn in (internals §4.5).
+func (m Model) repaint(isDark bool) Model {
+	bg := styles.Dark
+	if !isDark {
+		bg = styles.Light
+	}
+	if bg == m.background {
+		return m
+	}
+
+	m.background = bg
+	for id, c := range m.cards {
+		c.item.Background = bg
+		m = m.draw(id, c)
+	}
+	return m
 }
 
 func (m Model) draw(id string, c card) Model {
@@ -226,16 +267,67 @@ func (m Model) draw(id string, c card) Model {
 	return m
 }
 
+// openness is how much of every card is shown: what the cards themselves say
+// until the reader takes a view, and then what the reader said.
+//
+// Modelled as the reader's opinion rather than as a bare "expanded" flag,
+// because the default is the card's own — a diff opens itself — and a flag
+// carrying both answers can only ever agree with one of them. It disagreed
+// twice: the first press after a diff opened itself did nothing, and a card
+// arriving after the reader collapsed the conversation opened anyway.
+type openness int
+
+const (
+	openByDefault openness = iota
+	openAll
+	closeAll
+)
+
+// shows is whether a card is drawn open under this openness.
+func (o openness) shows(c chat.Call) bool {
+	switch o {
+	case openAll:
+		return true
+	case closeAll:
+		return false
+	}
+	return c.HasDiff()
+}
+
 // expand shows or hides every card's body. The whole conversation rather than
 // the card under a selection, because nothing selects one yet: the transcript
 // has no cursor over it, so there is no "this card" to mean.
+//
+// With no view taken yet, which way to go is read off the screen, so the press
+// does what a reader looking at it expects. After that the reader's own last
+// answer is the thing to flip — including on an empty conversation, where the
+// screen says nothing and reading it would answer "open" forever.
 func (m Model) expand() Model {
-	m.expanded = !m.expanded
+	switch {
+	case m.open == openAll:
+		m.open = closeAll
+	case m.open == closeAll:
+		m.open = openAll
+	case m.anyShown():
+		m.open = closeAll
+	default:
+		m.open = openAll
+	}
+
 	for id, c := range m.cards {
-		c.item.Expanded = m.expanded
+		c.item.Expanded = m.open.shows(c.item)
 		m = m.draw(id, c)
 	}
 	return m
+}
+
+func (m Model) anyShown() bool {
+	for _, c := range m.cards {
+		if c.item.Expanded {
+			return true
+		}
+	}
+	return false
 }
 
 // tickInterval is how often a running call's elapsed time is redrawn, at the

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/theocod3s/rasp/internal/tool"
@@ -26,20 +27,358 @@ func TestWriteCreatesTheFileAndItsParentDirectories(t *testing.T) {
 	}
 	f.wantContent("pkg/sub/new.txt", "hello")
 
+	// A file that was not there is a diff of every line added and none removed.
 	details := f.details(res)
-	if !details.Created {
-		t.Errorf("Details.Created is false for a file that did not exist")
+	if details.Additions != 1 || details.Deletions != 0 {
+		t.Errorf("Details is +%d -%d, want +1 -0 for a file that did not exist",
+			details.Additions, details.Deletions)
 	}
-	if details.Bytes != len("hello") {
-		t.Errorf("Details.Bytes = %d, want %d", details.Bytes, len("hello"))
+	if !strings.Contains(details.Unified, "+hello") {
+		t.Errorf("Details.Unified is %q, and does not add the line the file now holds", details.Unified)
 	}
 	if details.Path != "pkg/sub/new.txt" {
 		t.Errorf("Details.Path = %q, want the workspace-relative path", details.Path)
 	}
 
-	// The model is told the same two facts, since it never sees Details.
+	// The model is told the two facts it can act on, since it never sees Details.
 	if !strings.Contains(res.Content, "Created") || !strings.Contains(res.Content, "5 bytes") {
 		t.Errorf("Content = %q, want it to report the creation and the byte count", res.Content)
+	}
+}
+
+// TestWriteReturnsTheDiffOfWhatItReplaced is what makes a write drawable. The
+// UI has no route to the file — it renders what Details carries and computes
+// nothing — so a write that reported only a path and a byte count could not be
+// drawn as a change at all.
+func TestWriteReturnsTheDiffOfWhatItReplaced(t *testing.T) {
+	f := newWriteFixture(t)
+	f.seed("auth.go", "one\ntwo\nthree\n")
+
+	res := f.write("auth.go", "one\nTWO\nthree\n")
+	if res.IsError {
+		t.Fatalf("write failed: %s", res.Content)
+	}
+
+	details := f.details(res)
+	if details.Additions != 1 || details.Deletions != 1 {
+		t.Errorf("Details is +%d -%d, want +1 -1 for one line replaced", details.Additions, details.Deletions)
+	}
+	for _, line := range []string{"-two", "+TWO"} {
+		if !strings.Contains(details.Unified, line) {
+			t.Errorf("Details.Unified does not hold %q:\n%s", line, details.Unified)
+		}
+	}
+	// The lines that did not change are in it too, or the diff has no context to
+	// place the one that did.
+	if !strings.Contains(details.Unified, " one") {
+		t.Errorf("Details.Unified carries no context:\n%s", details.Unified)
+	}
+	if details.Fuzzy {
+		t.Error("Details.Fuzzy is set; a write matches nothing, so nothing about it can be approximate")
+	}
+}
+
+// TestWriteSurvivesTheFileBeingTakenAwayMidCall. The per-file lock is rasp's
+// own, so it orders rasp's writes and nothing else: an editor saving, a git
+// checkout or a `make clean` can take the file away between the stat and the
+// read the diff is taken from. That is the creation case arriving late, and
+// refusing it would fail a write that used to succeed, for a reason the model
+// can do nothing about.
+func TestWriteSurvivesTheFileBeingTakenAwayMidCall(t *testing.T) {
+	f := newWriteFixture(t)
+	f.seed("notes.txt", "the old contents")
+
+	// A mode the umask default is not, so the assertion below can tell "the mode
+	// of the file that left" from "the mode a new file gets".
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(filepath.Join(f.dir, "notes.txt"), 0o600); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+	}
+
+	// Once: the tool stats again after the write to record what it left behind,
+	// and a second removal would delete the file this test is about to read.
+	var once sync.Once
+	f.spy.afterStat = func(name string) {
+		once.Do(func() {
+			if err := os.Remove(filepath.Join(f.dir, filepath.FromSlash(name))); err != nil {
+				t.Errorf("taking %s away mid-call: %v", name, err)
+			}
+		})
+	}
+
+	res := f.write("notes.txt", "the new contents")
+	if res.IsError {
+		t.Fatalf("the write was refused because the file went away: %s", res.Content)
+	}
+	f.wantContent("notes.txt", "the new contents")
+
+	if d := f.details(res); d.Deletions != 0 {
+		t.Errorf("Details is +%d -%d, and there was nothing left to delete by the time it was read",
+			d.Additions, d.Deletions)
+	}
+	// And the call says so. Reporting a replacement would name a file this write
+	// never touched, and it is the same flag that decides whether the new file
+	// is given the mode of the one that has gone.
+	if !strings.Contains(res.Content, "Created") {
+		t.Errorf("Content = %q, want it to report a creation: there was nothing there to replace", res.Content)
+	}
+
+	// And the file it wrote is a new file's, not the departed one's. Preserving
+	// 0o600 here would carry a mode forward from a file nothing on disk has any
+	// more, which is the same mistake in the other direction.
+	if runtime.GOOS != "windows" {
+		if want := 0o666 &^ umaskOf(t, f.dir); f.mode("notes.txt") != want {
+			t.Errorf("mode is %v, want the %v a plain create gets: the file it was read from is gone",
+				f.mode("notes.txt"), want)
+		}
+	}
+}
+
+// TestWriteRefusesAFileThatArrivedMidCall is the other direction of the same
+// race, and it is the dangerous one. The stat said the path was empty, so the
+// read-before-overwrite guard was skipped; a file then appeared. Going ahead
+// would destroy contents this session has never seen — the exact thing the
+// tracker exists to refuse — and it would do it having had the bytes in hand.
+func TestWriteRefusesAFileThatArrivedMidCall(t *testing.T) {
+	f := newWriteFixture(t)
+
+	// Nothing at the path when the stat runs; a file there by the time the
+	// contents are read.
+	var once sync.Once
+	f.spy.afterStat = func(name string) {
+		once.Do(func() {
+			full := filepath.Join(f.dir, filepath.FromSlash(name))
+			if err := os.WriteFile(full, []byte("somebody else's line\n"), 0o644); err != nil {
+				t.Errorf("putting %s there mid-call: %v", name, err)
+			}
+		})
+	}
+
+	res := f.write("arrived.txt", "our line\n")
+	if !res.IsError {
+		t.Fatalf("the write went ahead over a file it had never read: %+v", res)
+	}
+	if !strings.Contains(res.Content, "has not been read") {
+		t.Errorf("Content = %q, want it to say the file was never read", res.Content)
+	}
+	f.wantContent("arrived.txt", "somebody else's line\n")
+}
+
+// TestWriteKeepsTheModeOfAFileThatArrivedMidCall. Once the guard has let the
+// write through, the arrived file is a file like any other: it has a mode, and
+// this replaces it. Treating the call as the creation the stat thought it was
+// lands the replacement at the umask default — a script losing its executable
+// bit, a secret gaining readers — which is the failure the chmod on the
+// ordinary overwrite path exists to prevent, reached by a different route.
+func TestWriteKeepsTheModeOfAFileThatArrivedMidCall(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no mode bits to preserve")
+	}
+	f := newWriteFixture(t)
+
+	// Arrives after the stat, and is recorded as read — rasp's own earlier write
+	// is how a file legitimately comes to be there and known.
+	const mode = fs.FileMode(0o755)
+	var once sync.Once
+	f.spy.afterStat = func(name string) {
+		once.Do(func() {
+			full := filepath.Join(f.dir, filepath.FromSlash(name))
+			if err := os.WriteFile(full, []byte("#!/bin/sh\necho old\n"), mode); err != nil {
+				t.Fatalf("putting %s there mid-call: %v", name, err)
+			}
+			if err := os.Chmod(full, mode); err != nil {
+				t.Fatalf("chmod: %v", err)
+			}
+			info, err := os.Stat(full)
+			if err != nil {
+				t.Fatalf("stat %s: %v", name, err)
+			}
+			f.reads.Record(name, info.ModTime())
+		})
+	}
+
+	res := f.write("run.sh", "#!/bin/sh\necho new\n")
+	if res.IsError {
+		t.Fatalf("write failed: %s", res.Content)
+	}
+	f.wantContent("run.sh", "#!/bin/sh\necho new\n")
+
+	if got := f.mode("run.sh"); got != mode {
+		t.Errorf("mode is %v, want the %v the file had: the write treated it as a creation and "+
+			"let the umask decide", got, mode)
+	}
+	if !strings.Contains(res.Content, "Replaced") {
+		t.Errorf("Content = %q, want a replacement: there was a file there when it was read", res.Content)
+	}
+	if d := f.details(res); d.Deletions == 0 {
+		t.Errorf("Details is +%d -%d, want the arrived line shown as taken away", d.Additions, d.Deletions)
+	}
+}
+
+// TestWriteReportsAFileThatArrivedAndLeftAgainAsACreation. The same race turned
+// twice: nothing at the stat, a file at the read, nothing again by the time the
+// guard looks. Going ahead is right — there is nothing left to protect — but
+// the call has to say what it did, and a diff of lines nothing on disk had is
+// not a replacement.
+func TestWriteReportsAFileThatArrivedAndLeftAgainAsACreation(t *testing.T) {
+	f := newWriteFixture(t)
+
+	full := filepath.Join(f.dir, "flicker.txt")
+	var appear, vanish sync.Once
+	f.spy.afterStat = func(string) {
+		appear.Do(func() {
+			if err := os.WriteFile(full, []byte("here for a moment\n"), 0o644); err != nil {
+				t.Errorf("putting the file there: %v", err)
+			}
+		})
+	}
+	f.spy.readFile = func(name string) ([]byte, error) {
+		data, err := f.spy.Workspace.ReadFile(name)
+		vanish.Do(func() {
+			if err := os.Remove(full); err != nil {
+				t.Errorf("taking the file away again: %v", err)
+			}
+		})
+		return data, err
+	}
+
+	res := f.write("flicker.txt", "ours\n")
+	if res.IsError {
+		t.Fatalf("the write was refused over a file that is no longer there: %s", res.Content)
+	}
+	f.wantContent("flicker.txt", "ours\n")
+
+	if !strings.Contains(res.Content, "Created") {
+		t.Errorf("Content = %q, want a creation: the path was empty when the write ran", res.Content)
+	}
+
+	// And the diff says the same thing. The bytes read out of the file that was
+	// briefly there have to go with the wording, or Details deletes lines the
+	// path never held under a headline saying it was created — the two halves of
+	// one card disagreeing about what happened.
+	d := f.details(res)
+	if d.Deletions != 0 {
+		t.Errorf("Details is +%d -%d, want no deletions:\n%s", d.Additions, d.Deletions, d.Unified)
+	}
+	if strings.Contains(d.Unified, "here for a moment") {
+		t.Errorf("the diff still takes away the line that was briefly there:\n%s", d.Unified)
+	}
+}
+
+// TestWriteDoesNotReadABigFileBackJustToDrawIt. The read this tool does exists
+// only to build a card, so it is the one read here that must be bounded: a
+// generated file of a few hundred megabytes would otherwise be pulled into
+// memory, copied to a string, split into lines, and its diff held for the rest
+// of the session — all under the per-file lock, and none of it visible.
+func TestWriteDoesNotReadABigFileBackJustToDrawIt(t *testing.T) {
+	f := newWriteFixture(t)
+	f.seed("generated.txt", strings.Repeat("a line of a generated file\n", 12_000))
+
+	var read []string
+	f.spy.readFile = func(name string) ([]byte, error) {
+		read = append(read, name)
+		return f.spy.Workspace.ReadFile(name)
+	}
+
+	res := f.write("generated.txt", "one line now\n")
+	if res.IsError {
+		t.Fatalf("write failed: %s", res.Content)
+	}
+	f.wantContent("generated.txt", "one line now\n")
+
+	if len(read) != 0 {
+		t.Errorf("the tool read %v back to diff it", read)
+	}
+	if res.Details != nil {
+		t.Errorf("Details is %#v, want nothing: no diff was taken", res.Details)
+	}
+	// And it is still a replacement, because a file too big to diff is still a
+	// file that was there.
+	if !strings.Contains(res.Content, "Replaced") {
+		t.Errorf("Content = %q, want it to report the replacement", res.Content)
+	}
+}
+
+// TestWriteDoesNotDiffAHugeCreation. Bounding the file being replaced is not a
+// bound: a creation has no old side at all, so a cap that only looks there lets
+// every new file through however large — and a card that opens itself would
+// then draw one row per line of it, unasked.
+func TestWriteDoesNotDiffAHugeCreation(t *testing.T) {
+	f := newWriteFixture(t)
+
+	res := f.write("generated.txt", strings.Repeat("a generated line\n", 20_000))
+	if res.IsError {
+		t.Fatalf("write failed: %s", res.Content)
+	}
+	if res.Details != nil {
+		t.Errorf("Details is %#v, want nothing: a creation this size is not a diff anyone can read",
+			res.Details)
+	}
+	if !strings.Contains(res.Content, "Created") {
+		t.Errorf("Content = %q, want it to report the creation", res.Content)
+	}
+}
+
+// TestWriteNoticesAVanishedFileItWasTooBigToDiff. The race handling reads what
+// the later look found; when the file is past the diff cap there is no read, so
+// the later look has to be a stat instead. Without one the guard switches
+// itself off on file size — the departed file's mode is carried onto the new
+// one, and the call reports replacing something that is not there.
+func TestWriteNoticesAVanishedFileItWasTooBigToDiff(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no mode bits to carry forward")
+	}
+	f := newWriteFixture(t)
+	f.seed("big.txt", strings.Repeat("a line of a generated file\n", 12_000))
+	if err := os.Chmod(filepath.Join(f.dir, "big.txt"), 0o600); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	var once sync.Once
+	f.spy.afterStat = func(name string) {
+		once.Do(func() {
+			if err := os.Remove(filepath.Join(f.dir, filepath.FromSlash(name))); err != nil {
+				t.Errorf("taking %s away mid-call: %v", name, err)
+			}
+		})
+	}
+
+	res := f.write("big.txt", "small now\n")
+	if res.IsError {
+		t.Fatalf("write failed: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "Created") {
+		t.Errorf("Content = %q, want a creation: the file was gone before the write", res.Content)
+	}
+	if want := 0o666 &^ umaskOf(t, f.dir); f.mode("big.txt") != want {
+		t.Errorf("mode is %v, want the %v a plain create gets — 0600 came from a file that is gone",
+			f.mode("big.txt"), want)
+	}
+}
+
+// TestWriteStillWritesWhenTheOldContentsCannotBeRead. Details is drawn by the
+// UI and read by nobody else, so failing to build one must not decide whether
+// the file is written: replacing a file needs its directory, not the file, and
+// a mode that forbids reading does not forbid the rename. The card falls back
+// to saying what was written, which is honest — a diff against nothing would
+// claim every line is new.
+func TestWriteStillWritesWhenTheOldContentsCannotBeRead(t *testing.T) {
+	f := newWriteFixture(t)
+	f.seed("secret.txt", "the old contents")
+	f.spy.readFile = func(string) ([]byte, error) { return nil, fs.ErrPermission }
+
+	res := f.write("secret.txt", "the new contents")
+	if res.IsError {
+		t.Fatalf("the write was refused because its diff could not be built: %s", res.Content)
+	}
+	f.wantContent("secret.txt", "the new contents")
+
+	if res.Details != nil {
+		t.Errorf("Details is %#v, want nothing: a diff was drawn against contents nobody could read", res.Details)
+	}
+	if !strings.Contains(res.Content, "Replaced") {
+		t.Errorf("Content = %q, want it to still report the replacement", res.Content)
 	}
 }
 
@@ -95,12 +434,9 @@ func TestWriteReplacesAndPreservesMode(t *testing.T) {
 		}
 	}
 
-	details := f.details(res)
-	if details.Created {
-		t.Errorf("Details.Created is true for a file that already existed")
-	}
-	if details.Bytes != len("new contents") {
-		t.Errorf("Details.Bytes = %d, want %d", details.Bytes, len("new contents"))
+	if details := f.details(res); details.Deletions == 0 {
+		t.Errorf("Details is +%d -%d, and an overwrite takes the old line away",
+			details.Additions, details.Deletions)
 	}
 	if !strings.Contains(res.Content, "Replaced") {
 		t.Errorf("Content = %q, want it to say the file was replaced", res.Content)
@@ -116,8 +452,12 @@ func TestWriteEmptyContentEmptiesTheFile(t *testing.T) {
 		t.Fatalf("write failed: %s", res.Content)
 	}
 	f.wantContent("notes.txt", "")
-	if d := f.details(res); d.Bytes != 0 || d.Created {
-		t.Errorf("Details = %+v, want zero bytes over an existing file", *d)
+	if d := f.details(res); d.Additions != 0 || d.Deletions != 1 {
+		t.Errorf("Details is +%d -%d, want the one line that was there taken away and nothing added",
+			d.Additions, d.Deletions)
+	}
+	if !strings.Contains(res.Content, "0 bytes") {
+		t.Errorf("Content = %q, want it to report the file is now empty", res.Content)
 	}
 }
 
@@ -351,11 +691,14 @@ func (f *writeFixture) raw(raw string) tool.Result {
 	return res
 }
 
-func (f *writeFixture) details(res tool.Result) *builtin.WriteDetails {
+// details is the write's payload for the UI. The type assertion is the point:
+// a write and an edit hand back the same shape, so one renderer draws both and
+// neither tool knows a terminal exists.
+func (f *writeFixture) details(res tool.Result) *tool.DiffDetails {
 	f.t.Helper()
-	details, ok := res.Details.(*builtin.WriteDetails)
+	details, ok := res.Details.(*tool.DiffDetails)
 	if !ok {
-		f.t.Fatalf("Details is %T, want *builtin.WriteDetails", res.Details)
+		f.t.Fatalf("Details is %T, want *tool.DiffDetails", res.Details)
 	}
 	return details
 }
@@ -464,8 +807,28 @@ type writeSpy struct {
 	rename   func(oldname, newname string) error
 	mkdirAll func(name string, perm fs.FileMode) error
 
+	// afterStat runs once the stat has answered, which is where a test stages
+	// something happening to the file between the calls the tool makes about it.
+	afterStat func(name string)
+	readFile  func(name string) ([]byte, error)
+
 	opened  []string
 	renamed [][2]string
+}
+
+func (s *writeSpy) Stat(name string) (fs.FileInfo, error) {
+	info, err := s.Workspace.Stat(name)
+	if s.afterStat != nil {
+		s.afterStat(name)
+	}
+	return info, err
+}
+
+func (s *writeSpy) ReadFile(name string) ([]byte, error) {
+	if s.readFile != nil {
+		return s.readFile(name)
+	}
+	return s.Workspace.ReadFile(name)
 }
 
 func (s *writeSpy) OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error) {

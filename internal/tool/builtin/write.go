@@ -20,17 +20,11 @@ type writeFS interface {
 	Resolve(name string) (string, error)
 	LockFile(name string) (func(), error)
 	Stat(name string) (fs.FileInfo, error)
+	ReadFile(name string) ([]byte, error)
 	MkdirAll(name string, perm fs.FileMode) error
 	OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error)
 	Rename(oldname, newname string) error
 	Remove(name string) error
-}
-
-// WriteDetails is the UI's payload for a completed write.
-type WriteDetails struct {
-	Path    string
-	Bytes   int
-	Created bool
 }
 
 type writeInput struct {
@@ -41,6 +35,12 @@ type writeInput struct {
 	// the file the model named while reporting success.
 	Content *string `json:"content" desc:"The file's entire new contents. An empty string writes an empty file."`
 }
+
+// maxDiffBytes is the largest file write will read back to diff. The read is
+// for the card and nothing else, so past this the write still happens and the
+// card says what it wrote — which beats holding a diff of a generated file for
+// the session and drawing more rows than a terminal has.
+const maxDiffBytes = 256 << 10
 
 const writeDescription = "Write a file, creating any parent directories that do not exist and replacing the " +
 	"file if it does. content is the file's entire new text, so prefer edit when changing part of a file. " +
@@ -115,12 +115,93 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 		perm = info.Mode().Perm()
 	}
 
+	// A diff is worth taking only when both sides of it are: the file being
+	// replaced, and the text replacing it. Bounding one alone is not a bound —
+	// a creation has no old side at all, so it would always be diffed however
+	// much was written.
+	diffable := len(*in.Content) <= maxDiffBytes && (created || info.Size() <= maxDiffBytes)
+
+	// The bytes about to be replaced, read under the same lock as the rename.
+	// The stat above and this are two moments, and the lock is rasp's own — a
+	// checkout or an editor can take the file away between them or put one
+	// there — so this is the later look and the one that decides.
+	//
+	// When the diff is not being taken there is nothing to read, but the later
+	// look still has to happen: a stat costs nothing and keeps the race handling
+	// below from switching itself off on file size.
+	var (
+		before  []byte
+		readErr error
+	)
+	if diffable {
+		before, readErr = w.ws.ReadFile(rel)
+	} else {
+		_, readErr = w.ws.Stat(rel)
+	}
+
+	// Not-there is the only answer meaning the path is empty; a mode that
+	// forbids reading still means a file is there.
+	existed := !errors.Is(readErr, fs.ErrNotExist)
+	arrived := created && existed
+	if !created && !existed {
+		// created outlives the wording: it is whether a mode was read to
+		// preserve, and a file that left leaves none.
+		created, perm = true, 0o666
+	}
+
+	// A file that arrived is one this session never read, which is what the
+	// tracker refuses. Its guard was skipped because the stat found nothing.
+	//
+	// Gone again by now is not a refusal: there is nothing left to protect, and
+	// treating a third turn of the same race as a failure would refuse a write
+	// that is once more an ordinary creation.
+	if arrived {
+		switch info, err := w.ws.Stat(rel); {
+		case errors.Is(err, fs.ErrNotExist):
+			// Gone again, so this is a creation once more, and everything read off
+			// the file that was briefly there goes with it: reported as a creation,
+			// and diffed against nothing, or Details carries deletions of lines the
+			// path never had under a headline saying it was created.
+			existed, before = false, nil
+		case err != nil:
+			return writeRefused(err.Error()), nil
+		default:
+			if err := refuseUnread(w.reads, rel, info.ModTime(), "overwriting it"); err != nil {
+				return writeRefused(err.Error()), nil
+			}
+			// It is there, so it has a mode and this is a replacement. Left as the
+			// creation the stat thought it was, the write lands at the umask
+			// default: a 0755 script loses its bit, a 0600 secret gains readers.
+			created, perm = false, info.Mode().Perm()
+
+			// And the cap applies again, having been decided against a path the
+			// stat found empty — so the read above was allowed any size.
+			if info.Size() > maxDiffBytes {
+				diffable, before = false, nil
+			}
+		}
+	}
+
+	data := []byte(*in.Content)
+
+	// A payload for the UI decides how the write is drawn, never whether it
+	// happens — replacing a file needs its directory, not the file, so one
+	// readable only by root is still replaceable. Without the old bytes there is
+	// no diff at all rather than one against nothing, which would claim every
+	// line is new. Built before the write, so a failure here is not a file
+	// already changed and a caller told the tool could not run.
+	var details *tool.DiffDetails
+	if diffable && (readErr == nil || errors.Is(readErr, fs.ErrNotExist)) {
+		// Failing to build one is the same as not having the bytes to build it
+		// from, and goes the same way: no Details, and the write still happens.
+		details, _ = diffDetails(rel, string(before), *in.Content, false)
+	}
+
 	dir := path.Dir(rel)
 	if err := w.ws.MkdirAll(dir, 0o777); err != nil {
 		return writeRefused(err.Error()), nil
 	}
 
-	data := []byte(*in.Content)
 	if err := w.replace(dir, rel, data, perm, created); err != nil {
 		// The inner error names the temporary file, which is not a path the
 		// model asked about.
@@ -128,15 +209,23 @@ func (w *writeTool) run(ctx context.Context, in writeInput) (tool.Result, error)
 	}
 	recordRead(w.reads, rel, w.ws.Stat)
 
-	summary := fmt.Sprintf("Replaced %s", rel)
-	if created {
-		summary = fmt.Sprintf("Created %s", rel)
+	summary := fmt.Sprintf("Created %s", rel)
+	if existed {
+		summary = fmt.Sprintf("Replaced %s", rel)
 	}
-	return tool.Result{
+	result := tool.Result{
+		// The diff stays in Details: it is what the UI draws, and the model just
+		// wrote the file it is a diff of.
 		Content: fmt.Sprintf("%s (%d bytes).", summary, len(data)),
 		Title:   summary,
-		Details: &WriteDetails{Path: rel, Bytes: len(data), Created: created},
-	}, nil
+	}
+	// Assigned only when there is one, because a nil *DiffDetails in an any is
+	// not a nil any: the UI's type assertion would succeed and hand it a pointer
+	// to dereference.
+	if details != nil {
+		result.Details = details
+	}
+	return result, nil
 }
 
 func (w *writeTool) replace(dir, rel string, data []byte, perm fs.FileMode, created bool) error {

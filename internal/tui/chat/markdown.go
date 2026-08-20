@@ -5,7 +5,9 @@ import (
 	"sync"
 
 	"charm.land/glamour/v2"
-	"charm.land/glamour/v2/styles"
+	// Aliased because this package also draws through internal/tui/styles, and
+	// one name resolving to two packages depending on the file is a trap.
+	glamourstyles "charm.land/glamour/v2/styles"
 )
 
 // md is the conversation's markdown renderer. One value for the whole package:
@@ -93,7 +95,7 @@ func renderer(width int) (*glamour.TermRenderer, error) {
 		return r, nil
 	}
 	r, err := glamour.NewTermRenderer(
-		glamour.WithStandardStyle(styles.DarkStyle),
+		glamour.WithStandardStyle(glamourstyles.DarkStyle),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {

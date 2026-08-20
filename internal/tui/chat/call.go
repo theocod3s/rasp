@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/theocod3s/rasp/internal/tool"
+	"github.com/theocod3s/rasp/internal/tui/diffview"
+	"github.com/theocod3s/rasp/internal/tui/styles"
 )
 
 // A card's first two columns: the marker saying there is more under it, or the
@@ -49,23 +51,57 @@ type Call struct {
 	Elapsed time.Duration
 
 	Expanded bool
+
+	// Background is the terminal's, and picks the palette a diff is drawn in.
+	// Passed in for the same reason Elapsed is.
+	Background styles.Background
 }
 
 func (c Call) Finished() bool { return c.State == CallDone }
 
-func (c Call) Render(width int) string {
-	body := c.body()
+// HasDiff reports that the card has a file change to show rather than a tool's
+// text output. Such a card is opened for the reader rather than by them: a
+// change one keypress short of visible is a path and a line count, which is the
+// gap this UI exists to close. A failing call is never one, however much it
+// changed — its content says what went wrong, and that comes first.
+func (c Call) HasDiff() bool {
+	return c.Result != nil && !c.Result.IsError && diffview.Draws(c.unified())
+}
 
+func (c Call) Render(width int) string {
 	// The headline is set in like the body and then gives its first two columns
 	// back to the marker. Wrapped whole instead, a summary too long for the
 	// terminal continues at column zero and reads as a line of its own.
 	head := inset(wrap(c.headline(), width-len(cardIndent)), cardIndent)
-	head = c.marker(body != "") + strings.TrimPrefix(head, cardIndent)
+	head = c.marker(c.opens()) + strings.TrimPrefix(head, cardIndent)
 
-	if body == "" || !c.Expanded {
+	if !c.Expanded {
 		return head
 	}
-	return head + "\n" + inset(wrap(body, width-len(cardIndent)), cardIndent)
+	// Only now, and never wrapped afterwards: wrapping a diff line draws one
+	// changed line as two, and a collapsed card that built its diff anyway would
+	// rebuild it on every frame after a collapse, which is exactly when the
+	// freeze that spared it has been dropped.
+	body := c.body(width)
+	if body == "" {
+		return head
+	}
+	return head + "\n" + inset(body, cardIndent)
+}
+
+// inner is the width left inside the card's indent, never zero or less — which
+// the diff renderer reads as "no size reported yet, do not cut", so a real
+// terminal too narrow for the indent must not arrive spelled that way or every
+// diff line goes out at full length and wraps.
+//
+// The diff alone uses it. Everything else here is wrapped rather than cut, and
+// wrap reads that same zero as "leave the line whole", which is the better
+// answer: clamping to a column breaks a line into one character per row.
+func inner(width int) int {
+	if width <= 0 {
+		return width
+	}
+	return max(1, width-len(cardIndent))
 }
 
 func (c Call) marker(expandable bool) string {
@@ -118,39 +154,95 @@ func (c Call) outcome() string {
 	if summary == "" {
 		summary = "done"
 	}
-	return strings.TrimPrefix(summary, c.Name+" ") + fuzzy(c.Result.Details)
+	return strings.TrimPrefix(summary, c.Name+" ") + c.fuzzy()
 }
 
 // fuzzy marks an edit whose old_string was found by a whitespace-normalized
 // rung of the match ladder rather than byte for byte. On the collapsed line
 // rather than in the body, because the file no longer reads as the model wrote
 // it and a reader who has to open the card to learn that learns it too late.
-//
-// The one thing a card reads out of Details today. Everything else a built-in
-// computes for the UI it also puts in Title or Content, and an MCP server's
-// Details is arbitrary decoded JSON — a card guessing at the shape of that
-// would be inventing facts rather than drawing them.
-func fuzzy(details any) string {
-	if d, ok := details.(*tool.DiffDetails); ok && d.Fuzzy {
+func (c Call) fuzzy() string {
+	if d := c.diff(); d != nil && d.Fuzzy {
 		return " (whitespace-normalized match)"
 	}
 	return ""
 }
 
-// body is what expanding the card shows: the output the model was given.
-func (c Call) body() string {
+// opens reports that the card has something under its line — the one place
+// that rule lives, so the marker and the body cannot disagree about whether
+// there is anything to open onto.
+func (c Call) opens() bool {
+	if c.State != CallDone || c.Result == nil {
+		return false
+	}
+	return c.HasDiff() || c.text() != ""
+}
+
+// body is what expanding the card shows, already drawn to width: the diff a
+// file change produced, or the output the model was given. The guard repeats
+// the cheap half of opens rather than calling it, so empty here and false there
+// stay the same set without a second pass over the diff.
+func (c Call) body(width int) string {
 	if c.State != CallDone || c.Result == nil {
 		return ""
 	}
+	// Drawn and then tested, rather than asked and then drawn: HasDiff walks the
+	// whole diff to answer, and this is the one caller that has to walk it
+	// anyway. Empty from a diff and no diff at all are the same card.
+	if !c.Result.IsError {
+		if drawn := diffview.Render(c.unified(), inner(width), styles.For(c.Background)); drawn != "" {
+			return drawn
+		}
+	}
+	return wrap(c.text(), width-len(cardIndent))
+}
+
+// text is the tool's output as the card shows it, and nothing when the line
+// above already says the whole of it: a failing tool writes no title, so that
+// line carries its content's first line, and where that is all there is,
+// opening the card would say the same sentence twice.
+func (c Call) text() string {
+	if c.Result == nil {
+		return ""
+	}
+	// Newlines only: leading spaces on the first line are output, not padding,
+	// and a column of right-aligned counts loses its top row to a trim.
 	content := strings.Trim(c.Result.Content, "\n")
 
-	// A failing tool writes no title, so the line above already carries the
-	// first line of its content. Where that is the whole of it, opening the card
-	// would only say the same sentence twice — so it does not offer to open.
+	// Whether there is anything to show is the other question, and that one does
+	// ask about whitespace: wrap takes trailing spaces away to nothing, so output
+	// kept here and lost there hangs a marker over a card that opens onto a
+	// blank line.
+	if strings.TrimSpace(content) == "" {
+		return ""
+	}
 	if c.Result.IsError && c.Result.Title == "" && content == firstLine(content) {
 		return ""
 	}
 	return content
+}
+
+// unified is the diff a tool that changed a file put in Details, and empty for
+// everything else: an edit that turned out to change nothing, which go-udiff
+// renders as no text at all, and an MCP server's structured output, which is
+// arbitrary decoded JSON a card guessing at its shape would invent facts from.
+func (c Call) unified() string {
+	if d := c.diff(); d != nil {
+		return d.Unified
+	}
+	return ""
+}
+
+// diff is the payload a tool that changed a file leaves for the UI, and nil for
+// everything else — an MCP server's arbitrary decoded JSON included. The one
+// route to that field, because a tool with nothing to report can leave a typed
+// nil in an any, and an assertion that asked only ok would dereference it.
+func (c Call) diff() *tool.DiffDetails {
+	if c.Result == nil {
+		return nil
+	}
+	d, _ := c.Result.Details.(*tool.DiffDetails)
+	return d
 }
 
 // elapsed is a duration as a card says it, and nothing for one too short to be

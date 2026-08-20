@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -132,23 +136,51 @@ func TestWriteHoldsTheFileLockAcrossItsStatAndRename(t *testing.T) {
 	}
 
 	editWrite(t, reads, dir, "notes.txt", "first")
+	// A mode the umask default is not, so the assertion below can tell the mode
+	// this file had from the one a create would get.
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(filepath.Join(dir, "notes.txt"), 0o640); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+	}
 	unlock()
 
 	result := arrive(t, second)
 	if result.IsError {
 		t.Fatalf("the write failed once the lock was released: %s", result.Content)
 	}
-	details, ok := result.Details.(*builtin.WriteDetails)
+	details, ok := result.Details.(*tool.DiffDetails)
 	if !ok {
-		t.Fatalf("Details is %T, want *builtin.WriteDetails", result.Details)
+		t.Fatalf("Details is %T, want *tool.DiffDetails", result.Details)
 	}
-	if details.Created {
-		t.Error("the write reported creating a file that already existed by the time it ran, so " +
-			"it stat'd the path before taking the lock")
+	// The diff is of what the write replaced, so it names the contents that
+	// appeared while the write waited. A write that read the path before taking
+	// the lock found nothing there and would report creating the file: every
+	// line added and none taken away.
+	if details.Deletions == 0 {
+		t.Errorf("the write's diff takes nothing away:\n%s\nso it read the path before taking the "+
+			"lock, and diffed against a file that was not there yet", details.Unified)
+	}
+	// And the mode, which is the half the diff cannot speak for: the stat that
+	// decides it runs inside the lock or it runs before the file it describes
+	// exists, and the replacement then lands with the process umask instead of
+	// the mode the concurrent writer left.
+	if runtime.GOOS != "windows" {
+		if got, want := editMode(t, dir, "notes.txt"), fs.FileMode(0o640); got != want {
+			t.Errorf("notes.txt is %v, want the %v it had: the stat that reads the mode ran before "+
+				"the lock, so it saw no file at all", got, want)
+		}
 	}
 	if got := editRead(t, dir, "notes.txt"); got != "second" {
 		t.Errorf("notes.txt reads %q, want %q", got, "second")
 	}
+}
+
+// editMode is a file's permission bits, for the tests that build a workspace
+// with editWorkspace rather than with a writeFixture.
+func editMode(t *testing.T, dir, rel string) fs.FileMode {
+	t.Helper()
+	return (&writeFixture{t: t, dir: dir}).mode(rel)
 }
 
 func lock(t *testing.T, ws *workspace.Workspace, name string) func() {

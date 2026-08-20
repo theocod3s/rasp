@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/theocod3s/rasp/internal/agent"
 	"github.com/theocod3s/rasp/internal/llm"
@@ -209,6 +210,176 @@ func TestExpandingShowsWhatEveryCallProduced(t *testing.T) {
 	m, _ = m.Update(expandKey)
 	if frame := words(m.View().Content); strings.Contains(frame, output) {
 		t.Errorf("the card did not close again:\n%s", frame)
+	}
+}
+
+// TestAFileChangeIsDrawnWithoutAnyoneAskingForIt. Every other card opens on a
+// keypress, and a diff behind one is a transcript whose default state is a path
+// and a line count — the gap in the reference implementations that this UI
+// exists to close. The toggle still wins afterwards, so a reader who wants the
+// conversation small can have it.
+func TestAFileChangeIsDrawnWithoutAnyoneAskingForIt(t *testing.T) {
+	const line = "-return parse(header)"
+
+	var m tea.Model = Model{}
+	for _, ev := range []agent.Event{
+		{Kind: agent.EventToolStart, CallID: "call_1", Tool: "edit"},
+		{Kind: agent.EventToolEnd, CallID: "call_1", Tool: "edit", Result: edit()},
+	} {
+		m, _ = m.Update(agentMsg{event: ev})
+	}
+
+	if frame := words(m.View().Content); !strings.Contains(frame, line) {
+		t.Fatalf("the diff is behind a keypress:\n%s", frame)
+	}
+
+	// One press, not two. A toggle that remembered the last press rather than
+	// reading the cards would do nothing here — the flag would say closed while
+	// the screen said open, and the press would only bring the two into
+	// agreement — so the reader presses the close key and the frame stands.
+	m, _ = m.Update(expandKey)
+	if frame := words(m.View().Content); strings.Contains(frame, line) {
+		t.Errorf("the first press did not close a card that opened itself:\n%s", frame)
+	}
+
+	m, _ = m.Update(expandKey)
+	if frame := words(m.View().Content); !strings.Contains(frame, line) {
+		t.Errorf("the next press did not open it again:\n%s", frame)
+	}
+}
+
+// TestACollapsedConversationStaysCollapsedAsMoreChangesLand. A diff opens
+// itself, and a reader who does not want that says so once. A turn making
+// eight edits must not ask them eight more times — which is what a card
+// deciding for itself on every result, with nothing recording that the reader
+// had already answered, would do.
+func TestACollapsedConversationStaysCollapsedAsMoreChangesLand(t *testing.T) {
+	const line = "-return parse(header)"
+
+	var m tea.Model = Model{}
+	m, _ = m.Update(agentMsg{event: agent.Event{
+		Kind: agent.EventToolEnd, CallID: "call_1", Tool: "edit", Result: edit(),
+	}})
+	m, _ = m.Update(expandKey)
+
+	if frame := words(m.View().Content); strings.Contains(frame, line) {
+		t.Fatalf("the press did not collapse the conversation:\n%s", frame)
+	}
+
+	m, _ = m.Update(agentMsg{event: agent.Event{
+		Kind: agent.EventToolEnd, CallID: "call_2", Tool: "edit", Result: edit(),
+	}})
+	if frame := words(m.View().Content); strings.Contains(frame, line) {
+		t.Errorf("the next change opened itself over the reader's answer:\n%s", frame)
+	}
+
+	// And the reader can still get all of it back.
+	m, _ = m.Update(expandKey)
+	if frame := words(m.View().Content); !strings.Contains(frame, line) {
+		t.Errorf("nothing reopened:\n%s", frame)
+	}
+}
+
+// TestTheToggleStillTogglesWithNothingToRead. Reading the direction off the
+// cards has nothing to read before any tool has run, and "nothing is open"
+// every time means opening every time — so two presses would leave the
+// conversation set to open, and the next call would arrive with its body
+// showing.
+func TestTheToggleStillTogglesWithNothingToRead(t *testing.T) {
+	var m tea.Model = Model{}
+	m, _ = m.Update(expandKey)
+	m, _ = m.Update(expandKey)
+
+	m, _ = m.Update(agentMsg{event: agent.Event{
+		Kind: agent.EventToolEnd, CallID: "call_1", Tool: "read",
+		Result: &tool.Result{Title: "read auth.go (1 line)", Content: "1\tpackage auth"},
+	}})
+
+	if frame := words(m.View().Content); strings.Contains(frame, "package auth") {
+		t.Errorf("the card arrived open after two presses that should have cancelled out:\n%s", frame)
+	}
+}
+
+// TestALightTerminalRedrawsEveryDiffInItsOwnPalette. The background query is
+// answered after the program has drawn its first frames, and a finished card's
+// render is frozen at the colours it was drawn in — so an answer that only
+// reached the cards after it would leave the conversation half in each palette.
+func TestALightTerminalRedrawsEveryDiffInItsOwnPalette(t *testing.T) {
+	edited := func() tea.Model {
+		var m tea.Model = Model{}
+		for _, ev := range []agent.Event{
+			{Kind: agent.EventToolStart, CallID: "call_1", Tool: "edit"},
+			{Kind: agent.EventToolEnd, CallID: "call_1", Tool: "edit", Result: edit()},
+		} {
+			m, _ = m.Update(agentMsg{event: ev})
+		}
+		return m
+	}
+
+	unasked := edited().View().Content
+
+	answered, _ := edited().Update(tea.BackgroundColorMsg{Color: lipgloss.Color("#ffffff")})
+	onLight := answered.View().Content
+
+	switch {
+	case unasked == onLight:
+		t.Fatal("a light terminal drew the same bytes as one that never answered, so the answer " +
+			"reached nothing already on the screen")
+	case words(unasked) != words(onLight):
+		t.Errorf("the answer changed the text and not only the colours:\n%s\n\n%s", words(unasked), words(onLight))
+	}
+
+	// A dark answer leaves the frame as it already was, which is what makes the
+	// unanswered default a whole palette rather than a missing one.
+	same, _ := edited().Update(tea.BackgroundColorMsg{Color: lipgloss.Color("#000000")})
+	if got := same.View().Content; got != unasked {
+		t.Errorf("a dark terminal drew something other than the default:\n%s\n\n%s", unasked, got)
+	}
+
+	// And a call that arrives after the answer is drawn in the palette too. The
+	// redraw above reaches the cards that already exist; a card built later is
+	// handed the background instead, and only one of the two routes being wired
+	// leaves a conversation half in each palette.
+	later, _ := answered.Update(agentMsg{event: agent.Event{
+		Kind: agent.EventToolEnd, CallID: "call_2", Tool: "edit", Result: edit(),
+	}})
+	deleted := opening(later.View().Content, "-return parse(header)")
+	if len(deleted) != 2 {
+		t.Fatalf("%d rows delete that line, and two cards each drawing the diff is 2:\n%s",
+			len(deleted), later.View().Content)
+	}
+	if deleted[0] != deleted[1] {
+		t.Errorf("the card drawn before the answer opens %q and the one drawn after opens %q",
+			deleted[0], deleted[1])
+	}
+}
+
+// opening is the escape sequence each row saying want begins with. A row with
+// none contributes an empty string rather than being skipped, so a class that
+// lost its colour reads as a difference instead of as nothing to compare.
+func opening(frame, want string) []string {
+	var found []string
+	for _, row := range strings.Split(frame, "\n") {
+		if !strings.Contains(words(row), want) {
+			continue
+		}
+		var code string
+		if i := strings.IndexByte(row, 0x1b); i >= 0 {
+			if j := strings.IndexByte(row[i:], 'm'); j >= 0 {
+				code = row[i : i+j+1]
+			}
+		}
+		found = append(found, code)
+	}
+	return found
+}
+
+// edit is a finished edit carrying the diff it applied.
+func edit() *tool.Result {
+	return &tool.Result{
+		Title: "auth.go +1 -1",
+		Details: &tool.DiffDetails{Path: "auth.go", Additions: 1, Deletions: 1, Unified: "--- a/auth.go\n" +
+			"+++ b/auth.go\n@@ -8,2 +8,2 @@\n-return parse(header)\n+return r.claims()\n"},
 	}
 }
 
