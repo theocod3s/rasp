@@ -39,11 +39,20 @@ func New(cfg Config, opts ...tea.ProgramOption) *Program {
 // on a full mailbox, where everything but an assistant delta waits its turn.
 func (p *Program) Events(ev agent.Event) { p.bridge.handle(ev) }
 
+// Prompt is permission.Prompter: it publishes a request the ladder could not
+// answer from state and returns, on the goroutine of the tool call blocked on
+// it (design §7.7 rung 5). The answer travels the other way, through the
+// Permissions given to Run.
+func (p *Program) Prompt(req permission.Request) { p.bridge.prompt(req) }
+
 // Run draws until the user quits, and returns whatever ended it.
 //
-// The agent arrives here rather than at New because agent.Config.Events is fixed
-// when the agent is built, and what it points at is this program's own sink.
-func (p *Program) Run(a Turner) error {
+// The agent and the permission service arrive here rather than at New because
+// each is built around something this program already owns: the agent around
+// Events, and the service around Prompt. A nil Permissions is a session with no
+// gate composed onto it — every tool runs, and a question arriving anyway is
+// drawn as a notice rather than as an answerable prompt.
+func (p *Program) Run(a Turner, answers Permissions) error {
 	if a == nil {
 		return errors.New("the program has no agent, so there would be nothing for a prompt to reach")
 	}
@@ -53,7 +62,10 @@ func (p *Program) Run(a Turner) error {
 	// turn running against a UI that has gone.
 	ctx, cancel := context.WithCancel(context.Background())
 
-	prog := tea.NewProgram(newModel(ctx, a, p.cfg), p.opts...)
+	m := newModel(ctx, a, p.cfg)
+	m.permissions = answers
+
+	prog := tea.NewProgram(m, p.opts...)
 	p.bridge.start(prog)
 	defer p.bridge.stop()
 

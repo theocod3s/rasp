@@ -40,11 +40,13 @@ func goldenConfig() Config {
 }
 
 // snapshot is one state of the UI worth freezing: the prompt that starts a turn,
-// the events the loop then emits into it, and anything the user typed after.
+// the events the loop then emits into it, the question a gated tool call put to
+// the user, and anything they typed after.
 type snapshot struct {
 	name   string
 	prompt string
 	events []agent.Event
+	ask    *permission.Request
 	keys   []tea.KeyPressMsg
 }
 
@@ -145,6 +147,18 @@ func snapshots() []snapshot {
 		// The same conversation with every card opened, which is the only state
 		// that draws what a tool actually returned.
 		{name: "expanded", prompt: prompt, events: tools, keys: []tea.KeyPressMsg{expandKey}},
+		// A gated call, waiting on the user. The cards for the batch are already
+		// drawn and queued, and the question stands under them where it was
+		// asked — which is the whole of what "inline" means here.
+		{name: "prompt", prompt: prompt, events: []agent.Event{
+			{Kind: agent.EventAssistantDelta, Message: explained},
+			{Kind: agent.EventAssistantEnd, Message: explained},
+		}, ask: &permission.Request{
+			CallID: "call_2",
+			Tool:   "edit",
+			Action: permission.ActionEdit,
+			Path:   "auth.go",
+		}},
 		// A batch part way through: the second call is running and the first has
 		// not started, so the frame is the one that would reorder itself if the
 		// cards were built from tool_start rather than from the message above.
@@ -286,6 +300,9 @@ func draw(t *testing.T, state snapshot) string {
 	for _, ev := range state.events {
 		tm.Send(agentMsg{event: ev})
 	}
+	if state.ask != nil {
+		tm.Send(promptMsg{request: *state.ask})
+	}
 	for _, key := range state.keys {
 		tm.Send(key)
 	}
@@ -304,6 +321,10 @@ func program(t *testing.T) (*teatest.TestModel, *turner) {
 
 	turner := newTurner(agent.ErrInterrupted)
 	m := newModel(t.Context(), turner, goldenConfig())
+	// Enough of a permission service for a question to be drawn as one. Without
+	// it a question is drawn as the notice saying nothing can answer it, which is
+	// a different state and not the one these frames are recording.
+	m.permissions = &answers{decided: true}
 	// A stopped clock, so no card shows an elapsed time. Real time would put a
 	// duration into the frames that depends on how fast the machine drained the
 	// queue, and a beat firing between two sends would move it again. What a

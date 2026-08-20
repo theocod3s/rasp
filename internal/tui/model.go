@@ -12,6 +12,7 @@ import (
 
 	"github.com/theocod3s/rasp/internal/agent"
 	"github.com/theocod3s/rasp/internal/llm"
+	"github.com/theocod3s/rasp/internal/permission"
 	"github.com/theocod3s/rasp/internal/tui/chat"
 	"github.com/theocod3s/rasp/internal/tui/styles"
 )
@@ -26,6 +27,16 @@ type Model struct {
 	width, height int
 
 	turner Turner
+
+	// permissions answers the questions the permission service opened. nil is a
+	// UI nothing composed a gate onto, where a question that arrives anyway is
+	// drawn as a notice saying so rather than as a prompt (prompt.go).
+	permissions Permissions
+
+	// asked is the questions waiting on the user, oldest first, and opened is
+	// when the first of them was drawn — the two halves of prompt.go's state.
+	asked  []permission.Request
+	opened time.Time
 
 	// ctx is the program's, and every turn's context descends from it. Bubble Tea
 	// answers a signal by ending the event loop rather than by calling Update, so
@@ -147,6 +158,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.press(msg)
 	case agentMsg:
 		return m.apply(msg.event)
+	case promptMsg:
+		return m.ask(msg.request), nil
 	case tickMsg:
 		return m.beat()
 	case turnDone:
@@ -171,6 +184,11 @@ func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		return m, tea.Quit
 	case key.Code == tea.KeyEscape:
 		return m.escape(), nil
+	case m.asking():
+		// Every key while a question stands, not only the three that answer it:
+		// the turn is blocked on the answer, so a line composed now has nowhere
+		// to be sent (prompt.go).
+		return m.answer(key), nil
 	case key.Code == tea.KeyEnter:
 		return m.submit()
 	case key.Mod == tea.ModCtrl && key.Code == 'r':
@@ -259,7 +277,7 @@ func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
 		m.busy = false
 		m.armed = false
 		m.status = m.status.turnEnded(ev.Usage)
-		m = m.settle()
+		m = m.settle().dismissAll()
 	}
 	return m, nil
 }
