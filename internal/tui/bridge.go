@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/theocod3s/rasp/internal/agent"
+	"github.com/theocod3s/rasp/internal/permission"
 )
 
 // sender is the half of *tea.Program the pump uses: Send is the only entry into
@@ -15,18 +16,19 @@ type sender interface{ Send(tea.Msg) }
 
 type agentMsg struct{ event agent.Event }
 
-// mailbox is how many events may wait for the UI before droppable applies.
+// mailbox is how many messages may wait for the UI before droppable applies.
 const mailbox = 128
 
-// bridge is the agent → UI seam: the turn's goroutine hands events to handle,
-// one goroutine carries them to Program.Send, and nothing else crosses.
+// bridge is the agent → UI seam: the turn's goroutine hands over an event or a
+// permission request, one goroutine carries it to Program.Send, and nothing
+// else crosses.
 //
 // The goroutine is the point. tea.Program's own mailbox is unbuffered, so Send
 // blocks until Update takes the message — calling it from handle would stall the
 // turn behind the render loop, and every other tool's events behind that
 // (decisions.md, on the agent serialising its callback).
 type bridge struct {
-	events  chan agentMsg
+	msgs    chan tea.Msg
 	done    chan struct{}
 	stopped chan struct{}
 	once    sync.Once
@@ -34,7 +36,7 @@ type bridge struct {
 
 func newBridge() *bridge {
 	return &bridge{
-		events:  make(chan agentMsg, mailbox),
+		msgs:    make(chan tea.Msg, mailbox),
 		done:    make(chan struct{}),
 		stopped: make(chan struct{}),
 	}
@@ -42,16 +44,26 @@ func newBridge() *bridge {
 
 // handle is what agent.Config.Events receives, on the turn's own goroutine.
 func (b *bridge) handle(ev agent.Event) {
-	msg := agentMsg{event: detach(ev)}
-	if droppable(ev.Kind) {
+	b.send(agentMsg{event: detach(ev)}, droppable(ev.Kind))
+}
+
+// prompt carries a permission request in, on the goroutine of the tool call
+// that is blocked waiting for the answer. Never dropped: a question the mailbox
+// discarded is a turn waiting on an answer to a question nobody was asked.
+func (b *bridge) prompt(req permission.Request) {
+	b.send(promptMsg{request: req}, false)
+}
+
+func (b *bridge) send(msg tea.Msg, lossy bool) {
+	if lossy {
 		select {
-		case b.events <- msg:
+		case b.msgs <- msg:
 		default:
 		}
 		return
 	}
 	select {
-	case b.events <- msg:
+	case b.msgs <- msg:
 	case <-b.done:
 	}
 }
@@ -61,7 +73,7 @@ func (b *bridge) start(s sender) {
 		defer close(b.stopped)
 		for {
 			select {
-			case msg := <-b.events:
+			case msg := <-b.msgs:
 				s.Send(msg)
 			case <-b.done:
 				return

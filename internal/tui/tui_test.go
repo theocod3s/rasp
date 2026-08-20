@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/theocod3s/rasp/internal/agent"
+	"github.com/theocod3s/rasp/internal/permission"
 	"github.com/theocod3s/rasp/internal/tui"
 )
 
@@ -36,7 +37,7 @@ func TestRunEndsThePumpWithTheProgram(t *testing.T) {
 	p := tui.New(tui.Config{}, headless(typing(ctrlC))...)
 
 	stopped := make(chan error, 1)
-	go func() { stopped <- p.Run(idleTurner{}) }()
+	go func() { stopped <- p.Run(idleTurner{}, nil) }()
 
 	p.Events(agent.Event{Kind: agent.EventAssistantEnd})
 	p.Events(agent.Event{Kind: agent.EventTurnEnd})
@@ -61,7 +62,7 @@ func TestTheUIKeepsHandlingKeysWhileATurnRuns(t *testing.T) {
 	p := tui.New(tui.Config{}, headless(typing("hi"+enter+ctrlC))...)
 
 	stopped := make(chan error, 1)
-	go func() { stopped <- p.Run(turner) }()
+	go func() { stopped <- p.Run(turner, nil) }()
 
 	select {
 	case err := <-stopped:
@@ -102,7 +103,7 @@ func TestAProgramStoppedWithoutUpdateStillEndsItsTurn(t *testing.T) {
 	p := tui.New(tui.Config{}, headless(tea.WithInput(keys), tea.WithContext(ctx))...)
 
 	stopped := make(chan error, 1)
-	go func() { stopped <- p.Run(turner) }()
+	go func() { stopped <- p.Run(turner, nil) }()
 
 	if _, err := io.WriteString(keyboard, "hi"+enter); err != nil {
 		t.Fatalf("typing into the program: %v", err)
@@ -142,7 +143,7 @@ func TestRunWaitsForTheInFlightTurnBeforeReturning(t *testing.T) {
 	p := tui.New(tui.Config{}, headless(typing("hi"+enter+ctrlC))...)
 
 	stopped := make(chan error, 1)
-	go func() { stopped <- p.Run(turner) }()
+	go func() { stopped <- p.Run(turner, nil) }()
 
 	select {
 	case <-turner.entered:
@@ -168,6 +169,65 @@ func TestRunWaitsForTheInFlightTurnBeforeReturning(t *testing.T) {
 	}
 }
 
+// TestRunCarriesAQuestionToTheScreenAndTheAnswerBack is the wiring this program
+// is the only place to check: Prompt is what a permission service is built
+// around and Run is where the thing that answers arrives, so a program that
+// published questions nobody could answer would pass every test below the
+// Program and hang on the first gated tool call.
+//
+// The key is retried rather than pressed once. A question absorbs the
+// keystrokes just after it opens, and what this asserts is the path, not the
+// pause — which is timed against a clock a test owns elsewhere.
+func TestRunCarriesAQuestionToTheScreenAndTheAnswerBack(t *testing.T) {
+	keys, keyboard := io.Pipe()
+	defer keyboard.Close()
+
+	answers := &recordingAnswers{given: make(chan permission.Decision, 8)}
+	turner := &askingTurner{asked: make(chan struct{})}
+	p := tui.New(tui.Config{}, headless(tea.WithInput(keys))...)
+	turner.program = p
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- p.Run(turner, answers) }()
+
+	if _, err := io.WriteString(keyboard, "edit it"+enter); err != nil {
+		t.Fatalf("typing the prompt that starts the turn: %v", err)
+	}
+	select {
+	case <-turner.asked:
+	case <-time.After(settle):
+		t.Fatal("no turn ever started, so nothing published a question")
+	}
+
+	for deadline := time.After(settle); ; {
+		if _, err := io.WriteString(keyboard, "y"); err != nil {
+			t.Fatalf("answering the question: %v", err)
+		}
+		select {
+		case decision := <-answers.given:
+			if decision != permission.DecisionOnce {
+				t.Errorf("the y key answered %q, want %q", decision, permission.DecisionOnce)
+			}
+			if _, err := io.WriteString(keyboard, ctrlC); err != nil {
+				t.Fatalf("quitting: %v", err)
+			}
+			select {
+			case err := <-stopped:
+				if err != nil {
+					t.Fatalf("Run returned %v", err)
+				}
+			case <-time.After(settle):
+				t.Fatal("Run did not return after ctrl+c")
+			}
+			return
+		case <-time.After(50 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("the question never reached the permission service, so a gated tool call " +
+				"would block for the rest of the session")
+		}
+	}
+}
+
 // headless is a program with no terminal at either end.
 func headless(opts ...tea.ProgramOption) []tea.ProgramOption {
 	return append([]tea.ProgramOption{
@@ -183,6 +243,41 @@ func typing(keys string) tea.ProgramOption { return tea.WithInput(strings.NewRea
 type idleTurner struct{}
 
 func (idleTurner) Send(context.Context, string) error { return nil }
+
+// askingTurner publishes a permission question the way a tool call blocked on
+// one does — on the turn's own goroutine, returning nothing — and then stays in
+// Send until the turn is cancelled.
+type askingTurner struct {
+	program *tui.Program
+	asked   chan struct{}
+}
+
+func (a *askingTurner) Send(ctx context.Context, _ string) error {
+	a.program.Prompt(permission.Request{
+		CallID: "call_1",
+		Tool:   "edit",
+		Action: permission.ActionEdit,
+		Path:   "auth.go",
+	})
+	close(a.asked)
+	<-ctx.Done()
+	return agent.ErrInterrupted
+}
+
+// recordingAnswers is the permission service's half of the seam. The send never
+// blocks: Resolve is called from Update, and a test that stopped reading would
+// take the whole UI with it rather than fail.
+type recordingAnswers struct{ given chan permission.Decision }
+
+func (r *recordingAnswers) Resolve(_ string, d permission.Decision) bool {
+	select {
+	case r.given <- d:
+	default:
+	}
+	return true
+}
+
+func (r *recordingAnswers) SetMode(permission.Mode) error { return nil }
 
 // waitingTurner stays in Send until its turn is cancelled, and reports how the
 // context ended. release is nil for the ordinary case; a test that needs Send

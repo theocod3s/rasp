@@ -74,7 +74,10 @@ func (m Model) finish(done turnDone) Model {
 	m.cancel = nil
 	m.busy = false
 	m.armed = false
-	return m.report(done.err)
+	// On both routes out of a turn, as busy and armed are: a question outliving
+	// the turn that asked it is one nothing can answer (prompt.go), and which of
+	// the two arrives first is not promised.
+	return m.dismissAll().report(done.err)
 }
 
 // report keeps a failure for the frame to draw — except an interruption, which
