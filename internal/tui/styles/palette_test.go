@@ -128,19 +128,17 @@ func TestFaintIsFainterThanMuted(t *testing.T) {
 // near-black most terminal themes settle on. Contrast is worse on a lighter
 // dark background, so the darker one is the generous case and every bound
 // measured against it is a bound on the palette, not a promise about a session.
-func backgrounds() []struct {
-	name    string
-	palette styles.Palette
-	on      [3]float64
-} {
-	return []struct {
-		name    string
-		palette styles.Palette
-		on      [3]float64
-	}{
+func backgrounds() []onBackground {
+	return []onBackground{
 		{"light", styles.For(styles.Light), rgb(0xff, 0xff, 0xff)},
 		{"dark", styles.For(styles.Dark), rgb(0x0d, 0x11, 0x17)},
 	}
+}
+
+type onBackground struct {
+	name    string
+	palette styles.Palette
+	on      [3]float64
 }
 
 // foreground is a token's colour as three channels in 0..1.

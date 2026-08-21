@@ -62,14 +62,14 @@ func TestThinkingNeverReachesTheMarkdownRenderer(t *testing.T) {
 	const width = 60
 
 	var seen []string
-	restore(t, &markdown{draw: func(src string, width int) string {
+	renderThrough(t, &markdown{draw: func(src string, width int) string {
 		seen = append(seen, src)
 		return glamourBlock(src, width)
 	}})
 
 	doc := corpus["fenced code between prose"]
 	for n := 1; n <= len(doc); n++ {
-		thoughtful(aloud, doc[:n]).Render(width)
+		reasoning(aloud, doc[:n]).Render(width)
 	}
 
 	if len(seen) == 0 {
@@ -92,10 +92,10 @@ func TestThinkingLeavesTheReplysBoundariesWhereTheyWere(t *testing.T) {
 
 	for name, doc := range corpus {
 		t.Run(name, func(t *testing.T) {
-			restore(t, &markdown{draw: glamourBlock})
+			renderThrough(t, &markdown{draw: glamourBlock})
 
 			for n := 1; n <= len(doc); n++ {
-				drawn := thoughtful(aloud, doc[:n]).Render(width)
+				drawn := reasoning(aloud, doc[:n]).Render(width)
 				body, ok := strings.CutPrefix(drawn, head)
 				if !ok {
 					t.Fatalf("the first %d bytes of the reply drew\n%s\nand the thinking above them is\n%s",
@@ -115,18 +115,19 @@ func TestThinkingLeavesTheReplysBoundariesWhereTheyWere(t *testing.T) {
 	}
 }
 
-// thoughtful is a reply that thought first, as the conversation draws it.
-func thoughtful(thinking, text string) Message {
+// reasoning is a reply that worked through something first, as the conversation
+// draws it.
+func reasoning(thinking, text string) Message {
 	return Message{Content: llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
 		{Type: llm.BlockThinking, Text: thinking},
 		{Type: llm.BlockText, Text: text},
 	}}}
 }
 
-// restore swaps the package renderer for the length of one test. Message.Render
-// draws through that one rather than through a renderer handed to it, so this is
-// the only way to see what it was given.
-func restore(t *testing.T, with *markdown) {
+// renderThrough swaps the package renderer for the length of one test.
+// Message.Render draws through that one rather than through a renderer handed
+// to it, so this is the only way to see what it was given.
+func renderThrough(t *testing.T, with *markdown) {
 	t.Helper()
 
 	was := md

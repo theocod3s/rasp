@@ -49,7 +49,10 @@ func TestThinkingIsFainterThanTheReplyItIsAbove(t *testing.T) {
 	const width = 60
 
 	drawn := chat.Message{Content: thoughtful(theThought, theReply), Done: true}.Render(width)
-	head, body, _ := strings.Cut(drawn, "\n\n")
+	head, body, split := strings.Cut(drawn, "\n\n")
+	if !split {
+		t.Fatalf("the message drew one segment, and there is nothing to compare:\n%s", drawn)
+	}
 
 	dim, bright := luminance(t, head), luminance(t, body)
 	if dim >= bright {
