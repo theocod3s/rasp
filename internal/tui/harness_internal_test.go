@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -60,6 +61,11 @@ type snapshot struct {
 	events []agent.Event
 	ask    *permission.Request
 	keys   []tea.KeyPressMsg
+
+	// after moves the fake clock on once the events have landed, which is how a
+	// frame gets an animation on it: the spinner glyph and the elapsed times are
+	// read off that clock, so naming the instant names the frame.
+	after time.Duration
 }
 
 // snapshots are the states a golden is kept for. Deliberately few: every ticket
@@ -177,8 +183,8 @@ func snapshots() []snapshot {
 		// of what design §7.8 asks the line to do while it is armed.
 		{name: "yolo", keys: append(typedLine("/yolo"), typedLine("/yolo "+yoloConfirm)...)},
 		// The first Esc against a running turn, which arms rather than cancels
-		// (design §6 rule 7) — the hint replacing "working…" is the only thing
-		// this state exists to draw.
+		// (design §6 rule 7) — the arm taking the activity line's hint half is the
+		// only thing this state exists to draw.
 		{name: "armed", prompt: prompt, keys: []tea.KeyPressMsg{key(tea.KeyEscape)}},
 		// The first Ctrl-C, Esc's sibling arm (design §6 rule 7): its own hint
 		// drawn in the same place, over a turn it has already cancelled — proof
@@ -230,6 +236,16 @@ func snapshots() []snapshot {
 			{Kind: agent.EventToolStart, CallID: "call_4", Tool: "write"},
 			{Kind: agent.EventToolEnd, CallID: "call_4", Tool: "write", Result: created},
 			{Kind: agent.EventTurnEnd},
+		}},
+		// A turn caught two and a half seconds in, which is the one frame here
+		// that has an animation on it: the spinner is on the glyph that elapsed
+		// names, the activity line carries the turn's own running time, and the
+		// status line is reading what the provider has reported of this step so
+		// far rather than the total it will settle on.
+		{name: "animated", prompt: prompt, after: 2500 * time.Millisecond, events: []agent.Event{
+			{Kind: agent.EventAssistantDelta, Message: spent(
+				reply("Reading `auth_test.go` now. The header is parsed"),
+				llm.Usage{Input: 812, Output: 47, CacheRead: 11204})},
 		}},
 		// A step that failed mid-reply: the fragment is settled rather than left
 		// open, and the failure is drawn under it.
@@ -346,7 +362,7 @@ func TestAResizeRedrawsTheConversationAtItsNewWidth(t *testing.T) {
 		narrow = 24
 	)
 
-	tm, turner := program(t)
+	tm, turner, _ := program(t)
 	submit(t, tm, turner, prompt)
 	tm.Send(tea.WindowSizeMsg{Width: narrow, Height: goldenHeight})
 
@@ -370,12 +386,18 @@ func TestAResizeRedrawsTheConversationAtItsNewWidth(t *testing.T) {
 func draw(t *testing.T, state snapshot) string {
 	t.Helper()
 
-	tm, turner := program(t)
+	tm, turner, clock := program(t)
 	if state.prompt != "" {
 		submit(t, tm, turner, state.prompt)
 	}
 	for _, ev := range state.events {
 		tm.Send(agentMsg{event: ev})
+	}
+	if state.after > 0 {
+		clock.pass(state.after)
+		// And a beat behind it, because a running card is handed its elapsed time
+		// by the beat rather than reading the clock itself (chat.Call.Elapsed).
+		tm.Send(tickMsg{})
 	}
 	if state.ask != nil {
 		tm.Send(promptMsg{request: *state.ask})
@@ -397,7 +419,7 @@ func draw(t *testing.T, state snapshot) string {
 //
 // The turner it comes back with stays in Send until the test's context ends,
 // which is what holds a turn open long enough for a frame to be taken mid-flight.
-func program(t *testing.T) (*teatest.TestModel, *turner) {
+func program(t *testing.T) (*teatest.TestModel, *turner, *clock) {
 	t.Helper()
 
 	turner := newTurner(agent.ErrInterrupted)
@@ -406,18 +428,33 @@ func program(t *testing.T) (*teatest.TestModel, *turner) {
 	// it a question is drawn as the notice saying nothing can answer it, which is
 	// a different state and not the one these frames are recording.
 	m.permissions = &answers{decided: true}
-	// A stopped clock, so no card shows an elapsed time. Real time would put a
-	// duration into the frames that depends on how fast the machine drained the
-	// queue, and a beat firing between two sends would move it again. What a
-	// card draws for an elapsed time is asserted against a clock a test names
-	// instead (cards_internal_test.go).
-	m.now = func() time.Time { return goldenNow }
+	// A clock the snapshot moves rather than the machine. Real time would put a
+	// duration into the frames that depends on how fast the queue drained, and a
+	// beat firing between two sends would move it again; a state that wants an
+	// animation on it names the instant instead (snapshot.after).
+	fake := newClock(goldenNow)
+	m.now = fake.read
 
 	return teatest.NewTestModel(t, m,
 		teatest.WithInitialTermSize(goldenWidth, goldenHeight),
 		teatest.WithProgramOptions(tea.WithoutRenderer()),
-	), turner
+	), turner, fake
 }
+
+// clock is time a test moves by hand. Atomic because a snapshot moves it from
+// the test's own goroutine while a running program reads it on Bubble Tea's;
+// the tests that drive Update themselves never cross that line and pay nothing
+// for it.
+type clock struct{ nanos atomic.Int64 }
+
+func newClock(at time.Time) *clock {
+	c := &clock{}
+	c.nanos.Store(at.UnixNano())
+	return c
+}
+
+func (c *clock) read() time.Time      { return time.Unix(0, c.nanos.Load()) }
+func (c *clock) pass(d time.Duration) { c.nanos.Add(int64(d)) }
 
 // submit types a line, sends it, and waits for the turn it starts. The turn runs
 // on a goroutine of its own, so waiting is what orders everything after it

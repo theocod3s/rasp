@@ -34,7 +34,7 @@ func TestUpdateDrawsWhatATurnProduced(t *testing.T) {
 	}
 
 	frame := words(m.View().Content)
-	for _, want := range []string{"Reading it now.", "read running", "write failed", "working…"} {
+	for _, want := range []string{"Reading it now.", "read running", "write failed", "running read"} {
 		if !strings.Contains(frame, want) {
 			t.Errorf("the frame does not mention %q:\n%s", want, frame)
 		}
@@ -52,7 +52,7 @@ func TestUpdateDrawsWhatATurnProduced(t *testing.T) {
 	if !strings.Contains(frame, "the stream broke") {
 		t.Errorf("the frame does not carry the turn's error:\n%s", frame)
 	}
-	if strings.Contains(frame, "working…") {
+	if strings.Contains(frame, hintInterrupt) {
 		t.Errorf("the frame still says the turn is running after it ended:\n%s", frame)
 	}
 	// The reply is committed once. A delta whose item the end event failed to

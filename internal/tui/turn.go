@@ -37,7 +37,7 @@ func (m Model) begin() (Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.cancel = cancel
 	m.input = ""
-	m.busy = true
+	m = m.busied()
 	m.err = nil
 	m.chat.Append(chat.Message{
 		Content: llm.Message{

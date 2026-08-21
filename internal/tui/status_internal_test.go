@@ -2,16 +2,20 @@ package tui
 
 import (
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theocod3s/rasp/internal/agent"
 	"github.com/theocod3s/rasp/internal/llm"
+	"github.com/theocod3s/rasp/internal/llm/fake"
 	"github.com/theocod3s/rasp/internal/permission"
+	"github.com/theocod3s/rasp/internal/tool"
 	"github.com/theocod3s/rasp/internal/tui/chat"
 	"github.com/theocod3s/rasp/internal/tui/styles"
 )
@@ -129,6 +133,195 @@ func TestATurnsTotalReplacesTheRunningSumRatherThanAddingToIt(t *testing.T) {
 				"numbers:\n%s", want, before)
 		}
 	}
+}
+
+// TestOutClimbsWhileAReplyStreamsAndLandsOnTheStepsTotal drives a real turn out
+// of a provider that reports its counts as they accrue, which is the only way to
+// see what actually rides a delta: nothing is sent alongside the accumulated
+// message, so what the line can show mid-stream is whatever usage that message
+// is carrying at the moment the delta arrives.
+//
+// The script is shaped like a wire that reports the prompt before the first
+// token and the reply in instalments after it. The counts are cumulative for the
+// step, so a line that added them instead of replacing would end the turn saying
+// 120 where the loop says 60.
+func TestOutClimbsWhileAReplyStreamsAndLandsOnTheStepsTotal(t *testing.T) {
+	const prompt, cached = 900, 4200
+	total := llm.Usage{Input: prompt, Output: 60, CacheRead: cached}
+
+	// The instalments deliberately do not sum to the total. They are cumulative
+	// reports of one step, so a line that added them would end somewhere past it
+	// — and with figures that happened to add up, that bug draws the right number
+	// by arithmetic accident.
+	provider := fake.New(
+		fake.Usage(llm.Usage{Input: prompt, CacheRead: cached}),
+		fake.Text("The header "),
+		fake.Usage(llm.Usage{Input: prompt, Output: 21, CacheRead: cached}),
+		fake.Text("is parsed "),
+		fake.Usage(llm.Usage{Input: prompt, Output: 45, CacheRead: cached}),
+		fake.Text("twice."),
+		fake.Usage(total),
+		fake.Done(llm.StopEndTurn),
+	)
+
+	// The filter runs on the rendering goroutine, ahead of Update, and reads the
+	// line each event is about to change — so this is the sequence of counts the
+	// turn actually put on the screen. Everything it writes is read after the
+	// program has returned, which is what orders the two; nothing here fails the
+	// test from that goroutine, where Fatal would stop the wrong one.
+	var (
+		ended = make(chan struct{})
+		over  bool
+		drawn []int
+	)
+	watch := func(model tea.Model, msg tea.Msg) tea.Msg {
+		ev, isEvent := msg.(agentMsg)
+		if root, ok := model.(Model); ok && isEvent && !over {
+			n, found := outCount(root.status.Render(0, styles.Dark))
+			if !found {
+				n = -1
+			}
+			drawn = append(drawn, n)
+		}
+		if isEvent && ev.event.Kind == agent.EventTurnEnd {
+			over = true
+			close(ended)
+		}
+		return msg
+	}
+
+	b := newBridge()
+	prog := tea.NewProgram(Model{}, append(headless(), tea.WithFilter(watch))...)
+	b.start(prog)
+
+	finished := make(chan tea.Model, 1)
+	go func() {
+		model, _ := prog.Run()
+		finished <- model
+	}()
+
+	ag, err := agent.New(agent.Config{
+		Provider:  provider,
+		Tools:     tool.NewRegistry(nil),
+		Model:     "test-model",
+		MaxTokens: 1024,
+		Events:    b.handle,
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	if err := ag.Send(t.Context(), "why is the header parsed twice"); err != nil {
+		t.Fatalf("the turn failed: %v", err)
+	}
+
+	select {
+	case <-ended:
+	case <-time.After(settle):
+		t.Fatal("the turn ended and the UI never heard about it")
+	}
+	prog.Quit()
+
+	var final Model
+	select {
+	case model := <-finished:
+		root, ok := model.(Model)
+		if !ok {
+			t.Fatalf("the program returned a %T rather than the root model", model)
+		}
+		final = root
+	case <-time.After(settle):
+		t.Fatal("the program did not return after Quit")
+	}
+	b.stop()
+
+	if slices.Contains(drawn, -1) {
+		t.Fatalf("some frame drew a status line with no out segment on it, so the counts below are "+
+			"about a line that had moved: %v", drawn)
+	}
+	if len(drawn) < 2 {
+		t.Fatalf("the turn drew %d line(s), so there is no sequence here to check: %v", len(drawn), drawn)
+	}
+
+	// Climbed, and never fell: a count going down would mean an instalment was
+	// taken for the whole report.
+	var climbed bool
+	for i := 1; i < len(drawn); i++ {
+		switch {
+		case drawn[i] < drawn[i-1]:
+			t.Fatalf("the count fell from %d to %d part way through the turn: %v", drawn[i-1], drawn[i], drawn)
+		case drawn[i] > drawn[i-1]:
+			climbed = true
+		}
+	}
+	if !climbed {
+		t.Errorf("the count never moved off %v, so nothing was drawn until the step ended", drawn)
+	}
+	// And climbed mid-stream, not merely at the end: a line reading only the
+	// finished message would satisfy everything above.
+	if mid := slices.Max(drawn); mid == 0 || mid > total.Output {
+		t.Errorf("the largest count drawn while the turn ran is %d, and the step's own total is %d",
+			mid, total.Output)
+	}
+
+	// Every counter, not out alone: the line lands on exactly what a session that
+	// had spent this turn and nothing else would read, which is the assertion an
+	// instalment counted twice fails wherever it landed.
+	settled := ansi.Strip(final.status.Render(0, styles.Dark))
+	want := ansi.Strip(status{spent: total, context: sent(total) + total.Output}.Render(0, styles.Dark))
+	if settled != want {
+		t.Errorf("the turn ended reading\n%q\nand the loop's own total is\n%q", settled, want)
+	}
+	if !strings.Contains(settled, "out "+strconv.Itoa(total.Output)) {
+		t.Fatalf("neither line names the reply count, so the comparison above is over two lines that "+
+			"agree about nothing: %q", settled)
+	}
+}
+
+// TestAProviderThatReportsNothingUntilTheEndInventsNothing. An endpoint that
+// sends its counts in one final chunk hands the UI a message whose usage is zero
+// for the whole stream — and a line that wrote that down would blank counts it
+// was reading correctly a moment before, on every stream, for the length of it.
+func TestAProviderThatReportsNothingUntilTheEndInventsNothing(t *testing.T) {
+	first := reply("Reading it.")
+	first.Usage = llm.Usage{Input: 400, Output: 60, CacheRead: 11000}
+
+	var m tea.Model = newModel(t.Context(), newTurner(nil), Config{Mode: permission.ModeManual})
+	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventAssistantEnd, Message: first}})
+	settled := words(m.View().Content)
+
+	for _, want := range []string{"ctx 11.5k", "in 11.4k", "out 60"} {
+		if !strings.Contains(settled, want) {
+			t.Fatalf("the frame does not read %q, so the comparison below is over the wrong numbers:\n%s",
+				want, settled)
+		}
+	}
+
+	// The next step's deltas, carrying nothing at all.
+	m, _ = m.Update(agentMsg{event: agent.Event{
+		Kind: agent.EventAssistantDelta, Message: reply("The header is parsed"),
+	}})
+
+	for _, want := range []string{"ctx 11.5k", "in 11.4k", "out 60"} {
+		if frame := words(m.View().Content); !strings.Contains(frame, want) {
+			t.Errorf("the frame no longer reads %q; a report of nothing was taken at face value:\n%s",
+				want, frame)
+		}
+	}
+}
+
+// outCount reads the reply count off the line, and says whether it found one.
+// Zero is a real count, so a reader that answered it for a segment renamed or
+// dropped would satisfy every comparison above by never finding anything.
+func outCount(line string) (int, bool) {
+	fields := strings.Fields(ansi.Strip(line))
+	for i, field := range fields {
+		if field != "out" || i+1 >= len(fields) {
+			continue
+		}
+		n, err := strconv.Atoi(fields[i+1])
+		return n, err == nil
+	}
+	return 0, false
 }
 
 // TestAStatusUpdateRedrawsNoPartOfTheConversation is the freeze from the other
