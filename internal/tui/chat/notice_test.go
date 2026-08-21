@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theocod3s/rasp/internal/tui/chat"
+	"github.com/theocod3s/rasp/internal/tui/styles"
 )
 
 // TestANoticeIsDrawnExactlyAsItWasWritten. A notice carries the UI's own words
@@ -38,6 +39,35 @@ func TestANoticeWrapsToTheTerminal(t *testing.T) {
 		if n := ansi.StringWidth(line); n > narrow {
 			t.Errorf("a line runs %d columns into a terminal %d wide: %q", n, narrow, line)
 		}
+	}
+}
+
+// TestANoticeIsDrawnFaint. rasp's own voice is subordinate to the
+// conversation's, and a mode reminder three lines long is where that stops
+// being a detail — drawn at the weight of a reply it reads as one.
+//
+// Asserted against the token rather than against "has some colour on it",
+// because the regression this pins was not a missing escape: the notice was
+// drawn in Muted, which is the shade for information a reader has to take in
+// (palette.go), and every test here compared ansi.Strip-ed text and saw
+// nothing.
+func TestANoticeIsDrawnFaint(t *testing.T) {
+	for _, bg := range []struct {
+		name string
+		bg   styles.Background
+	}{
+		{"dark", styles.Dark},
+		{"light", styles.Light},
+	} {
+		t.Run(bg.name, func(t *testing.T) {
+			const text = "[Mode changed to plan. You can no longer edit or write files.]"
+
+			drawn := chat.Notice{Text: text, Background: bg.bg}.Render(wide)
+
+			if want := styles.For(bg.bg).Faint.Render(text); drawn != want {
+				t.Errorf("a notice drew\n\t%q\nand the faint token draws it\n\t%q", drawn, want)
+			}
+		})
 	}
 }
 

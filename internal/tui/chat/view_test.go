@@ -15,20 +15,33 @@ import (
 // TestAFinishedItemIsRenderedOnceAndThenFrozen is internals §4.5's freeze: a
 // message that has stopped changing is drawn once at a width and handed back
 // verbatim for every frame after, without Render being called at all.
+// A reply that thought first is drawn here too: the thinking is a second
+// segment inside the same item, so it is the same freeze — and a segment that
+// went on re-rendering would be one more thing moving on every blink.
 func TestAFinishedItemIsRenderedOnceAndThenFrozen(t *testing.T) {
-	var runs int
-	var v chat.View
-	v.Append(said(&runs, "Reading it now.", true))
+	for _, tc := range []struct {
+		name  string
+		reply llm.Message
+	}{
+		{"a reply", reply("Reading it now.")},
+		{"a reply that thought first", thoughtful(theThought, "Reading it now.")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var runs int
+			var v chat.View
+			v.Append(item(&runs, tc.reply, true))
 
-	first := v.Render(80)
-	for range 5 {
-		if got := v.Render(80); got != first {
-			t.Fatalf("a later frame reads %q, and the item was frozen at %q", got, first)
-		}
-	}
+			first := v.Render(80)
+			for range 5 {
+				if got := v.Render(80); got != first {
+					t.Fatalf("a later frame reads %q, and the item was frozen at %q", got, first)
+				}
+			}
 
-	if runs != 1 {
-		t.Errorf("the item rendered %d time(s) across six frames at one width, want 1", runs)
+			if runs != 1 {
+				t.Errorf("the item rendered %d time(s) across six frames at one width, want 1", runs)
+			}
+		})
 	}
 }
 
@@ -145,7 +158,7 @@ func TestAMessageDrawsOnlyWhatAReaderIsMeantToSee(t *testing.T) {
 			want: chat.Caret + "fix the auth test",
 		},
 		{
-			name: "thinking is left out",
+			name: "thinking is drawn above the reply",
 			message: llm.Message{
 				Role: llm.RoleAssistant,
 				Content: []llm.Block{
@@ -153,7 +166,18 @@ func TestAMessageDrawsOnlyWhatAReaderIsMeantToSee(t *testing.T) {
 					{Type: llm.BlockText, Text: "Found it."},
 				},
 			},
-			want: "Found it.",
+			want: "the header is parsed twice Found it.",
+		},
+		{
+			name: "a tool call is an item of its own",
+			message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.Block{
+					{Type: llm.BlockText, Text: "Reading it."},
+					{Type: llm.BlockToolUse, ID: "call_1", Name: "read"},
+				},
+			},
+			want: "Reading it.",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -241,10 +265,18 @@ func BenchmarkResizingFrame(b *testing.B) {
 const paragraph = "Reading the file now, and the two it imports. The failing test asserts that the " +
 	"header is parsed before the body, and the parser reorders them whenever the body arrives first."
 
+// conversation is n finished messages, every other one of them a reply that
+// thought before it spoke — so what a blink costs is measured over the segment
+// thinking adds as well as over the reply.
 func conversation(runs *int, n int) chat.View {
 	var v chat.View
 	for i := range n {
-		v.Append(said(runs, fmt.Sprintf("%d. %s", i, paragraph), true))
+		text := fmt.Sprintf("%d. %s", i, paragraph)
+		msg := reply(text)
+		if i%2 == 1 {
+			msg = thoughtful(theThought, text)
+		}
+		v.Append(item(runs, msg, true))
 	}
 	return v
 }
@@ -262,8 +294,10 @@ func (c counted) Render(width int) string {
 	return c.Message.Render(width)
 }
 
-func said(runs *int, text string, done bool) counted {
-	return counted{Message: chat.Message{Content: reply(text), Done: done}, runs: runs}
+func said(runs *int, text string, done bool) counted { return item(runs, reply(text), done) }
+
+func item(runs *int, msg llm.Message, done bool) counted {
+	return counted{Message: chat.Message{Content: msg, Done: done}, runs: runs}
 }
 
 func reply(text string) llm.Message {

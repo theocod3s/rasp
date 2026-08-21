@@ -251,12 +251,12 @@ func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
 		m.busy = true
 		if ev.Message != nil {
 			m.streaming = ev.Message
-			m.chat.Set(replyKey(m.replies), chat.Message{Content: *ev.Message})
+			m.chat.Set(replyKey(m.replies), m.replied(*ev.Message, false))
 		}
 
 	case agent.EventAssistantEnd:
 		if ev.Message != nil {
-			m.chat.Set(replyKey(m.replies), chat.Message{Content: *ev.Message, Done: true})
+			m.chat.Set(replyKey(m.replies), m.replied(*ev.Message, true))
 			m = m.announce(*ev.Message)
 			// Here and not on a delta: a step's usage is final on the message that
 			// went into the transcript, and a provider that reports its counts only
@@ -300,6 +300,13 @@ func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
 		m = m.settle().dismissAll()
 	}
 	return m, nil
+}
+
+// replied is one assistant message as the conversation draws it. The palette
+// goes on here so a fourth call site cannot forget it and draw a step's
+// thinking for the wrong background.
+func (m Model) replied(msg llm.Message, done bool) chat.Message {
+	return chat.Message{Content: msg, Done: done, Background: m.background}
 }
 
 // announce puts a card in the conversation for every call the step asked for,
@@ -480,7 +487,7 @@ func (m Model) settle() Model {
 	if m.streaming == nil {
 		return m
 	}
-	m.chat.Set(replyKey(m.replies), chat.Message{Content: *m.streaming, Done: true})
+	m.chat.Set(replyKey(m.replies), m.replied(*m.streaming, true))
 	m.streaming = nil
 	m.replies++
 	return m

@@ -69,7 +69,12 @@ type snapshot struct {
 func snapshots() []snapshot {
 	const prompt = "fix the failing auth test"
 
-	fragment := reply("Reading `auth_test.go` now. The header is parsed")
+	// The two states a step can be caught in before its reply is whole: thinking
+	// with nothing said yet, and thinking with the reply arriving under it.
+	const aloud = "The test asserts the header is parsed before the body. If the parser reorders " +
+		"them, both call sites are reading a header that was parsed twice."
+	thinking := thought(aloud, "")
+	fragment := thought(aloud, "Reading `auth_test.go` now. The header is parsed")
 	explained := spent(asking(reply("Reading `auth_test.go` now. The header is parsed **twice**.\n\n"+
 		"- once in the middleware\n- once in the handler\n"),
 		llm.Block{Type: llm.BlockToolUse, ID: "call_1", Name: "read"},
@@ -168,6 +173,14 @@ func snapshots() []snapshot {
 		// (design §6 rule 7) — the hint replacing "working…" is the only thing
 		// this state exists to draw.
 		{name: "armed", prompt: prompt, keys: []tea.KeyPressMsg{key(tea.KeyEscape)}},
+		// A step that has thought and said nothing yet, and the same step once the
+		// reply has started under it. Two states rather than one because they are
+		// the only frames where the faint segment is the whole of what a reader has
+		// to go on, and because a message with no text in it drew nothing at all
+		// until thinking was rendered.
+		{name: "thinking", prompt: prompt, events: []agent.Event{
+			{Kind: agent.EventAssistantDelta, Message: thinking},
+		}},
 		{name: "streaming", prompt: prompt, events: []agent.Event{
 			{Kind: agent.EventAssistantDelta, Message: fragment},
 		}},

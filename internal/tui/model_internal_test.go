@@ -133,6 +133,20 @@ func reply(text string) *llm.Message {
 	}
 }
 
+// thought is a reply the model reasoned its way to first. An empty text is a
+// step still mid-thought, which is a message with nothing in it a reader could
+// see until thinking was drawn.
+func thought(thinking, text string) *llm.Message {
+	msg := &llm.Message{
+		Role:    llm.RoleAssistant,
+		Content: []llm.Block{{Type: llm.BlockThinking, Text: thinking}},
+	}
+	if text != "" {
+		msg.Content = append(msg.Content, llm.Block{Type: llm.BlockText, Text: text})
+	}
+	return msg
+}
+
 // words is a frame reduced to what it says. A reply is drawn as markdown, so
 // the words a test looks for arrive split across styled spans, set in from the
 // left margin and broken wherever the width fell — none of which is what these
