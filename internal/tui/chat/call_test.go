@@ -220,13 +220,14 @@ func TestADiffLineIsCutAtTheWidthRatherThanWrapped(t *testing.T) {
 		Details: &tool.DiffDetails{Path: "auth.go", Unified: unified},
 	}))
 
-	// One row for the card's own summary and one per line of the diff below the
-	// header pair, which is four — and every one of them has to fit the terminal
-	// it was drawn for, or the terminal does the wrapping this is here to avoid.
-	// The row count alone would not notice: the card's own indent arithmetic can
-	// be off by two with all five rows still present.
+	// One row for the card's own summary and one per line of the diff the
+	// renderer draws, which is the three below its headers — and every one of
+	// them has to fit the terminal it was drawn for, or the terminal does the
+	// wrapping this is here to avoid. The row count alone would not notice: the
+	// card's own indent arithmetic can be off by two with all four rows still
+	// present.
 	rows := strings.Split(call.Render(narrow), "\n")
-	if want := 5; len(rows) != want {
+	if want := 4; len(rows) != want {
 		t.Fatalf("the card drew %d rows, want %d — a diff line wrapped:\n%s",
 			len(rows), want, call.Render(narrow))
 	}
@@ -342,8 +343,8 @@ func TestATerminalTooNarrowForTheIndentStillCuts(t *testing.T) {
 		if head := strings.SplitN(call.Render(width), "\n", 2)[0]; strings.Contains(words(head), " e d i t") {
 			t.Errorf("at width %d the summary was broken up one character per row: %q", width, words(head))
 		}
-		if n := len(rows) - 1; n != 4 {
-			t.Errorf("at width %d the card drew %d rows under its summary, want the diff's 4", width, n)
+		if n := len(rows) - 1; n != 3 {
+			t.Errorf("at width %d the card drew %d rows under its summary, want the diff's 3", width, n)
 		}
 	}
 }

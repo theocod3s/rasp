@@ -95,14 +95,17 @@ func snapshots() []snapshot {
 
 	// A turn that changed two files, which is the state the diff renderer exists
 	// for. The replacement's second line is deliberately longer than the terminal
-	// is wide: a diff line that wrapped would read as two changed lines.
+	// is wide: a diff line that wrapped would read as two changed lines. Two
+	// hunks, and the second one an order of magnitude further down the file, so
+	// the frame records what a hunk boundary draws as and what the line numbers
+	// line up against.
 	changed := asking(reply("Parsing the header once, in the middleware."),
 		llm.Block{Type: llm.BlockToolUse, ID: "call_3", Name: "edit"},
 		llm.Block{Type: llm.BlockToolUse, ID: "call_4", Name: "write"})
 	edited := &tool.Result{
-		Title:   "auth.go +2 -1",
-		Content: "Edited auth.go: 1 replacement, +2 -1.",
-		Details: &tool.DiffDetails{Path: "auth.go", Additions: 2, Deletions: 1, Unified: diff(
+		Title:   "auth.go +3 -2",
+		Content: "Edited auth.go: 2 replacements, +3 -2.",
+		Details: &tool.DiffDetails{Path: "auth.go", Additions: 3, Deletions: 2, Unified: diff(
 			"--- a/auth.go",
 			"+++ b/auth.go",
 			"@@ -12,5 +12,6 @@",
@@ -112,6 +115,10 @@ func snapshots() []snapshot {
 			"+\tr = r.WithContext(context.WithValue(r.Context(), claimsKey, claims)) // the handler reads it from here",
 			" \tif err != nil {",
 			" \t\tunauthorized(w)",
+			"@@ -104,3 +105,3 @@",
+			" func (m *Middleware) claims(r *http.Request) (Claims, error) {",
+			"-\treturn parse(r.Header.Get(\"Authorization\"))",
+			"+\treturn parse(r.Header.Get(headerName))",
 		)},
 	}
 	created := &tool.Result{
