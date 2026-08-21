@@ -153,11 +153,12 @@ type card struct {
 }
 
 func newModel(ctx context.Context, turner Turner, cfg Config) Model {
+	path, branch := place(cfg.Cwd)
 	return Model{
 		ctx:    ctx,
 		turner: turner,
 		depth:  cfg.Depth,
-		status: status{model: cfg.Model, mode: cfg.Mode},
+		status: status{model: cfg.Model, mode: cfg.Mode, path: path, branch: branch},
 	}
 }
 
@@ -575,8 +576,15 @@ func (m Model) View() tea.View {
 		// line to hang off (model.go quitArmed).
 		writeLine(&b, hintQuit)
 	}
-	writeLine(&b, m.status.Render(m.width, m.background))
-	b.WriteString(m.caret() + m.input)
+
+	// The bottom chrome: the input inside its frame, and the footer under it.
+	// The activity line stays above the frame — it belongs to the turn that is
+	// running, not to the line the user is composing.
+	rule := m.rule()
+	writeLine(&b, rule)
+	writeLine(&b, m.typing())
+	writeLine(&b, rule)
+	b.WriteString(m.status.Render(m.width, m.background))
 	return tea.NewView(b.String())
 }
 

@@ -6,5 +6,7 @@
   read queued
   edit running
 ⠋ running edit[38;2;125;133;144m · esc esc to interrupt[m
-manual[38;2;125;133;144m · anthropic/claude-opus-5 · ctx 12.2k · in 12k · out 143 · cost —[m
-› 
+[38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
+› [38;2;92;99;109mask rasp anything…[m
+[38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
+[38;2;125;133;144m…sp-demo (main)[m  manual[38;2;125;133;144m · ctx 12.2k · in 12k · out 143 · anthropic/claude-opus-5[m

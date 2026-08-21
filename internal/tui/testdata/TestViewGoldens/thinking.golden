@@ -2,5 +2,7 @@
 [38;2;92;99;109mThe test asserts the header is parsed before the body. If the parser reorders[m
 [38;2;92;99;109mthem, both call sites are reading a header that was parsed twice.[m
 ⠋ thinking[38;2;125;133;144m · esc esc to interrupt[m
-manual[38;2;125;133;144m · anthropic/claude-opus-5 · ctx 0 · in 0 · out 0 · cost —[m
-› 
+[38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
+› [38;2;92;99;109mask rasp anything…[m
+[38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
+[38;2;125;133;144m…p-demo (main)[m  manual[38;2;125;133;144m · ctx 0 · in 0 · out 0 · cost — · anthropic/claude-opus-5[m

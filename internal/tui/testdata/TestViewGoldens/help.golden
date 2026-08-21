@@ -8,5 +8,7 @@
 [38;2;92;99;109m  /yolo     run every tool call with no approval — /yolo confirm turns it on[m
 [38;2;92;99;109m  /help     list these commands[m
 [38;2;92;99;109m  /quit     stop a running turn and leave[m
-manual[38;2;125;133;144m · anthropic/claude-opus-5 · ctx 0 · in 0 · out 0 · cost —[m
-› 
+[38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
+› [38;2;92;99;109mask rasp anything…[m
+[38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
+[38;2;125;133;144m…p-demo (main)[m  manual[38;2;125;133;144m · ctx 0 · in 0 · out 0 · cost — · anthropic/claude-opus-5[m
