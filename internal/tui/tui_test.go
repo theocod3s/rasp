@@ -19,6 +19,11 @@ const (
 	ctrlC = "\x03"
 	enter = "\r"
 
+	// quit is what a headless test types to leave the program: two ctrl+c,
+	// since one now only cancels a turn and arms rather than exiting outright
+	// (design §6 rule 7).
+	quit = ctrlC + ctrlC
+
 	// settle is how long a test waits for something the UI has already been told
 	// to do. Reaching it is a failure, never a slow machine.
 	settle = 5 * time.Second
@@ -34,7 +39,7 @@ const (
 // this cannot see: Run owns the drainer's lifetime, so a UI the user quit leaves
 // nothing behind. A pump still parked in Send is a process that will not exit.
 func TestRunEndsThePumpWithTheProgram(t *testing.T) {
-	p := tui.New(tui.Config{}, headless(typing(ctrlC))...)
+	p := tui.New(tui.Config{}, headless(typing(quit))...)
 
 	stopped := make(chan error, 1)
 	go func() { stopped <- p.Run(idleTurner{}, nil) }()
@@ -58,7 +63,7 @@ func TestRunEndsThePumpWithTheProgram(t *testing.T) {
 // exists to prevent, and the user would be reading it as proof.
 func TestLaunchingWithTheBypassArmsTheService(t *testing.T) {
 	answers := &recordingAnswers{armed: make(chan bool, 4)}
-	p := tui.New(tui.Config{Yolo: true}, headless(typing(ctrlC))...)
+	p := tui.New(tui.Config{Yolo: true}, headless(typing(quit))...)
 
 	if err := p.Run(idleTurner{}, answers); err != nil {
 		t.Fatalf("Run returned %v", err)
@@ -79,7 +84,7 @@ func TestLaunchingWithTheBypassArmsTheService(t *testing.T) {
 // above: the same path, one field different, and nothing may reach the service.
 func TestALaunchWithoutTheFlagArmsNothing(t *testing.T) {
 	answers := &recordingAnswers{armed: make(chan bool, 4)}
-	p := tui.New(tui.Config{}, headless(typing(ctrlC))...)
+	p := tui.New(tui.Config{}, headless(typing(quit))...)
 
 	if err := p.Run(idleTurner{}, answers); err != nil {
 		t.Fatalf("Run returned %v", err)
@@ -99,7 +104,7 @@ func TestALaunchWithoutTheFlagArmsNothing(t *testing.T) {
 // would reach its timeout with the program never having quit.
 func TestTheUIKeepsHandlingKeysWhileATurnRuns(t *testing.T) {
 	turner := newWaitingTurner()
-	p := tui.New(tui.Config{}, headless(typing("hi"+enter+ctrlC))...)
+	p := tui.New(tui.Config{}, headless(typing("hi"+enter+quit))...)
 
 	stopped := make(chan error, 1)
 	go func() { stopped <- p.Run(turner, nil) }()
@@ -180,7 +185,7 @@ func TestAProgramStoppedWithoutUpdateStillEndsItsTurn(t *testing.T) {
 func TestRunWaitsForTheInFlightTurnBeforeReturning(t *testing.T) {
 	turner := newWaitingTurner()
 	turner.release = make(chan struct{})
-	p := tui.New(tui.Config{}, headless(typing("hi"+enter+ctrlC))...)
+	p := tui.New(tui.Config{}, headless(typing("hi"+enter+quit))...)
 
 	stopped := make(chan error, 1)
 	go func() { stopped <- p.Run(turner, nil) }()
@@ -248,7 +253,7 @@ func TestRunCarriesAQuestionToTheScreenAndTheAnswerBack(t *testing.T) {
 			if decision != permission.DecisionOnce {
 				t.Errorf("the y key answered %q, want %q", decision, permission.DecisionOnce)
 			}
-			if _, err := io.WriteString(keyboard, ctrlC); err != nil {
+			if _, err := io.WriteString(keyboard, quit); err != nil {
 				t.Fatalf("quitting: %v", err)
 			}
 			select {
