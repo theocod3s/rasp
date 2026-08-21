@@ -375,7 +375,10 @@ func TestAFilesOwnControlCharactersAreNotHandedToTheTerminal(t *testing.T) {
 }
 
 // TestACutNeverLandsWiderThanTheTerminal is fit's cluster measurement across
-// the shapes that break a per-rune one, at every width they can be cut at.
+// the shapes that break a per-rune one, at every width they can be cut at. Two
+// hunks, so the boundary mark is measured at those widths as well: it is set
+// beside the gutter rather than cut to fit, and it is the one glyph drawn here
+// whose width the Unicode tables call ambiguous.
 func TestACutNeverLandsWiderThanTheTerminal(t *testing.T) {
 	for name, content := range map[string]string{
 		"flags":               strings.Repeat("\U0001F1FA\U0001F1F8", 6),
@@ -384,7 +387,7 @@ func TestACutNeverLandsWiderThanTheTerminal(t *testing.T) {
 		"wide":                strings.Repeat("漢", 12),
 	} {
 		t.Run(name, func(t *testing.T) {
-			diff := lines("@@ -1,1 +1,1 @@", "+ab"+content)
+			diff := lines("@@ -1,1 +1,1 @@", "+ab"+content, "@@ -90,1 +90,1 @@", "+ab"+content)
 			for width := 2; width <= 20; width++ {
 				for _, row := range strings.Split(diffview.Render(diff, width, styles.For(styles.Dark)), "\n") {
 					if n := lipgloss.Width(row); n > width {
