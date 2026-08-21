@@ -114,6 +114,13 @@ type Model struct {
 	// would confirm a cancel with nothing left to cancel.
 	armed bool
 
+	// quitArmed is Ctrl-C's own two-stage arm, the sibling to armed above and
+	// cleared the same way, by press on any other key (design §6 rule 7). It
+	// differs in one way: arming does not need a turn running, because a second
+	// press is what guards the session itself, not one turn in flight — so
+	// nothing clears it when a turn ends the way finish clears armed.
+	quitArmed bool
+
 	// turns counts turn goroutines still running. Bubble Tea's own shutdown
 	// leaks a tea.Cmd goroutine rather than wait on one that can run as long as
 	// a turn does, so Run waits on this instead — what stops ctrl+c returning
@@ -186,15 +193,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // matches nothing.
 func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	key := msg.Key()
+	ctrlC := key.Mod == tea.ModCtrl && key.Code == 'c'
 	if key.Code != tea.KeyEscape {
 		m.armed = false
 	}
+	if !ctrlC {
+		m.quitArmed = false
+	}
 	switch {
-	case key.Mod == tea.ModCtrl && key.Code == 'c':
-		// Here rather than left to the program's exit, so the turn is already
-		// unwinding while Bubble Tea shuts down.
-		m.interrupt()
-		return m, tea.Quit
+	case ctrlC:
+		return m.ctrlC()
 	case key.Code == tea.KeyEscape:
 		return m.escape(), nil
 	case key.Mod == tea.ModShift && key.Code == tea.KeyTab:
@@ -235,6 +243,21 @@ func (m Model) escape() Model {
 	m.interrupt()
 	m.armed = false
 	return m
+}
+
+// ctrlC is Ctrl-C's two-stage arm, the sibling to escape: the first press
+// cancels whatever turn is running — a no-op with none — and only arms the
+// quit, so one slipped keystroke costs a turn rather than the session. The
+// second press, while still armed, is what actually quits.
+func (m Model) ctrlC() (Model, tea.Cmd) {
+	if !m.quitArmed {
+		// Here rather than left to the program's exit, so the turn is already
+		// unwinding while the arm stands.
+		m.interrupt()
+		m.quitArmed = true
+		return m, nil
+	}
+	return m, tea.Quit
 }
 
 func backspace(s string) string {
@@ -502,6 +525,8 @@ func (m Model) View() tea.View {
 	switch {
 	case m.armed:
 		writeLine(&b, "press esc again to cancel")
+	case m.quitArmed:
+		writeLine(&b, "press ctrl+c again to quit")
 	case m.busy:
 		writeLine(&b, "working…")
 	}

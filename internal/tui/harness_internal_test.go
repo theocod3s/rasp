@@ -180,6 +180,10 @@ func snapshots() []snapshot {
 		// (design §6 rule 7) — the hint replacing "working…" is the only thing
 		// this state exists to draw.
 		{name: "armed", prompt: prompt, keys: []tea.KeyPressMsg{key(tea.KeyEscape)}},
+		// The first Ctrl-C, Esc's sibling arm (design §6 rule 7): its own hint
+		// drawn in the same place, over a turn it has already cancelled — proof
+		// the two arms use the same line without merging into one state.
+		{name: "ctrlc-armed", prompt: prompt, keys: []tea.KeyPressMsg{ctrlCKey}},
 		// A step that has thought and said nothing yet, and the same step once the
 		// reply has started under it. Two states rather than one because they are
 		// the only frames where the faint segment is the whole of what a reader has

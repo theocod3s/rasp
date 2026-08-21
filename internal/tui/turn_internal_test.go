@@ -246,10 +246,14 @@ func TestAFinishedTurnReleasesItsContext(t *testing.T) {
 	}
 }
 
-// TestCtrlCCancelsTheTurnBeforeItQuits: quitting cancels a running turn anyway,
-// because the program's context ends with the program — but only after Bubble
-// Tea has shut the event loop down. Doing it here is what leaves room to run
-// anything else between the interrupt and the exit.
+// TestCtrlCCancelsTheTurnBeforeItQuits is Ctrl-C's own two-stage arm (design
+// §6 rule 7): the first press cancels a running turn — because the program's
+// context would end with the program anyway, but only after Bubble Tea has
+// shut the event loop down, and doing it here leaves room to run anything else
+// between the interrupt and the exit — and only arms rather than quitting
+// outright, so one slipped keystroke costs a turn and not the session. The
+// second press, while still armed, is what actually returns the command that
+// quits.
 func TestCtrlCCancelsTheTurnBeforeItQuits(t *testing.T) {
 	turner := newTurner(nil)
 	m := typed(newModel(t.Context(), turner, Config{}), "go")
@@ -258,18 +262,149 @@ func TestCtrlCCancelsTheTurnBeforeItQuits(t *testing.T) {
 	run(cmd)
 	ctx := started(t, turner.started)
 
-	_, quit := m.press(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'c'})
+	m, quit := m.press(ctrlCKey)
 
 	select {
 	case <-ctx.Done():
 	case <-time.After(settle):
-		t.Error("ctrl+c quit with the turn still running")
+		t.Error("the first ctrl+c left the turn's context live, so nothing below the UI was ever told to stop")
 	}
+	if quit != nil {
+		t.Fatal("the first ctrl+c returned the command that quits; it should only arm")
+	}
+	if !m.quitArmed {
+		t.Fatal("the first ctrl+c left the model unarmed")
+	}
+	if frame := m.View().Content; !strings.Contains(frame, "ctrl+c again to quit") {
+		t.Errorf("arming left no hint on the frame:\n%s", frame)
+	}
+
+	_, quit = m.press(ctrlCKey)
 	if quit == nil {
-		t.Fatal("ctrl+c returned no command, so the program keeps running")
+		t.Fatal("the second ctrl+c returned no command, so the program keeps running")
 	}
 	if msg := quit(); !isQuit(msg) {
-		t.Errorf("ctrl+c returned a %T, want the command that quits", msg)
+		t.Errorf("the second ctrl+c returned a %T, want the command that quits", msg)
+	}
+}
+
+// TestOneCtrlCNeverQuitsWithNoTurnRunning: a second press is what guards the
+// session itself, not one turn in flight, so the arm has to stand even with
+// nothing to cancel — the case escape's own arm deliberately excludes (design
+// §6 rule 7, TestEscWithNoTurnRunningArmsNothing).
+func TestOneCtrlCNeverQuitsWithNoTurnRunning(t *testing.T) {
+	m := newModel(t.Context(), newTurner(nil), Config{})
+
+	m, quit := m.press(ctrlCKey)
+	if quit != nil {
+		t.Fatal("the first ctrl+c quit with no turn running; it should only arm")
+	}
+	if !m.quitArmed {
+		t.Fatal("the first ctrl+c left the model unarmed")
+	}
+
+	_, quit = m.press(ctrlCKey)
+	if quit == nil {
+		t.Fatal("the second ctrl+c returned no command, so the program keeps running")
+	}
+	if msg := quit(); !isQuit(msg) {
+		t.Errorf("the second ctrl+c returned a %T, want the command that quits", msg)
+	}
+}
+
+// TestQuitArmedClearsOnAnyOtherKey mirrors TestArmedClearsOnAnyOtherKey for
+// Ctrl-C's own arm: the hint only means something for the key right after it,
+// so anything else has to start the two stages over rather than land as the
+// confirming press.
+func TestQuitArmedClearsOnAnyOtherKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  tea.KeyPressMsg
+	}{
+		{"a printable key", tea.KeyPressMsg{Code: 'x', Text: "x"}},
+		{"backspace", key(tea.KeyBackspace)},
+		{"enter", key(tea.KeyEnter)},
+		{"esc", key(tea.KeyEscape)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newModel(t.Context(), newTurner(nil), Config{})
+
+			m, _ = m.press(ctrlCKey)
+			if !m.quitArmed {
+				t.Fatal("the first ctrl+c did not arm, so this test is not exercising the clear at all")
+			}
+
+			m, _ = m.press(tc.key)
+			if m.quitArmed {
+				t.Errorf("%s did not clear the ctrl+c arm", tc.name)
+			}
+			if frame := m.View().Content; strings.Contains(frame, "ctrl+c again to quit") {
+				t.Errorf("%s left the quit hint on the frame:\n%s", tc.name, frame)
+			}
+		})
+	}
+}
+
+// TestEscThenCtrlCDoesNotEntangleTheTwoArms and its mirror below are the
+// acceptance test for the two arms being siblings rather than one state
+// wearing two names: each press has to do its own thing and clear the other,
+// not confirm across the boundary between them.
+func TestEscThenCtrlCDoesNotEntangleTheTwoArms(t *testing.T) {
+	turner := newTurner(nil)
+	m := typed(newModel(t.Context(), turner, Config{}), "go")
+	m, cmd := m.press(key(tea.KeyEnter))
+	run(cmd)
+	ctx := started(t, turner.started)
+
+	m, _ = m.press(key(tea.KeyEscape))
+	if !m.armed {
+		t.Fatal("the first esc against a running turn left the model unarmed")
+	}
+
+	// A ctrl+c right after arms its own quit; it must not read as escape's
+	// second press and cancel the turn on the strength of an arm it did not set.
+	m, quit := m.press(ctrlCKey)
+	if m.armed {
+		t.Error("ctrl+c left the esc arm standing, so a bare esc next would now cancel")
+	}
+	if !m.quitArmed {
+		t.Error("ctrl+c did not arm its own quit")
+	}
+	if quit != nil {
+		t.Fatal("ctrl+c quit on what should have been its own first press")
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(settle):
+		t.Error("ctrl+c did not cancel the running turn on its own first press")
+	}
+}
+
+func TestCtrlCThenEscDoesNotEntangleTheTwoArms(t *testing.T) {
+	turner := newTurner(nil)
+	m := typed(newModel(t.Context(), turner, Config{}), "go")
+	m, cmd := m.press(key(tea.KeyEnter))
+	run(cmd)
+	started(t, turner.started)
+
+	m, _ = m.press(ctrlCKey)
+	if !m.quitArmed {
+		t.Fatal("the first ctrl+c left the model unarmed")
+	}
+
+	// escape right after arms its own cancel — the turn is still busy, since
+	// cancelling only stops its context and finish has not run — and must not
+	// read as ctrl+c's second press and quit on the strength of an arm it did
+	// not set.
+	m, quit := m.press(key(tea.KeyEscape))
+	if m.quitArmed {
+		t.Error("esc left the ctrl+c arm standing, so a bare ctrl+c next would now quit")
+	}
+	if !m.armed {
+		t.Error("esc did not arm its own cancel")
+	}
+	if quit != nil {
+		t.Fatal("esc returned the command that quits; it does not know how to")
 	}
 }
 
@@ -521,6 +656,8 @@ func typed(m Model, text string) Model {
 }
 
 func key(code rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: code} }
+
+var ctrlCKey = tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'c'}
 
 func isQuit(msg tea.Msg) bool {
 	_, ok := msg.(tea.QuitMsg)
