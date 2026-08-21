@@ -92,11 +92,10 @@ func TestACardSaysWhatRanAndHowItWentInOneLine(t *testing.T) {
 	}
 }
 
-// TestEveryCardNamesItsToolExactlyOnce is the M2-06 prefix-stripping inverted:
-// the name used to be folded into a Title that already opened with it, and now
-// it is its own column, so a title still opening with the tool's name has to
-// lose that opening rather than doubling up with the column beside it. Walks
-// every built-in tool plus an MCP-shaped name, whose dispatcher prefix
+// TestEveryCardNamesItsToolExactlyOnce is the name column read against every
+// tool's own title: a title already opening with the tool's name has to lose
+// that opening rather than doubling up with the column beside it. Walks every
+// built-in tool plus an MCP-shaped name, whose dispatcher prefix
 // (mcp__server__tool) reaches the card as a bare Name like any other.
 func TestEveryCardNamesItsToolExactlyOnce(t *testing.T) {
 	for _, tc := range []struct {
@@ -430,6 +429,10 @@ func TestADetailsPayloadTheCardCannotNameIsLeftAlone(t *testing.T) {
 
 // TestExpandingACardShowsTheToolsOutput, which is the half of a card a reader
 // asks for: the summary says a file was read and the body is what was in it.
+// The fixture's middle line is blank in the file itself, which is what proves
+// the gutter numbers every row rather than only the ones with something on
+// them — a numbering that silently skipped empty lines would still pass a
+// test that only grepped for the non-blank ones.
 func TestExpandingACardShowsTheToolsOutput(t *testing.T) {
 	// The read tool's own line-number prefix — never drawn verbatim once
 	// expanded (TestExpandedReadIsNumberedFromItsOffset), so this checks the
@@ -444,14 +447,17 @@ func TestExpandingACardShowsTheToolsOutput(t *testing.T) {
 	}
 
 	call.Expanded = true
-	expanded := words(call.Render(wide))
-	for _, line := range []string{"package auth", "func Parse() {}"} {
-		if !strings.Contains(expanded, line) {
-			t.Errorf("the expanded card is missing %q:\n%s", line, expanded)
-		}
+	rows := strings.Split(ansi.Strip(call.Render(wide)), "\n")
+	if len(rows) != 4 {
+		t.Fatalf("the expanded card drew %d row(s), want a header and one per source line:\n%q", len(rows), rows)
 	}
-	if head := strings.SplitN(expanded, "\n", 2)[0]; !strings.Contains(head, "read auth.go (3 lines)") {
-		t.Errorf("the expanded card opens %q rather than with its summary", head)
+	if !strings.Contains(rows[0], "read auth.go (3 lines)") {
+		t.Errorf("the expanded card opens %q rather than with its summary", rows[0])
+	}
+	for i, want := range []string{"1 package auth", "2", "3 func Parse() {}"} {
+		if got := strings.TrimSpace(rows[i+1]); got != want {
+			t.Errorf("row %d reads %q, want %q", i+1, got, want)
+		}
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/theocod3s/rasp/internal/llm"
 	"github.com/theocod3s/rasp/internal/tool"
 	"github.com/theocod3s/rasp/internal/tui/chat"
+	"github.com/theocod3s/rasp/internal/tui/styles"
 )
 
 // TestTheActivityLineNamesWhatTheTurnIsActuallyDoing walks one turn through the
@@ -104,7 +105,7 @@ func TestTheActivityLineAnimatesAndStopsWithTheTurn(t *testing.T) {
 		frames []string
 		last   time.Duration
 	)
-	for range len(spinner) {
+	for range len(styles.Spinner) {
 		frames = append(frames, activityLine(t, m.View().Content))
 
 		elapsed := c.read().Sub(m.started)
@@ -128,9 +129,9 @@ func TestTheActivityLineAnimatesAndStopsWithTheTurn(t *testing.T) {
 	}
 	// Every glyph, not merely two that differ: a spinner reduced to one frame and
 	// a blank would satisfy the loop above and read as a stutter on the screen.
-	if seen := distinctFrames(frames); seen != len(spinner) {
+	if seen := distinctFrames(frames); seen != len(styles.Spinner) {
 		t.Errorf("%d distinct lines over %d beats, and the spinner has %d glyphs",
-			seen, len(frames), len(spinner))
+			seen, len(frames), len(styles.Spinner))
 	}
 
 	m = update(m, agentMsg{event: agent.Event{Kind: agent.EventTurnEnd}})
@@ -282,7 +283,7 @@ func activityLine(t *testing.T, frame string) string {
 
 	var found []string
 	for _, row := range strings.Split(ansi.Strip(frame), "\n") {
-		for _, glyph := range spinner {
+		for _, glyph := range styles.Spinner {
 			if strings.HasPrefix(row, glyph) {
 				found = append(found, row)
 				break

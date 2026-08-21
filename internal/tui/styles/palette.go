@@ -17,6 +17,15 @@ const (
 	Light
 )
 
+// Spinner is the running glyph both the activity line and a tool card animate
+// through, one revolution a second on the beat that already redraws each of
+// them. Kept here rather than in either view: tui imports chat to draw cards,
+// so a shared sequence can only live somewhere both already import, and
+// styles is that place even though a glyph carries no colour of its own.
+// Braille, so every frame is one cell wide and nothing beside it shifts as it
+// turns.
+var Spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
 // Palette is the tokens a view draws through, resolved for one background.
 type Palette struct {
 	DiffAdded   lipgloss.Style

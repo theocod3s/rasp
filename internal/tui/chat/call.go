@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
 
@@ -28,16 +29,11 @@ const (
 	glyphFailed = "✗"
 )
 
-// spinnerFrames animate the running glyph, one revolution per second on the
-// beat model.go already redraws a running card at (tickInterval there):
-// Elapsed is stamped off that same clock, so reading it here rather than
-// keeping a second timer is what leaves the two beats unable to disagree.
-// Braille, matching the activity line's own spinner (tui/activity.go), so a
-// reader is not taught two different marks for "something is running".
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
 // beatInterval is model.go's tickInterval, duplicated rather than imported:
 // tui imports chat to draw cards, so the dependency cannot run the other way.
+// Elapsed is stamped off that same clock (model.go's beat), so reading it
+// here rather than keeping a second timer is what leaves the running glyph
+// unable to disagree with the elapsed time drawn beside it.
 const beatInterval = 100 * time.Millisecond
 
 // CallState is how far a tool call has got.
@@ -95,9 +91,10 @@ func (c Call) Render(width int) string {
 	// The headline is set in like the body and then gives its first two columns
 	// back to the marker. Wrapped whole instead, a summary too long for the
 	// terminal continues at column zero and reads as a line of its own.
+	marker := c.marker(c.opens())
 	head := inset(wrap(c.headline(), width-len(cardIndent)), cardIndent)
-	head = c.marker(c.opens()) + strings.TrimPrefix(head, cardIndent)
-	head = c.paint(head)
+	head = marker + strings.TrimPrefix(head, cardIndent)
+	head = c.paint(head, marker)
 
 	if !c.Expanded {
 		return head
@@ -153,17 +150,42 @@ func (c Call) headline() string {
 	return line
 }
 
+// glyphState is which of the four the status glyph draws as, decided once so
+// glyphChar and glyphStyle read the same answer rather than each working it
+// out — a queued call painted the done colour is not a state glyphChar or
+// glyphStyle could reach on their own, only the two disagreeing about it.
+type glyphState int
+
+const (
+	glyphStateQueued glyphState = iota
+	glyphStateRunning
+	glyphStateDone
+	glyphStateFailed
+)
+
+func (c Call) glyphState() glyphState {
+	switch c.State {
+	case CallQueued:
+		return glyphStateQueued
+	case CallRunning:
+		return glyphStateRunning
+	}
+	if c.Result != nil && c.Result.IsError {
+		return glyphStateFailed
+	}
+	return glyphStateDone
+}
+
 // glyphChar is the plain-text status mark headline builds the line from — a
 // circle for a call with nothing to report yet, the running spinner's current
 // frame, or a check or a cross once the result is in.
 func (c Call) glyphChar() string {
-	switch c.State {
-	case CallQueued:
+	switch c.glyphState() {
+	case glyphStateQueued:
 		return glyphQueued
-	case CallRunning:
-		return spinnerFrames[spinnerIndex(c.Elapsed)]
-	}
-	if c.Result != nil && c.Result.IsError {
+	case glyphStateRunning:
+		return styles.Spinner[spinnerIndex(c.Elapsed)]
+	case glyphStateFailed:
 		return glyphFailed
 	}
 	return glyphDone
@@ -173,13 +195,12 @@ func (c Call) glyphChar() string {
 // only once headline's plain text has already been measured and wrapped
 // (paint).
 func (c Call) glyphStyle(p styles.Palette) lipgloss.Style {
-	switch c.State {
-	case CallQueued:
+	switch c.glyphState() {
+	case glyphStateQueued:
 		return p.Muted
-	case CallRunning:
+	case glyphStateRunning:
 		return p.CallRunning
-	}
-	if c.Result != nil && c.Result.IsError {
+	case glyphStateFailed:
 		return p.CallFailed
 	}
 	return p.CallDone
@@ -193,7 +214,7 @@ func spinnerIndex(d time.Duration) int {
 	if d < 0 {
 		return 0
 	}
-	return int(d/beatInterval) % len(spinnerFrames)
+	return int(d/beatInterval) % len(styles.Spinner)
 }
 
 // summary is the argument summary a finished call's own tool wrote, minus the
@@ -228,13 +249,14 @@ func (c Call) summary() string {
 // the line short of where it actually ends. Only the first line is touched,
 // since the glyph and name live there whether or not a long summary wrapped
 // on beneath them.
-func (c Call) paint(head string) string {
+//
+// marker is the same string Render already put at the front of head, passed
+// in rather than re-derived, so its width is read off the exact bytes drawn
+// there instead of assumed.
+func (c Call) paint(head, marker string) string {
 	first, rest, hasRest := strings.Cut(head, "\n")
 
-	// The marker is always exactly two runes — cardIndent's two spaces, or a
-	// one-rune mark plus the space after it — so recolouring starts at a fixed
-	// offset instead of searching for one.
-	const markerRunes = 2
+	markerRunes := utf8.RuneCountInString(marker)
 	runes := []rune(first)
 	name := []rune(c.Name)
 	nameEnd := markerRunes + 2 + len(name) // marker, glyph, the space, the name
@@ -287,33 +309,37 @@ func (c Call) body(width int) string {
 	// Drawn and then tested, rather than asked and then drawn: HasDiff walks the
 	// whole diff to answer, and this is the one caller that has to walk it
 	// anyway. Empty from a diff and no diff at all are the same card.
+	text := c.text()
 	if !c.Result.IsError {
 		if drawn := diffview.Render(c.unified(), inner(width), styles.For(c.Background)); drawn != "" {
 			return drawn
 		}
 		if c.Name == "read" {
-			if start, lines, ok := readLines(c.text()); ok {
+			if start, lines, ok := readLines(text); ok {
 				return diffview.Numbered(lines, start, inner(width), styles.For(c.Background))
 			}
 		}
 	}
-	return wrap(c.text(), width-len(cardIndent))
+	return wrap(text, width-len(cardIndent))
 }
 
 // readLines undoes the read tool's own line-number prefix — "the line number
 // and a tab", by its own description, added by the tool and not part of the
 // file — recovering both the lines and the offset the window opened at.
-// Details carries no offset of its own (ReadDetails lives in tool/builtin, a
-// leaf package the UI does not reach into); the prefix is the one route the
-// window's start has to this card, and it is already required to survive
-// untouched into any edit or write the model makes from what it read.
+// ReadDetails does carry that offset as a field, but it lives in tool/builtin,
+// a leaf package outside this UI's reach; the prefix already in Content is
+// the route open to this card, and it is required to survive untouched into
+// any edit or write the model makes from what it read, so parsing it back out
+// is reading a contract the tool already keeps rather than a coincidence.
 //
 // A read that failed, or one whose file had nothing in it, put a plain
 // sentence in Content instead — no line carries a number, so the first cut
 // finds no tab and ok is false, and the card falls back to that sentence
 // verbatim rather than guessing at a window.
 func readLines(content string) (start int, lines []string, ok bool) {
-	for i, line := range strings.Split(content, "\n") {
+	split := strings.Split(content, "\n")
+	lines = make([]string, 0, len(split))
+	for i, line := range split {
 		numStr, rest, found := strings.Cut(line, "\t")
 		if !found {
 			return 0, nil, false

@@ -116,9 +116,10 @@ func TestSetKeepsAnItemWhereItFirstAppeared(t *testing.T) {
 	v.Set("second", chat.Call{Name: "write", State: chat.CallRunning})
 	v.Set("first", chat.Call{Name: "read", State: chat.CallDone})
 
-	// words() rather than an exact match: the glyph and name are coloured, and
-	// this test is about ordering, not styling.
-	if got, want := words(v.Render(80)), "✓ read ⠋ write"; got != want {
+	// ansi.Strip rather than words(): this test is about the two-space indent
+	// and the newline holding one card apart from the other, and words()
+	// collapses both of those away along with the colour codes.
+	if got, want := ansi.Strip(v.Render(80)), "  ✓ read\n  ⠋ write\n"; got != want {
 		t.Errorf("the conversation reads\n%q\nwant\n%q", got, want)
 	}
 	if v.Len() != 2 {
