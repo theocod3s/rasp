@@ -178,14 +178,14 @@ func TestTheLineBeingTypedOnSaysItToo(t *testing.T) {
 	m.permissions = &answers{}
 	m.width = goldenWidth
 
-	if before := lastLine(m.View().Content); strings.Contains(before, yoloCaret) {
+	if before := typedLineOf(t, m); strings.Contains(before, yoloCaret) {
 		t.Fatalf("a gated session already marks its input line %q, so the change below says nothing", before)
 	}
 
 	m = typeCommand(m, "/yolo "+yoloConfirm)
 	m = typed(m, "rm the lot")
 
-	line := lastLine(m.View().Content)
+	line := typedLineOf(t, m)
 	if !strings.Contains(line, yoloCaret) {
 		t.Errorf("the line being typed on is %q, and nothing on it says the approvals are off", line)
 	}
@@ -196,6 +196,11 @@ func TestTheLineBeingTypedOnSaysItToo(t *testing.T) {
 	// prompt that lost it would move the text the user is editing.
 	if !strings.Contains(line, chat.Caret) {
 		t.Errorf("the caret is gone from %q", line)
+	}
+	// And the mark is inside the frame with the caret, not on a line of its own
+	// above it (input.go).
+	if !strings.HasPrefix(line, yoloCaret+" "+chat.Caret) {
+		t.Errorf("the line being typed on opens %q, want the mark and then the caret", line)
 	}
 }
 
@@ -358,11 +363,4 @@ func TestArmingWithNothingToArmSaysSo(t *testing.T) {
 func typeCommand(m Model, line string) Model {
 	m, _ = typed(m, line).press(key(tea.KeyEnter))
 	return m
-}
-
-// lastLine is the line the user types on, which View draws last and without a
-// newline after it (model.go).
-func lastLine(frame string) string {
-	lines := strings.Split(ansi.Strip(frame), "\n")
-	return lines[len(lines)-1]
 }

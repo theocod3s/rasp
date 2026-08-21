@@ -32,6 +32,13 @@ const goldenWidth, goldenHeight = 80, 24
 // it is never printed — as long as it is one the machine does not choose.
 var goldenNow = time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 
+// goldenBranch is the branch the footer names in every frame here. Set by hand
+// rather than read: a session takes its branch off .git/HEAD under the
+// workspace root when it starts (place.go), and goldenConfig names a root no
+// machine has — so a frame recording whatever this checkout is on would differ
+// on every machine that regenerated it.
+const goldenBranch = "main"
+
 // goldenConfig is the session every frame here is drawn for. The default mode,
 // so the frames record what a session that configured nothing looks like; the
 // two modes with a colour of their own are asserted rather than recorded
@@ -338,6 +345,7 @@ func TestBannerGolden(t *testing.T) {
 	m.chat.Append(banner(goldenConfig()))
 	m.permissions = &answers{decided: true}
 	m.now = func() time.Time { return goldenNow }
+	m.status.branch = goldenBranch
 
 	tm := teatest.NewTestModel(t, m,
 		teatest.WithInitialTermSize(goldenWidth, goldenHeight),
@@ -434,6 +442,7 @@ func program(t *testing.T) (*teatest.TestModel, *turner, *clock) {
 	// animation on it names the instant instead (snapshot.after).
 	fake := newClock(goldenNow)
 	m.now = fake.read
+	m.status.branch = goldenBranch
 
 	return teatest.NewTestModel(t, m,
 		teatest.WithInitialTermSize(goldenWidth, goldenHeight),

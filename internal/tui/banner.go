@@ -2,7 +2,6 @@ package tui
 
 import (
 	"os"
-	"strings"
 
 	"github.com/theocod3s/rasp/internal/permission"
 	"github.com/theocod3s/rasp/internal/tui/chat"
@@ -27,22 +26,4 @@ func banner(cfg Config) chat.Banner {
 		Cwd:     abbreviateHome(cfg.Cwd),
 		NoColor: noColor,
 	}
-}
-
-// abbreviateHome shortens path to ~ where it names the user's home directory
-// or somewhere under it, and leaves path alone otherwise — including when the
-// home directory itself could not be read, where an unabbreviated cwd is still
-// a correct one.
-func abbreviateHome(path string) string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return path
-	}
-	if path == home {
-		return "~"
-	}
-	if rest, ok := strings.CutPrefix(path, home+string(os.PathSeparator)); ok {
-		return "~" + string(os.PathSeparator) + rest
-	}
-	return path
 }

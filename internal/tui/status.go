@@ -15,6 +15,20 @@ import (
 const (
 	statusSep = " · "
 
+	// placeGap is the least space between the path on the left of the footer and
+	// the segments against its right edge, so the two never read as one run.
+	placeGap = 2
+
+	// placeFloor is the fewest columns a path is worth drawing in. Below a dozen
+	// what survives the cut is an ellipsis and a fragment of a directory name,
+	// which names nowhere — so the path goes entirely and the line is the
+	// segments alone.
+	placeFloor = 12
+
+	// placeCut marks a path shortened from the left, which is the end that says
+	// least: what a reader needs is the directory they are in and the branch.
+	placeCut = "…"
+
 	// yoloBadge stands where the mode name would be, rather than beside it: under
 	// yolo no preset is consulted at all (design §7.7), so a line still reading
 	// "plan" would name rules nothing is running.
@@ -34,13 +48,19 @@ const (
 // have to be legible on a background nothing here has been told about.
 var yoloStyle = lipgloss.NewStyle().Reverse(true).Bold(true)
 
-// status is the line between the conversation and the input. View draws it from
-// the model's own fields rather than as an item in the conversation, which is
-// what leaves a frame that moved only these numbers costing no item render at
-// all (internals §4.5).
+// status is the footer under the input frame. View draws it from the model's
+// own fields rather than as an item in the conversation, which is what leaves a
+// frame that moved only these numbers costing no item render at all
+// (internals §4.5).
 type status struct {
 	model string
 	mode  permission.Mode
+
+	// path is the workspace root the session is confined to and branch is what
+	// is checked out there, both settled at start-up (place.go). Two fields
+	// rather than one composed string so that a session in a repository and one
+	// in a bare directory differ here rather than in a caller.
+	path, branch string
 
 	// yolo is whether the bypass ahead of the ladder is armed. Separate from mode
 	// because it is not one: the mode underneath keeps standing, and is what the
@@ -95,38 +115,101 @@ func (s status) turnEnded(u llm.Usage) status {
 	return s
 }
 
-// Render draws the line at width, dropping whole segments from the right until
-// it fits — elided, half a token count reads as a smaller one. What is guarding
-// the session comes first and survives every drop.
+// Render draws the footer at width: where the session is working on the left,
+// and the mode, the counters and the model against the right edge.
+//
+// What does not fit is dropped whole rather than elided — half a token count
+// reads as a smaller one. The cost goes first, then the counters right to left,
+// then the model, which is drawn last and dropped second to last. The mode is
+// what is guarding the session and survives every drop.
+//
+// The path is not in that ladder. It holds placeFloor columns against it and
+// takes whatever more is left over, cut from the left. Reserved rather than
+// ranked, because the reservation is the same size whatever the path says: a
+// deeper directory costs no token count, and the left of the footer does not
+// blink out the moment a turn's counters grow.
 func (s status) Render(width int, bg styles.Background) string {
 	palette := styles.For(bg)
 	total := addUsage(addUsage(s.spent, s.running), s.step)
 
-	segments := []string{s.head()}
-	if s.model != "" {
-		segments = append(segments, s.model)
-	}
-	segments = append(segments,
-		"ctx "+tokens(s.context),
-		"in "+tokens(sent(total)),
-		"out "+tokens(total.Output),
+	head, model := s.head(), s.model
+	counters := []string{
+		"ctx " + tokens(s.context),
+		"in " + tokens(sent(total)),
+		"out " + tokens(total.Output),
 		costSegment,
-	)
-	for len(segments) > 1 && width > 0 && lineWidth(segments) > width {
-		segments = segments[:len(segments)-1]
 	}
 
-	head := s.tint(segments[0], palette)
-	if len(segments) == 1 {
-		// The one place anything is cut. A terminal too narrow even for the mode
-		// says as much of it as fits, rather than dropping the line entirely on
-		// the screens with least room to work out the mode from anything else.
-		if width > 0 && ansi.StringWidth(head) > width {
-			return ansi.Truncate(head, width, "")
-		}
-		return head
+	// The reservation goes the moment it would take the mode's own columns,
+	// which nothing may — and on a terminal that narrow there was never a path
+	// worth drawing anyway.
+	budget := width
+	where := s.where()
+	if where != "" && width-placeGap-placeFloor >= ansi.StringWidth(head) {
+		budget = width - placeGap - placeFloor
 	}
-	return head + palette.Muted.Render(statusSep+strings.Join(segments[1:], statusSep))
+	for budget > 0 && lineWidth(segments(head, counters, model)) > budget {
+		switch {
+		case len(counters) > 0:
+			counters = counters[:len(counters)-1]
+		case model != "":
+			model = ""
+		default:
+			// The one place anything is cut. A terminal too narrow even for the mode
+			// says as much of it as fits, rather than dropping the line entirely on
+			// the screens with least room to work out the mode from anything else.
+			return ansi.Truncate(s.tint(head, palette), width, "")
+		}
+	}
+
+	drawn := segments(head, counters, model)
+	line := s.tint(head, palette)
+	if len(drawn) > 1 {
+		line += palette.Muted.Render(statusSep + strings.Join(drawn[1:], statusSep))
+	}
+	return placed(line, where, lineWidth(drawn), width, palette)
+}
+
+// segments is the footer's right-hand side in the order it is drawn, which is
+// not the order it is dropped in: the model moves to the end so that it sits
+// against the right edge, and gives up its columns before the mode does.
+func segments(head string, counters []string, model string) []string {
+	drawn := append([]string{head}, counters...)
+	if model != "" {
+		drawn = append(drawn, model)
+	}
+	return drawn
+}
+
+// placed puts the path in front of the segments, padded so that the model ends
+// at the right edge. With no path there is nothing to pad against, and the
+// segments stay where they are rather than being pushed across a line that
+// would then open with whitespace.
+func placed(line, where string, used, width int, palette styles.Palette) string {
+	switch {
+	case where == "":
+		return line
+	case width <= 0:
+		return palette.Muted.Render(where) + strings.Repeat(" ", placeGap) + line
+	}
+
+	room := width - used - placeGap
+	if room < placeFloor {
+		return line
+	}
+	if w := ansi.StringWidth(where); w > room {
+		where = ansi.TruncateLeft(where, w-room+ansi.StringWidth(placeCut), placeCut)
+	}
+	return palette.Muted.Render(where) + strings.Repeat(" ", width-used-ansi.StringWidth(where)) + line
+}
+
+// where is the path and the branch as one string, because they are cut as one:
+// what a left-hand cut has to keep is the end, and the branch is on it.
+func (s status) where() string {
+	if s.path == "" || s.branch == "" {
+		return s.path
+	}
+	return s.path + " (" + s.branch + ")"
 }
 
 // head is the first segment: the mode the session is gated by, or the badge

@@ -371,8 +371,9 @@ func TestAStatusUpdateRedrawsNoPartOfTheConversation(t *testing.T) {
 }
 
 // TestSegmentsDropFromTheRightAndTheModeStays. A narrow terminal is where the
-// status line matters most and has least room, so what goes is decided rather
-// than left to the wrap: whole segments from the right, the mode last of all.
+// footer matters most and has least room, so what goes is decided rather than
+// left to the wrap: whole segments from the right, the model — which is drawn
+// last, against the right edge — before the mode, and the mode last of all.
 func TestSegmentsDropFromTheRightAndTheModeStays(t *testing.T) {
 	s := status{
 		model:   "anthropic/claude-opus-5",
@@ -385,10 +386,10 @@ func TestSegmentsDropFromTheRightAndTheModeStays(t *testing.T) {
 		width int
 		want  string
 	}{
-		{width: 0, want: "manual · anthropic/claude-opus-5 · ctx 12.8k · in 24.8k · out 205 · cost —"},
-		{width: 80, want: "manual · anthropic/claude-opus-5 · ctx 12.8k · in 24.8k · out 205 · cost —"},
-		{width: 70, want: "manual · anthropic/claude-opus-5 · ctx 12.8k · in 24.8k · out 205"},
-		{width: 60, want: "manual · anthropic/claude-opus-5 · ctx 12.8k · in 24.8k"},
+		{width: 0, want: "manual · ctx 12.8k · in 24.8k · out 205 · cost — · anthropic/claude-opus-5"},
+		{width: 80, want: "manual · ctx 12.8k · in 24.8k · out 205 · cost — · anthropic/claude-opus-5"},
+		{width: 70, want: "manual · ctx 12.8k · in 24.8k · out 205 · anthropic/claude-opus-5"},
+		{width: 60, want: "manual · ctx 12.8k · in 24.8k · anthropic/claude-opus-5"},
 		{width: 40, want: "manual · anthropic/claude-opus-5"},
 		{width: 20, want: "manual"},
 		{width: 4, want: "manu"},
@@ -401,7 +402,116 @@ func TestSegmentsDropFromTheRightAndTheModeStays(t *testing.T) {
 			if tc.width > 0 && ansi.StringWidth(line) > tc.width {
 				t.Errorf("the line is %d columns wide in a terminal %d wide", ansi.StringWidth(line), tc.width)
 			}
+			// Asserted as well as read off the strings above: the mode is the one
+			// segment no narrowing may take, and a `want` edited later is not where
+			// that guarantee belongs. A terminal too narrow for the whole word
+			// carries as much of it as fits, so a non-empty prefix counts.
+			mode := string(permission.ModeManual)
+			if !strings.Contains(line, mode) && !(line != "" && strings.HasPrefix(mode, line)) {
+				t.Errorf("at %d columns the line says nothing about the mode: %q", tc.width, line)
+			}
 		})
+	}
+}
+
+// TestThePathTakesTheColumnsTheSegmentsLeave. The path is not in the ladder
+// above, and deliberately: a segment set that depended on it would drop the
+// user's token counts when they changed directory. So it takes what is left,
+// cut from the left — the end is the directory they are in and the branch —
+// and goes entirely once what is left would name nowhere.
+func TestThePathTakesTheColumnsTheSegmentsLeave(t *testing.T) {
+	s := status{
+		model:   "anthropic/claude-opus-5",
+		mode:    permission.ModeManual,
+		path:    "~/work/rasp",
+		branch:  "main",
+		context: 12_800,
+		spent:   llm.Usage{Input: 2342, Output: 205, CacheRead: 22408},
+	}
+	// The segments alone, which is what the path is measured against.
+	const segments = "manual · ctx 12.8k · in 24.8k · out 205 · cost — · anthropic/claude-opus-5"
+
+	for _, tc := range []struct {
+		name  string
+		width int
+		// model stands in for the session's own where a case is about a name
+		// short enough to change what fits.
+		model string
+		want  string
+	}{
+		{
+			name:  "the whole path, and the model against the right edge",
+			width: 100,
+			want:  "~/work/rasp (main)" + strings.Repeat(" ", 8) + segments,
+		},
+		{
+			name:  "cut from the left, so the branch survives",
+			width: 90,
+			want:  "…k/rasp (main)  " + segments,
+		},
+		{
+			// The reservation at work: the path is short of its floor, so the
+			// segment the ladder drops first gives way rather than the path.
+			name:  "a segment gives way to the path's floor",
+			width: 84,
+			want:  "…work/rasp (main)  manual · ctx 12.8k · in 24.8k · out 205 · anthropic/claude-opus-5",
+		},
+		{
+			name:  "the segments have dropped to the mode, and the path has the rest",
+			width: 20,
+			want:  "…rasp (main)  manual",
+		},
+		{
+			// Narrower than the mode plus the floor, where the reservation goes:
+			// the mode is what a terminal this size spends its columns on.
+			name:  "no room for a path at all",
+			width: 19,
+			want:  "manual",
+		},
+		{
+			// The same width with a model short enough to fit beside the mode. The
+			// reservation is already gone, so nothing is being held back for a path
+			// that will not be drawn, and the columns go to the segments.
+			name:  "the columns a dropped reservation frees go to the segments",
+			width: 19,
+			model: "gpt-5",
+			want:  "manual · gpt-5",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := s
+			if tc.model != "" {
+				s.model = tc.model
+			}
+
+			line := ansi.Strip(s.Render(tc.width, styles.Dark))
+			if line != tc.want {
+				t.Errorf("at %d columns the line reads\n%q\nwant\n%q", tc.width, line, tc.want)
+			}
+		})
+	}
+}
+
+// TestTheModelEndsAtTheRightEdge is the layout the segments' own strings cannot
+// show: they read the same whether the line was padded or left where it fell.
+func TestTheModelEndsAtTheRightEdge(t *testing.T) {
+	const width = 100
+	s := status{model: "anthropic/claude-opus-5", mode: permission.ModeManual, path: "~/work/rasp"}
+
+	line := ansi.Strip(s.Render(width, styles.Dark))
+	if !strings.HasSuffix(line, s.model) {
+		t.Errorf("the line ends %q rather than with the model", line)
+	}
+	if got := ansi.StringWidth(line); got != width {
+		t.Errorf("the line is %d columns wide in a terminal %d wide, so the model is not against the "+
+			"edge: %q", got, width, line)
+	}
+
+	// And a session with nowhere to draw on the left is left where it starts: a
+	// line padded across from nothing would open with whitespace.
+	s.path = ""
+	if line := ansi.Strip(s.Render(width, styles.Dark)); !strings.HasPrefix(line, string(permission.ModeManual)) {
+		t.Errorf("with no path the line reads %q, and the mode is not the first thing on it", line)
 	}
 }
 
@@ -444,9 +554,13 @@ func TestTheModesWithSomethingToSayAreColoured(t *testing.T) {
 // hardcoded table would put a wrong number where the reader expects the bill,
 // and this test is what a change replacing it has to argue with.
 func TestCostIsAnAbsenceRatherThanAGuess(t *testing.T) {
-	line := ansi.Strip(status{spent: llm.Usage{Input: 9000, Output: 4000}}.Render(0, styles.Dark))
-	if !strings.HasSuffix(line, "cost —") {
-		t.Errorf("the line does not end in an unknown cost: %q", line)
+	// A model named, so the segment is read where a real session puts it: the
+	// last of the counters, with the model after it against the right edge.
+	s := status{model: "anthropic/claude-opus-5", spent: llm.Usage{Input: 9000, Output: 4000}}
+
+	line := ansi.Strip(s.Render(0, styles.Dark))
+	if !strings.Contains(line, "· cost — ·") {
+		t.Errorf("the line carries no unknown cost: %q", line)
 	}
 }
 
