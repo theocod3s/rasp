@@ -15,8 +15,8 @@ const (
 	elision = "…"
 
 	// gap is what a hunk boundary draws as. The header it stands in for said one
-	// thing the numbers do not — that the file between two hunks is missing,
-	// which nobody reads a card by noticing 15 is followed by 40 — so the
+	// thing the numbers do not — that the file between two hunks is missing —
+	// and nobody reads a card by noticing that 15 is followed by 40, so the
 	// arithmetic goes and the break stays.
 	gap = "⋯"
 
@@ -25,12 +25,12 @@ const (
 	tabWidth = 4
 )
 
-// Render draws a unified diff, one screen line per line of it, in p's colours
-// and under a line-number gutter read off the `@@` headers. Nothing wraps: a
-// changed line broken across two rows reads as two changed lines, so a line
-// past width is cut and marked instead, the whole of it left in the tool's
-// Details for a horizontal scroll that has no binding yet. A width of zero or
-// less is a terminal that has not reported its size, and nothing is cut.
+// Render draws a unified diff in p's colours, under a line-number gutter read
+// off the `@@` headers. Nothing wraps: a changed line broken across two rows
+// reads as two changed lines, so a line past width is cut and marked instead,
+// the whole of it left in the tool's Details for a horizontal scroll that has
+// no binding yet. A width of zero or less is a terminal that has not reported
+// its size, and nothing is cut.
 func Render(unified string, width int, p styles.Palette) string {
 	rows := parse(unified)
 	if len(rows) == 0 {
