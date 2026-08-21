@@ -18,7 +18,8 @@ const wide = 200
 
 // TestACardSaysWhatRanAndHowItWentInOneLine. The collapsed card is the whole of
 // what a reader gets for a call they do not open, so each state has to say
-// something they can act on rather than a word meaning "something happened".
+// something they can act on: a status glyph, the tool's own name, and — once
+// there is a result — what the tool wrote about it.
 func TestACardSaysWhatRanAndHowItWentInOneLine(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -26,51 +27,57 @@ func TestACardSaysWhatRanAndHowItWentInOneLine(t *testing.T) {
 		want string
 	}{
 		{
+			// ○: nothing has run yet, so there is nothing to add past the name.
 			name: "asked for and not yet started",
 			call: chat.Call{Name: "read"},
-			want: "read queued",
+			want: "○ read",
 		},
 		{
+			// ⠋: the spinner's own first frame, at zero elapsed.
 			name: "in flight, too briefly to be worth timing",
 			call: chat.Call{Name: "read", State: chat.CallRunning},
-			want: "read running",
+			want: "⠋ read",
 		},
 		{
+			// ⠹: 4.2s is 42 ticks of the spinner's beat, frame 2.
 			name: "in flight long enough to notice",
 			call: chat.Call{Name: "bash", State: chat.CallRunning, Elapsed: 4200 * time.Millisecond},
-			want: "bash running 4.2s",
+			want: "⠹ bash 4.2s",
 		},
 		{
-			// read, ls, grep and find each write a title opening with their own name.
+			// read, ls, grep and find each write a title opening with their own name;
+			// the card's own name column is what stops that reaching the line twice.
 			name: "a title already naming its tool is not made to say it twice",
 			call: answered("read", &tool.Result{Title: "read auth.go (42 lines)"}),
-			want: "read auth.go (42 lines)",
+			want: "✓ read auth.go (42 lines)",
 		},
 		{
 			// edit and write lead with the path, bash with the command.
 			name: "a title naming a path is prefixed by the tool that wrote it",
 			call: answered("edit", &tool.Result{Title: "auth.go +3 -1"}),
-			want: "edit auth.go +3 -1",
+			want: "✓ edit auth.go +3 -1",
 		},
 		{
 			name: "a call that took long enough says how long",
 			call: withElapsed(answered("bash", &tool.Result{Title: "go test ./..."}), 12*time.Second),
-			want: "bash go test ./... 12s",
+			want: "✓ bash go test ./... 12s",
 		},
 		{
 			// A failing built-in tool writes no title at all, and its content is the
-			// sentence saying why.
+			// sentence saying why — the ✗ glyph is what now carries the word "failed".
 			name: "a failure carries the refusal rather than the word failed alone",
 			call: answered("edit", &tool.Result{
 				IsError: true,
 				Content: "Cannot edit missing.go: it has not been read.\nRead it first.",
 			}),
-			want: "edit failed: Cannot edit missing.go: it has not been read.",
+			want: "✗ edit Cannot edit missing.go: it has not been read.",
 		},
 		{
+			// ✓ alone: an empty result has nothing to summarise, and the glyph is
+			// already the whole of "it is over and it went fine".
 			name: "a tool that answered with nothing at all still says it is over",
 			call: answered("todos", &tool.Result{}),
-			want: "todos done",
+			want: "✓ todos",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,6 +87,35 @@ func TestACardSaysWhatRanAndHowItWentInOneLine(t *testing.T) {
 			}
 			if strings.Contains(tc.call.Render(wide), "\n") {
 				t.Errorf("the collapsed card is more than one line:\n%s", tc.call.Render(wide))
+			}
+		})
+	}
+}
+
+// TestEveryCardNamesItsToolExactlyOnce is the name column read against every
+// tool's own title: a title already opening with the tool's name has to lose
+// that opening rather than doubling up with the column beside it. Walks every
+// built-in tool plus an MCP-shaped name, whose dispatcher prefix
+// (mcp__server__tool) reaches the card as a bare Name like any other.
+func TestEveryCardNamesItsToolExactlyOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		title string
+	}{
+		{"read", "read auth_test.go (2 lines)"},
+		{"edit", "auth.go +3 -1"},
+		{"write", "Created auth.go"},
+		{"bash", "go test ./..."},
+		{"grep", "grep TODO (3 matches in 2 files)"},
+		{"find", "find *_test.go (4 files)"},
+		{"ls", "ls internal/tool (12 items)"},
+		{"todos", "2 of 5 done"},
+		{"mcp__server__tool", "3 results"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := words(answered(tc.name, &tool.Result{Title: tc.title}).Render(wide))
+			if n := strings.Count(got, tc.name); n != 1 {
+				t.Errorf("%q appears %d time(s) on %q, want exactly 1", tc.name, n, got)
 			}
 		})
 	}
@@ -386,14 +422,21 @@ func TestADetailsPayloadTheCardCannotNameIsLeftAlone(t *testing.T) {
 		Details: map[string]any{"temperature": 31.5, "city": "Lisbon"},
 	})
 
-	if got, want := words(call.Render(wide)), "weather Lisbon, 31.5°C"; got != want {
+	if got, want := words(call.Render(wide)), "✓ weather Lisbon, 31.5°C"; got != want {
 		t.Errorf("the card reads %q, want %q", got, want)
 	}
 }
 
 // TestExpandingACardShowsTheToolsOutput, which is the half of a card a reader
 // asks for: the summary says a file was read and the body is what was in it.
+// The fixture's middle line is blank in the file itself, which is what proves
+// the gutter numbers every row rather than only the ones with something on
+// them — a numbering that silently skipped empty lines would still pass a
+// test that only grepped for the non-blank ones.
 func TestExpandingACardShowsTheToolsOutput(t *testing.T) {
+	// The read tool's own line-number prefix — never drawn verbatim once
+	// expanded (TestExpandedReadIsNumberedFromItsOffset), so this checks the
+	// source text alone.
 	const output = "1\tpackage auth\n2\t\n3\tfunc Parse() {}"
 
 	call := answered("read", &tool.Result{Title: "read auth.go (3 lines)", Content: output})
@@ -404,14 +447,40 @@ func TestExpandingACardShowsTheToolsOutput(t *testing.T) {
 	}
 
 	call.Expanded = true
-	expanded := call.Render(wide)
-	for _, line := range strings.Split(output, "\n") {
-		if line != "" && !strings.Contains(expanded, line) {
-			t.Errorf("the expanded card is missing %q:\n%s", line, expanded)
+	rows := strings.Split(ansi.Strip(call.Render(wide)), "\n")
+	if len(rows) != 4 {
+		t.Fatalf("the expanded card drew %d row(s), want a header and one per source line:\n%q", len(rows), rows)
+	}
+	if !strings.Contains(rows[0], "read auth.go (3 lines)") {
+		t.Errorf("the expanded card opens %q rather than with its summary", rows[0])
+	}
+	for i, want := range []string{"1 package auth", "2", "3 func Parse() {}"} {
+		if got := strings.TrimSpace(rows[i+1]); got != want {
+			t.Errorf("row %d reads %q, want %q", i+1, got, want)
 		}
 	}
-	if head := strings.SplitN(expanded, "\n", 2)[0]; !strings.Contains(head, "read auth.go (3 lines)") {
-		t.Errorf("the expanded card opens %q rather than with its summary", head)
+}
+
+// TestExpandedReadIsNumberedFromItsOffset is the acceptance criterion the test
+// above does not reach: a window onto a file, not the whole of it, has to keep
+// the file's own line numbers rather than restarting at 1 for whatever the
+// window happens to start on.
+func TestExpandedReadIsNumberedFromItsOffset(t *testing.T) {
+	call := opened(answered("read", &tool.Result{
+		Title: "read auth.go (lines 41-43)",
+		Content: "41\tfunc (m *Middleware) claims(r *http.Request) (Claims, error) {\n" +
+			"42\t\treturn parse(header)\n" +
+			"43\t}",
+	}))
+
+	// Each want pairs the gutter's number with the start of the line it
+	// belongs to, so a window numbered from 1 instead of 41 fails to find any
+	// of them rather than only the first.
+	body := words(call.Render(wide))
+	for _, want := range []string{"41 func (m *Middleware)", "42 return parse(header)", "43 }"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the card does not draw %q:\n%s", want, body)
+		}
 	}
 }
 

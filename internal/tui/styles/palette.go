@@ -17,6 +17,15 @@ const (
 	Light
 )
 
+// Spinner is the running glyph both the activity line and a tool card animate
+// through, one revolution a second on the beat that already redraws each of
+// them. Kept here rather than in either view: tui imports chat to draw cards,
+// so a shared sequence can only live somewhere both already import, and
+// styles is that place even though a glyph carries no colour of its own.
+// Braille, so every frame is one cell wide and nothing beside it shifts as it
+// turns.
+var Spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
 // Palette is the tokens a view draws through, resolved for one background.
 type Palette struct {
 	DiffAdded   lipgloss.Style
@@ -42,6 +51,19 @@ type Palette struct {
 	// do as the two that catch the eye.
 	ModePlan lipgloss.Style
 	ModeAuto lipgloss.Style
+
+	// CallDone, CallFailed and CallRunning tint a tool card's status glyph —
+	// the same green and red a diff already draws additions and removals in,
+	// so the two readings of "good" and "bad" agree rather than teaching the
+	// eye a second palette.
+	CallDone    lipgloss.Style
+	CallFailed  lipgloss.Style
+	CallRunning lipgloss.Style
+
+	// CallName is the tool's own name on a card, bold and apart from the
+	// argument summary that follows it so a scan down the transcript reads as
+	// a list of named actions rather than one long sentence per line.
+	CallName lipgloss.Style
 
 	// BannerFrom, BannerVia and BannerTo are the startup banner wordmark's
 	// gradient stops, left to right. Three rather than two so lipgloss.Blend1D
@@ -85,6 +107,15 @@ func build(isDark bool) Palette {
 
 		ModePlan: fg(lipgloss.Color("#0550ae"), lipgloss.Color("#58a6ff")),
 		ModeAuto: fg(lipgloss.Color("#8a6100"), lipgloss.Color("#d29922")),
+
+		// The same hex pairs as DiffAdded, DiffRemoved and ModeAuto: a fourth
+		// colour for "in progress" would be one more shade for a reader to
+		// learn, where amber already reads as "this is still moving" on the
+		// mode badge.
+		CallDone:    fg(lipgloss.Color("#1a7f37"), lipgloss.Color("#3fb950")),
+		CallFailed:  fg(lipgloss.Color("#cf222e"), lipgloss.Color("#f85149")),
+		CallRunning: fg(lipgloss.Color("#8a6100"), lipgloss.Color("#d29922")),
+		CallName:    fg(lipgloss.Color("#0550ae"), lipgloss.Color("#58a6ff")).Bold(true),
 
 		BannerFrom: fg(lipgloss.Color("#a3204e"), lipgloss.Color("#ff6b9d")),
 		BannerVia:  fg(lipgloss.Color("#7c3aed"), lipgloss.Color("#c084fc")),

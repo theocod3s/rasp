@@ -52,6 +52,32 @@ func Render(unified string, width int, p styles.Palette) string {
 // asking and drawing cannot disagree about a diff with only a header in it.
 func Draws(unified string) bool { return len(parse(unified)) > 0 }
 
+// Numbered draws plain lines under the same muted, right-aligned gutter
+// Render uses for a diff, counting from start rather than reading it off a
+// hunk header — for a tool whose own window onto a file opens partway
+// through it, where a gutter starting over at 1 would number every line
+// wrong. Rows carry class plain, so draw's own styling is a no-op and the
+// text goes out exactly as given — the one difference from a diff row.
+func Numbered(lines []string, start, width int, p styles.Palette) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	rows := make([]row, len(lines))
+	for i, line := range lines {
+		rows[i] = row{num: start + i, text: line, class: plain}
+	}
+	g := measure(rows, width)
+
+	var b strings.Builder
+	for i, r := range rows {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(g.draw(r, width, p))
+	}
+	return b.String()
+}
+
 type class int
 
 const (
@@ -62,6 +88,9 @@ const (
 	// the format talking about the file rather than a line out of it.
 	note
 	boundary
+	// plain is Numbered's own rows: text under the gutter with no added,
+	// removed or context colour at all.
+	plain
 )
 
 // row is one drawn line: the number the gutter shows against it, zero for a
@@ -253,6 +282,8 @@ func style(c class, p styles.Palette) lipgloss.Style {
 		return p.Muted
 	case boundary:
 		return p.DiffHunk
+	case plain:
+		return lipgloss.NewStyle()
 	}
 	return p.DiffContext
 }
