@@ -20,6 +20,16 @@ type Config struct {
 	Model string
 	Mode  permission.Mode
 
+	// Version is main.version, the same string `rasp --version` prints — read
+	// here rather than a second time so the startup banner cannot drift from it.
+	Version string
+
+	// Cwd is the resolved workspace root the session's tools are confined to,
+	// for the banner's own row. Resolved rather than the directory as launched,
+	// so a symlinked launch directory reads there the same as the path every
+	// tool call is actually checked against.
+	Cwd string
+
 	// Depth is where /effort reads the levels this session's provider can send
 	// and writes the one it asks for. nil is a UI nothing composed a provider
 	// onto, where the command says so rather than drawing an empty list.
@@ -77,6 +87,11 @@ func (p *Program) Run(a Turner, answers Permissions) error {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	m := newModel(ctx, a, p.cfg)
+	// The conversation's first item, appended here rather than inside newModel:
+	// several tests build a model straight off that constructor to drive one
+	// mechanism in isolation, and a banner in every one of them would be an
+	// item none of those tests are about.
+	m.chat.Append(banner(p.cfg))
 	m.permissions = answers
 	if p.cfg.Yolo && answers != nil {
 		m = m.setYolo(true)

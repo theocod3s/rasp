@@ -50,10 +50,19 @@ func startTUI(cmd *cobra.Command) error {
 		return fmt.Errorf("the working directory is the workspace every tool is confined to, "+
 			"and it could not be read: %w", err)
 	}
+	ws, err := workspace.Open(dir)
+	if err != nil {
+		return err
+	}
+	// The banner's cwd row and the tools' own confinement read the same resolved
+	// root, so a launch directory that is itself a symlink is never shown one way
+	// and enforced another.
+	uiCfg.Cwd = ws.Root()
 
 	ui := tui.New(uiCfg)
-	s, err := newSession(res.Config, effort, model, dir, ui, ui.Events)
+	s, err := newSession(res.Config, effort, model, ws, ui, ui.Events)
 	if err != nil {
+		ws.Close()
 		return err
 	}
 	defer func() { _ = s.ws.Close() }()
@@ -78,9 +87,10 @@ func uiConfig(cmd *cobra.Command, cfg config.Config) (tui.Config, error) {
 			"anything, and it could not be read: %w", yoloFlag, err)
 	}
 	return tui.Config{
-		Model: cfg.Model,
-		Mode:  permission.Mode(cfg.Mode),
-		Yolo:  yolo,
+		Model:   cfg.Model,
+		Mode:    permission.Mode(cfg.Mode),
+		Version: version,
+		Yolo:    yolo,
 	}, nil
 }
 
@@ -92,25 +102,24 @@ type session struct {
 	ws    *workspace.Workspace
 }
 
-// newSession composes the loop, the tools, the workspace and the permission
-// gate into one another. It takes the two seams a frontend sits on either side
-// of — where a question the ladder could not answer is published, and where an
-// event is drawn — rather than the frontend itself, so the composition can be
-// driven without a terminal.
+// newSession composes the loop, the tools and the permission gate onto an
+// already-open workspace. It takes the two seams a frontend sits on either
+// side of — where a question the ladder could not answer is published, and
+// where an event is drawn — rather than the frontend itself, so the
+// composition can be driven without a terminal.
 //
-// Nothing here is optional. A registry with no tools, or an agent with no
+// ws arrives open rather than as a directory to open because a caller may need
+// its resolved root — the banner's cwd row — before the rest of the session
+// exists to hand it back. Closing it is the caller's job on every path,
+// including one where this returns an error.
+//
+// Nothing else here is optional. A registry with no tools, or an agent with no
 // Approver, is a session that looks like it works: the first edits files with
 // nobody asked, and the second cannot edit anything at all.
-func newSession(cfg config.Config, provider llm.Provider, model, dir string,
+func newSession(cfg config.Config, provider llm.Provider, model string, ws *workspace.Workspace,
 	prompter permission.Prompter, events func(agent.Event)) (*session, error) {
-	ws, err := workspace.Open(dir)
-	if err != nil {
-		return nil, err
-	}
-
 	g, err := newGate(cfg, ws, prompter)
 	if err != nil {
-		ws.Close()
 		return nil, err
 	}
 
@@ -123,7 +132,6 @@ func newSession(cfg config.Config, provider llm.Provider, model, dir string,
 		Events:    events,
 	})
 	if err != nil {
-		ws.Close()
 		return nil, err
 	}
 	return &session{agent: a, gate: g, ws: ws}, nil
