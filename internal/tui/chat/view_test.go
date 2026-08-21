@@ -103,7 +103,7 @@ func TestReplacingAFrozenItemDrawsTheNewOne(t *testing.T) {
 
 	v.Set("call", chat.Call{Name: "read", State: chat.CallDone, Result: &tool.Result{IsError: true}})
 
-	if got := v.Render(80); !strings.Contains(got, "read failed") {
+	if got := v.Render(80); !strings.Contains(words(got), "✗ read") {
 		t.Errorf("the frame reads %q; the freeze outlived the item it was taken from", got)
 	}
 }
@@ -116,7 +116,9 @@ func TestSetKeepsAnItemWhereItFirstAppeared(t *testing.T) {
 	v.Set("second", chat.Call{Name: "write", State: chat.CallRunning})
 	v.Set("first", chat.Call{Name: "read", State: chat.CallDone})
 
-	if got, want := v.Render(80), "  read done\n  write running\n"; got != want {
+	// words() rather than an exact match: the glyph and name are coloured, and
+	// this test is about ordering, not styling.
+	if got, want := words(v.Render(80)), "✓ read ⠋ write"; got != want {
 		t.Errorf("the conversation reads\n%q\nwant\n%q", got, want)
 	}
 	if v.Len() != 2 {

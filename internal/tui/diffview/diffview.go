@@ -52,6 +52,35 @@ func Render(unified string, width int, p styles.Palette) string {
 // asking and drawing cannot disagree about a diff with only a header in it.
 func Draws(unified string) bool { return len(parse(unified)) > 0 }
 
+// Numbered draws plain lines under the same muted, right-aligned gutter
+// Render uses for a diff, counting from start rather than reading it off a
+// hunk header — for a tool whose own window onto a file opens partway
+// through it, where a gutter starting over at 1 would number every line
+// wrong. Unlike a diff row, the text itself carries no added/removed colour.
+func Numbered(lines []string, start, width int, p styles.Palette) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	rows := make([]row, len(lines))
+	for i, line := range lines {
+		rows[i] = row{num: start + i, text: line}
+	}
+	g := measure(rows, width)
+
+	var b strings.Builder
+	for i, r := range rows {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		text, cut := fit(expand(r.text), g.content(width))
+		b.WriteString(g.number(r.num, p) + text)
+		if cut {
+			b.WriteString(p.Muted.Render(elision))
+		}
+	}
+	return b.String()
+}
+
 type class int
 
 const (

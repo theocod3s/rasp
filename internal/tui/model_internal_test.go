@@ -34,14 +34,17 @@ func TestUpdateDrawsWhatATurnProduced(t *testing.T) {
 	}
 
 	frame := words(m.View().Content)
-	for _, want := range []string{"Reading it now.", "read running", "write failed", "running read"} {
+	// ⠋ is the running spinner's first frame and ✗ the failed glyph — both
+	// deterministic here, since nothing in this test moves the clock the
+	// spinner reads or gives write a title to summarise.
+	for _, want := range []string{"Reading it now.", "⠋ read", "✗ write", "running read"} {
 		if !strings.Contains(frame, want) {
 			t.Errorf("the frame does not mention %q:\n%s", want, frame)
 		}
 	}
 	// A call that ended is drawn where it started rather than at the end of the
 	// conversation, which is what makes a transcript readable a step later.
-	if running, failed := strings.Index(frame, "read running"), strings.Index(frame, "write failed"); running > failed {
+	if running, failed := strings.Index(frame, "⠋ read"), strings.Index(frame, "✗ write"); running > failed {
 		t.Errorf("the call that finished jumped ahead of the one still running:\n%s", frame)
 	}
 
@@ -83,7 +86,9 @@ func TestEachStepsReplyIsAnItemOfItsOwn(t *testing.T) {
 	}
 
 	frame := words(m.View().Content)
-	for _, want := range []string{"Reading it now.", "read done", "The header is parsed twice."} {
+	// ✓ read: the call carried an empty *tool.Result, so there is nothing for
+	// the line to summarise beyond the glyph and the tool's own name.
+	for _, want := range []string{"Reading it now.", "✓ read", "The header is parsed twice."} {
 		if !strings.Contains(frame, want) {
 			t.Errorf("the frame does not mention %q:\n%s", want, frame)
 		}

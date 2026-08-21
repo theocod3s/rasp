@@ -38,9 +38,11 @@ func TestCardsAreDrawnInTheOrderTheModelAskedFor(t *testing.T) {
 	}
 
 	frame := words(m.View().Content)
-	read, edit, grep := strings.Index(frame, "read running"),
+	// call_1 and call_3 are still running, with no title to summarise; call_2
+	// finished and reports its own title.
+	read, edit, grep := strings.Index(frame, "⠋ read"),
 		strings.Index(frame, "edit auth.go"),
-		strings.Index(frame, "grep running")
+		strings.Index(frame, "⠋ grep")
 	switch {
 	case read < 0 || edit < 0 || grep < 0:
 		t.Fatalf("one of the three calls never reached the conversation:\n%s", frame)
@@ -74,7 +76,9 @@ func TestACallAnnouncedAndNeverStartedIsStillDrawn(t *testing.T) {
 		m, _ = m.Update(agentMsg{event: ev})
 	}
 
-	if frame, want := words(m.View().Content), "bash queued"; !strings.Contains(frame, want) {
+	// ○ is the queued glyph: nothing ever started this call, so there is no
+	// elapsed time or title for the line to add to its name.
+	if frame, want := words(m.View().Content), "○ bash"; !strings.Contains(frame, want) {
 		t.Errorf("the frame does not mention %q, so the call the turn ended before is gone:\n%s", want, frame)
 	}
 }
@@ -108,12 +112,15 @@ func TestATickMovesTheRunningCardAndLeavesTheFinishedOnesAlone(t *testing.T) {
 			finished, frame)
 	}
 
+	// The glyph is the spinner frame Elapsed lands on, one revolution a second:
+	// 1.5s is fifteen ticks in, which is frame 5; 7s is seventy ticks, back
+	// around to frame 0.
 	for _, tc := range []struct {
 		after   time.Duration
 		running string
 	}{
-		{after: 1500 * time.Millisecond, running: "bash running 1.5s"},
-		{after: 7 * time.Second, running: "bash running 7s"},
+		{after: 1500 * time.Millisecond, running: "⠴ bash 1.5s"},
+		{after: 7 * time.Second, running: "⠋ bash 7s"},
 	} {
 		now = started.Add(tc.after)
 		m, _ = m.Update(tickMsg{})
