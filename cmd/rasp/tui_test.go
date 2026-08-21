@@ -67,6 +67,29 @@ func TestTheFlagIsWhatTheUIIsToldTheSessionIs(t *testing.T) {
 	}
 }
 
+// TestTheUIIsToldExactlyMainVersion pins "one source, no second copy": the
+// banner's version row and `rasp --version` must trace to the same variable,
+// not to two literals that happen to agree today.
+func TestTheUIIsToldExactlyMainVersion(t *testing.T) {
+	cmd := newRootCmd()
+	if err := cmd.Flags().Parse(nil); err != nil {
+		t.Fatalf("parsing no args: %v", err)
+	}
+
+	cfg, err := uiConfig(cmd, config.Config{Model: "anthropic/claude-opus-5", Mode: config.ModeManual})
+	if err != nil {
+		t.Fatalf("uiConfig: %v", err)
+	}
+	if cfg.Version != version {
+		t.Errorf("the UI is told version %q, main.version is %q", cfg.Version, version)
+	}
+	// The comparison above only means something if `--version` reads the same
+	// variable, which is what this pins.
+	if cmd.Version != version {
+		t.Fatalf("the root command's own --version reads %q, not main.version %q", cmd.Version, version)
+	}
+}
+
 // TestTheBypassFlagBelongsToTheSessionAndNowhereElse. It arms a session with a
 // user watching it, and a subcommand that accepted the word and ignored it would
 // be a flag reading as applied when it is not — worst of all on `config check`,

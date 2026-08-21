@@ -354,9 +354,15 @@ func TestTheSessionPutsTheGateInFrontOfEveryTool(t *testing.T) {
 		fake.Done(llm.StopEndTurn),
 	)
 
-	cfg := config.Config{Mode: config.ModeManual, MaxOutputTokens: 1024}
-	s, err := newSession(cfg, provider, "fake-model", dir, recordingPrompter{asked}, nil)
+	ws, err := workspace.Open(dir)
 	if err != nil {
+		t.Fatalf("opening the workspace at %s: %v", dir, err)
+	}
+
+	cfg := config.Config{Mode: config.ModeManual, MaxOutputTokens: 1024}
+	s, err := newSession(cfg, provider, "fake-model", ws, recordingPrompter{asked}, nil)
+	if err != nil {
+		ws.Close()
 		t.Fatalf("newSession: %v", err)
 	}
 	defer s.ws.Close()

@@ -41,6 +41,13 @@ func goldenConfig() Config {
 		Model: "anthropic/claude-opus-5",
 		Mode:  permission.ModeManual,
 		Depth: &depths{current: llm.EffortHigh, lists: [][]llm.Effort{anthropicish}},
+
+		// Named for TestBannerGolden alone — no other state here renders either
+		// field. A path no real machine has for a home directory, so the banner's
+		// own ~ abbreviation never fires and the golden stays the same on every
+		// machine that records it.
+		Version: "v0.2.0",
+		Cwd:     "/srv/rasp-demo",
 	}
 }
 
@@ -279,6 +286,31 @@ func TestViewGoldens(t *testing.T) {
 	recorded(t, states)
 }
 
+// TestBannerGolden freezes the identity block Run appends ahead of the
+// conversation (tui.go), on its own rather than folded into snapshots(): every
+// state there shares one goldenConfig, so the block would be the same eleven
+// lines at the top of all fourteen goldens — adding nothing to any of them but
+// the cost of re-reviewing every one on a change to wording nothing else there
+// is about.
+func TestBannerGolden(t *testing.T) {
+	turner := newTurner(agent.ErrInterrupted)
+	m := newModel(t.Context(), turner, goldenConfig())
+	m.chat.Append(banner(goldenConfig()))
+	m.permissions = &answers{decided: true}
+	m.now = func() time.Time { return goldenNow }
+
+	tm := teatest.NewTestModel(t, m,
+		teatest.WithInitialTermSize(goldenWidth, goldenHeight),
+		teatest.WithProgramOptions(tea.WithoutRenderer()),
+	)
+
+	frame := quit(t, tm).View().Content
+	if strings.TrimSpace(frame) == "" {
+		t.Fatal("the banner state drew a blank frame")
+	}
+	golden.RequireEqual(t, frame)
+}
+
 // TestAResizeRedrawsTheConversationAtItsNewWidth is what the goldens cannot say
 // on their own: a snapshot records whatever the harness produced, so something
 // asserted rather than recorded has to prove the program is really running the
@@ -334,6 +366,10 @@ func draw(t *testing.T, state snapshot) string {
 // program starts the root model under teatest, with no terminal at either end.
 // The renderer is off because nothing here reads the output stream, and View is
 // called after every Update all the same.
+//
+// Deliberately bannerless: Run appends that item (tui.go), newModel does not,
+// and every state drawn through this helper wants the conversation alone —
+// TestBannerGolden is the one frame that adds it back.
 //
 // The turner it comes back with stays in Send until the test's context ends,
 // which is what holds a turn open long enough for a frame to be taken mid-flight.

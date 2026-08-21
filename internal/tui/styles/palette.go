@@ -35,6 +35,13 @@ type Palette struct {
 	// do as the two that catch the eye.
 	ModePlan lipgloss.Style
 	ModeAuto lipgloss.Style
+
+	// BannerFrom, BannerVia and BannerTo are the startup banner wordmark's
+	// gradient stops, left to right. Three rather than two so lipgloss.Blend1D
+	// has a middle to bend through instead of a straight line between one pair.
+	BannerFrom lipgloss.Style
+	BannerVia  lipgloss.Style
+	BannerTo   lipgloss.Style
 }
 
 // For returns the palette for bg. Anything that is not Light is dark, so a
@@ -68,5 +75,9 @@ func build(isDark bool) Palette {
 
 		ModePlan: fg(lipgloss.Color("#0550ae"), lipgloss.Color("#58a6ff")),
 		ModeAuto: fg(lipgloss.Color("#8a6100"), lipgloss.Color("#d29922")),
+
+		BannerFrom: fg(lipgloss.Color("#a3204e"), lipgloss.Color("#ff6b9d")),
+		BannerVia:  fg(lipgloss.Color("#7c3aed"), lipgloss.Color("#c084fc")),
+		BannerTo:   fg(lipgloss.Color("#4338ca"), lipgloss.Color("#818cf8")),
 	}
 }
