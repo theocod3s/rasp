@@ -53,6 +53,11 @@ func TestEveryTokenIsADifferentColourInEachPalette(t *testing.T) {
 // clear it with room — 4.55:1 at the tightest — so it is a floor on the palette
 // as chosen, not a bar it was tuned to scrape past; #8c959f came in at 3.04:1.
 //
+// Faint is the one token held to a lower floor, and the exception is the point
+// of it: thinking and notices are drawn to be skimmed past, so a token that met
+// the body-text floor would not be faint at all. Its own ceiling is asserted
+// separately below, which is what keeps "lower floor" from meaning "unchecked".
+//
 // What this does NOT say is that any given session is legible. Which palette a
 // session gets is model.go's question, and today the answer is always Dark:
 // nothing issues the query whose answer would select Light, so a reader on a
@@ -63,31 +68,78 @@ func TestEveryTokenIsADifferentColourInEachPalette(t *testing.T) {
 func TestEveryTokenStandsOutFromTheBackgroundItIsFor(t *testing.T) {
 	const floor = 4.5
 
-	// What each palette assumes it is drawn on: paper, and the near-black most
-	// terminal themes settle on. Contrast is worse on a lighter dark background,
-	// so the darker one is the generous case and this is a floor, not a promise.
-	for _, bg := range []struct {
+	for _, bg := range backgrounds() {
+		v := reflect.TypeOf(bg.palette)
+		for i := range v.NumField() {
+			name := v.Field(i).Name
+			t.Run(bg.name+"/"+name, func(t *testing.T) {
+				want := floor
+				if name == "Faint" {
+					want = faintFloor
+				}
+				fg, ok := foreground(bg.palette, name)
+				if !ok {
+					t.Fatalf("%s sets no foreground colour, so there is no contrast to measure", name)
+				}
+				if got := contrast(fg, bg.on); got < want {
+					t.Errorf("%s draws at %.2f:1 on a %s background, under the %.1f:1 floor — most "+
+						"likely the light and dark values are the wrong way round", name, got, bg.name, want)
+				}
+			})
+		}
+	}
+}
+
+// faintFloor is where Faint stops being skimmable and starts being unreadable.
+const faintFloor = 3.0
+
+// TestFaintIsFainterThanMuted is the ceiling under the exception above. Faint
+// exists to be a step down from what the UI says in its own voice, and a token
+// nudged back up to Muted's shade — by a review asking for legibility, by a
+// palette rewritten from one source — would satisfy every floor here while
+// drawing thinking at the weight of a reply.
+func TestFaintIsFainterThanMuted(t *testing.T) {
+	// A ratio rather than a difference: the two backgrounds are nowhere near
+	// each other in contrast terms, so a fixed gap would be generous on one and
+	// impossible on the other.
+	const mostOfMuted = 0.8
+
+	for _, bg := range backgrounds() {
+		t.Run(bg.name, func(t *testing.T) {
+			faint, ok := foreground(bg.palette, "Faint")
+			if !ok {
+				t.Fatal("Faint sets no foreground colour")
+			}
+			muted, ok := foreground(bg.palette, "Muted")
+			if !ok {
+				t.Fatal("Muted sets no foreground colour")
+			}
+
+			f, m := contrast(faint, bg.on), contrast(muted, bg.on)
+			if f > mostOfMuted*m {
+				t.Errorf("Faint draws at %.2f:1 on a %s background and Muted at %.2f:1, so the two read "+
+					"as one weight; faint has to come in under %.2f:1", f, bg.name, m, mostOfMuted*m)
+			}
+		})
+	}
+}
+
+// backgrounds is what each palette assumes it is drawn on: paper, and the
+// near-black most terminal themes settle on. Contrast is worse on a lighter
+// dark background, so the darker one is the generous case and every bound
+// measured against it is a bound on the palette, not a promise about a session.
+func backgrounds() []struct {
+	name    string
+	palette styles.Palette
+	on      [3]float64
+} {
+	return []struct {
 		name    string
 		palette styles.Palette
 		on      [3]float64
 	}{
 		{"light", styles.For(styles.Light), rgb(0xff, 0xff, 0xff)},
 		{"dark", styles.For(styles.Dark), rgb(0x0d, 0x11, 0x17)},
-	} {
-		v := reflect.TypeOf(bg.palette)
-		for i := range v.NumField() {
-			name := v.Field(i).Name
-			t.Run(bg.name+"/"+name, func(t *testing.T) {
-				fg, ok := foreground(bg.palette, name)
-				if !ok {
-					t.Fatalf("%s sets no foreground colour, so there is no contrast to measure", name)
-				}
-				if got := contrast(fg, bg.on); got < floor {
-					t.Errorf("%s draws at %.2f:1 on a %s background, under the %.1f:1 floor — most "+
-						"likely the light and dark values are the wrong way round", name, got, bg.name, floor)
-				}
-			})
-		}
 	}
 }
 

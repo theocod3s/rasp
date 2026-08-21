@@ -3,7 +3,10 @@ package chat
 import (
 	"strings"
 
+	"charm.land/lipgloss/v2"
+
 	"github.com/theocod3s/rasp/internal/llm"
+	"github.com/theocod3s/rasp/internal/tui/styles"
 )
 
 // Caret marks a line the user wrote — their prompts here and the line they are
@@ -19,6 +22,11 @@ type Message struct {
 	// whole accumulation (design §3.1), so a reply still streaming is this same
 	// item rebuilt from the latest one with Done false.
 	Done bool
+
+	// Background is the terminal's, and picks the palette thinking is drawn in.
+	// Fixed when the item is made: nothing repaints a reply the way it repaints
+	// a card, because the model keeps no copy of one it has committed (model.go).
+	Background styles.Background
 }
 
 func (m Message) Finished() bool { return m.Done }
@@ -26,27 +34,59 @@ func (m Message) Finished() bool { return m.Done }
 // Render draws a reply as markdown and a prompt as the characters the user
 // typed: a prompt is not a document, and running one through a markdown
 // renderer would eat the punctuation they meant literally.
+//
+// A reply that thought first draws the thinking above it, faint and whole, and
+// deliberately not through the markdown renderer: keeping it out leaves the
+// stable-prefix proof (boundary.go) about the reply alone.
 func (m Message) Render(width int) string {
-	text := spoken(m.Content)
-	if text == "" {
-		return ""
-	}
 	if m.Content.Role == llm.RoleUser {
+		text := spoken(m.Content)
+		if text == "" {
+			return ""
+		}
 		return wrap(Caret+text, width)
 	}
-	return md.render(text, width)
+
+	var head, body string
+	// Trimmed: an accumulation caught mid-stream often ends on the newline before
+	// the next paragraph, and a faint blank line under the segment reads as a gap.
+	if text := strings.TrimSpace(thinking(m.Content)); text != "" {
+		head = paint(text, styles.For(m.Background).Faint, width)
+	}
+	// Guarded rather than left to the renderer: an empty string shares no prefix
+	// with the memo, so rendering one drops the head of the arriving reply
+	// (markdown.go).
+	if text := spoken(m.Content); text != "" {
+		body = md.render(text, width)
+	}
+	return join(head, body)
 }
 
-// spoken is the part of a message a reader is meant to see. Thinking is left
-// out, and a tool call is an item of its own.
-func spoken(msg llm.Message) string {
+// spoken is what the model said and thinking is what it worked through first.
+// Two strings rather than one because only one of them is markdown; a tool call
+// is an item of its own either way.
+func spoken(msg llm.Message) string   { return content(msg, llm.BlockText) }
+func thinking(msg llm.Message) string { return content(msg, llm.BlockThinking) }
+
+func content(msg llm.Message, kind llm.BlockType) string {
 	var b strings.Builder
 	for _, block := range msg.Content {
-		if block.Type == llm.BlockText {
+		if block.Type == kind {
 			b.WriteString(block.Text)
 		}
 	}
 	return b.String()
+}
+
+// paint wraps text to width and styles it a line at a time: Lip Gloss renders a
+// multi-line string as a block, padding every line out to the longest with
+// spaces the reader would find again on the end of anything they copied.
+func paint(text string, style lipgloss.Style, width int) string {
+	lines := strings.Split(wrap(text, width), "\n")
+	for i, line := range lines {
+		lines[i] = style.Render(line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // wrap breaks text so no line runs past width, at the last space that fits and

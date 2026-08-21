@@ -29,6 +29,13 @@ type Palette struct {
 	// a file ends without a newline, the status line under the conversation.
 	Muted lipgloss.Style
 
+	// Faint is what a reader is meant to be able to skip: the model's thinking,
+	// and the notices rasp answers a command with. Dimmer than Muted, which has
+	// to stay legible as information and so sits at body-text contrast — a
+	// paragraph at that weight reads as something that was said. Held to a 3:1
+	// floor instead of 4.5:1, and to a ceiling under Muted (palette_test.go).
+	Faint lipgloss.Style
+
 	// ModePlan and ModeAuto tint the permission mode the session is in. Manual
 	// has no token because it draws in the terminal's own foreground (design
 	// §7.8) — which is also what leaves the two modes that change what a tool may
@@ -72,6 +79,9 @@ func build(isDark bool) Palette {
 		// Muted, not faint. It carries the mark saying a line was cut off, and a
 		// reader who cannot see that mark reads a shortened line as the whole one.
 		Muted: fg(lipgloss.Color("#6e7781"), lipgloss.Color("#7d8590")),
+		// The light value is the shade Muted was rejected at: 3.04:1 on white, too
+		// dim for a truncation mark and right for text nobody has to read.
+		Faint: fg(lipgloss.Color("#8c959f"), lipgloss.Color("#5c636d")),
 
 		ModePlan: fg(lipgloss.Color("#0550ae"), lipgloss.Color("#58a6ff")),
 		ModeAuto: fg(lipgloss.Color("#8a6100"), lipgloss.Color("#d29922")),

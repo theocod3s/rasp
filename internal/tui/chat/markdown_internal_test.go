@@ -6,6 +6,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/theocod3s/rasp/internal/llm"
+	"github.com/theocod3s/rasp/internal/tui/styles"
 )
 
 // corpus is a set of replies of the shape an assistant actually sends, chosen
@@ -46,6 +49,89 @@ func TestEveryPrefixOfAReplyRendersAsThoughItWereWhole(t *testing.T) {
 			}
 		})
 	}
+}
+
+// aloud is the thinking hung above every reply in the two tests below. Two
+// paragraphs and a fence, so a segment that did reach the renderer would render
+// as something rather than come back looking like the plain text it is.
+const aloud = "The header is parsed twice.\n\n```go\nclaims, err := parse(h)\n```\n\nSo the fix is upstream."
+
+// TestThinkingNeverReachesTheMarkdownRenderer is the claim in its bluntest
+// form, checked at the one place it can be: what the renderer is handed.
+func TestThinkingNeverReachesTheMarkdownRenderer(t *testing.T) {
+	const width = 60
+
+	var seen []string
+	restore(t, &markdown{draw: func(src string, width int) string {
+		seen = append(seen, src)
+		return glamourBlock(src, width)
+	}})
+
+	doc := corpus["fenced code between prose"]
+	for n := 1; n <= len(doc); n++ {
+		thoughtful(aloud, doc[:n]).Render(width)
+	}
+
+	if len(seen) == 0 {
+		t.Fatal("the renderer was never called, so the loop below examined nothing")
+	}
+	for _, src := range seen {
+		if strings.Contains(src, "parsed twice") {
+			t.Fatalf("the markdown renderer was handed thinking:\n%q", src)
+		}
+	}
+}
+
+// TestThinkingLeavesTheReplysBoundariesWhereTheyWere is the corpus proof again
+// with reasoning hung above every reply. The boundary detector reads the reply
+// alone, and this is what holds that true from outside: a thought of any shape
+// must leave every prefix rendering exactly as it did without one.
+func TestThinkingLeavesTheReplysBoundariesWhereTheyWere(t *testing.T) {
+	const width = 60
+	head := paint(aloud, styles.For(styles.Dark).Faint, width)
+
+	for name, doc := range corpus {
+		t.Run(name, func(t *testing.T) {
+			restore(t, &markdown{draw: glamourBlock})
+
+			for n := 1; n <= len(doc); n++ {
+				drawn := thoughtful(aloud, doc[:n]).Render(width)
+				body, ok := strings.CutPrefix(drawn, head)
+				if !ok {
+					t.Fatalf("the first %d bytes of the reply drew\n%s\nand the thinking above them is\n%s",
+						n, indent(drawn), indent(head))
+				}
+				// The separator only when there is something under it: a prefix
+				// glamour draws nothing for — one `>`, half an HTML tag — leaves the
+				// thinking standing alone rather than over a blank line.
+				got := visible(strings.TrimPrefix(body, "\n\n"))
+				want := visible(glamourBlock(doc[:n], width))
+				if got != want {
+					t.Fatalf("under its thinking, the first %d bytes of the reply draw\n%s\nand one render "+
+						"of the same text draws\n%s", n, indent(got), indent(want))
+				}
+			}
+		})
+	}
+}
+
+// thoughtful is a reply that thought first, as the conversation draws it.
+func thoughtful(thinking, text string) Message {
+	return Message{Content: llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+		{Type: llm.BlockThinking, Text: thinking},
+		{Type: llm.BlockText, Text: text},
+	}}}
+}
+
+// restore swaps the package renderer for the length of one test. Message.Render
+// draws through that one rather than through a renderer handed to it, so this is
+// the only way to see what it was given.
+func restore(t *testing.T, with *markdown) {
+	t.Helper()
+
+	was := md
+	t.Cleanup(func() { md = was })
+	md = with
 }
 
 // blocks are the pieces the generated replies below are built from, one of each
