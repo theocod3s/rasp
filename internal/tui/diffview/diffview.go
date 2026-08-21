@@ -1,6 +1,7 @@
 package diffview
 
 import (
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -13,74 +14,245 @@ import (
 const (
 	elision = "…"
 
+	// gap is what a hunk boundary draws as. The header it stands in for said one
+	// thing the numbers do not — that the file between two hunks is missing —
+	// and nobody reads a card by noticing that 15 is followed by 40, so the
+	// arithmetic goes and the break stays.
+	gap = "⋯"
+
 	// Four, not the terminal's eight: a diff is already two columns in, and eight
 	// puts a doubly-indented Go line past 80 columns on whitespace alone.
 	tabWidth = 4
 )
 
-// Render draws a unified diff, one screen line per line of it, in p's colours.
-// Nothing wraps: a changed line broken across two rows reads as two changed
-// lines, so a line past width is cut and marked instead, the whole of it left
-// in the tool's Details for a horizontal scroll that has no binding yet. A
-// width of zero or less is a terminal that has not reported its size, and
-// nothing is cut.
+// Render draws a unified diff in p's colours, under a line-number gutter read
+// off the `@@` headers. Nothing wraps: a changed line broken across two rows
+// reads as two changed lines, so a line past width is cut and marked instead,
+// the whole of it left in the tool's Details for a horizontal scroll that has
+// no binding yet. A width of zero or less is a terminal that has not reported
+// its size, and nothing is cut.
 func Render(unified string, width int, p styles.Palette) string {
-	lines := body(unified)
-	if len(lines) == 0 {
+	rows := parse(unified)
+	if len(rows) == 0 {
 		return ""
 	}
+	g := measure(rows, width)
 
 	var b strings.Builder
-	for i, line := range lines {
+	for i, r := range rows {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(draw(line, width, p))
+		b.WriteString(g.draw(r, width, p))
 	}
 	return b.String()
 }
 
 // Draws reports that unified has lines a reader would see. Exported so that
 // asking and drawing cannot disagree about a diff with only a header in it.
-func Draws(unified string) bool { return len(body(unified)) > 0 }
+func Draws(unified string) bool { return len(parse(unified)) > 0 }
 
-// body drops the `--- a/x` and `+++ b/x` pair, which the card's own line
-// already says. Positional rather than by prefix: a deleted line reading `-- x`
-// is a deletion, and it can only be one below a hunk header.
-func body(unified string) []string {
+type class int
+
+const (
+	context class = iota
+	added
+	removed
+	// note is `\ No newline at end of file`, the one line that is not source:
+	// the format talking about the file rather than a line out of it.
+	note
+	boundary
+)
+
+// row is one drawn line: the number the gutter shows against it, zero for a
+// line neither file numbers, and the diff line whole, marker byte and all.
+type row struct {
+	num   int
+	text  string
+	class class
+}
+
+// parse reads a unified diff into the rows a reader sees, numbered off the `@@`
+// headers — the new file's line for an addition or a context line, the old
+// file's for a deletion, so each side is numbered in the file it exists in. The
+// headers are not rows themselves.
+//
+// A header that does not parse stops the numbering rather than carrying on from
+// where it had got to: a gutter is worth its columns only while it is right,
+// and a wrong number is not visible as wrong.
+func parse(unified string) []row {
 	unified = strings.TrimSuffix(unified, "\n")
 	if unified == "" {
 		return nil
 	}
 	lines := strings.Split(unified, "\n")
+
+	// The `--- a/x` and `+++ b/x` pair goes, since the card's own line already
+	// says the path. Positional rather than by prefix: a deleted line reading
+	// `-- x` is a deletion, and it can only be one below a hunk header.
 	if len(lines) >= 2 && strings.HasPrefix(lines[0], "--- ") && strings.HasPrefix(lines[1], "+++ ") {
-		return lines[2:]
+		lines = lines[2:]
 	}
-	return lines
+
+	var (
+		rows         []row
+		oldNo, newNo int
+		numbering    bool
+		insideAHunk  bool
+	)
+	take := func(n *int) int {
+		if !numbering {
+			return 0
+		}
+		*n++
+		return *n - 1
+	}
+
+	for _, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "@@"):
+			if insideAHunk {
+				rows = append(rows, row{class: boundary})
+			}
+			insideAHunk = true
+			oldNo, newNo, numbering = hunk(line)
+		case strings.HasPrefix(line, "+"):
+			rows = append(rows, row{num: take(&newNo), text: line, class: added})
+		case strings.HasPrefix(line, "-"):
+			rows = append(rows, row{num: take(&oldNo), text: line, class: removed})
+		case strings.HasPrefix(line, `\`):
+			rows = append(rows, row{text: line, class: note})
+		default:
+			n := take(&newNo)
+			take(&oldNo)
+			rows = append(rows, row{num: n, text: line, class: context})
+		}
+	}
+	return rows
 }
 
-func draw(line string, width int, p styles.Palette) string {
-	text, cut := fit(expand(line), width)
-	drawn := classify(line, p).Render(text)
+// hunk reads the lines the two files resume at out of a `@@ -12,5 +12,6 @@`
+// header. Its counts are deliberately not read: every line below says which
+// side it belongs to, so the two starts number the whole hunk on their own, and
+// a count disagreeing with the body would be believed over the body.
+func hunk(line string) (oldStart, newStart int, ok bool) {
+	spec, found := strings.CutPrefix(line, "@@ ")
+	if !found {
+		return 0, 0, false
+	}
+	spec, _, found = strings.Cut(spec, " @@")
+	if !found {
+		return 0, 0, false
+	}
+	before, after, found := strings.Cut(spec, " ")
+	if !found {
+		return 0, 0, false
+	}
+	o, okOld := side(before, "-")
+	n, okNew := side(after, "+")
+	if !okOld || !okNew {
+		return 0, 0, false
+	}
+	return o, n, true
+}
+
+// side is one half of a hunk header — `-12,5`, or `-12` where the count is one
+// and the format leaves it out.
+func side(field, sign string) (int, bool) {
+	digits, found := strings.CutPrefix(field, sign)
+	if !found {
+		return 0, false
+	}
+	digits, _, _ = strings.Cut(digits, ",")
+	n, err := strconv.Atoi(digits)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// gutter is the line-number column, as wide as the widest number the diff draws
+// and empty for one whose lines nothing numbers.
+//
+// Tab stops are counted from the start of a line's content rather than from the
+// row: every row carries the same gutter, so the indentation lines up either
+// way, and counting the gutter in would draw the file's tabs at stops the file
+// does not have.
+type gutter struct{ digits int }
+
+// measure sizes the gutter for the rows it will draw. Below a width that leaves
+// a column for the line itself it is dropped whole: the numbers would otherwise
+// be the only thing on the row, and past that the row runs wider than the
+// terminal and wraps — the failure the cut exists to prevent.
+func measure(rows []row, width int) gutter {
+	widest := 0
+	for _, r := range rows {
+		widest = max(widest, r.num)
+	}
+	if widest == 0 {
+		return gutter{}
+	}
+	digits := len(strconv.Itoa(widest))
+	if width > 0 && digits+1 >= width {
+		return gutter{}
+	}
+	return gutter{digits: digits}
+}
+
+// width is what the gutter takes from the terminal: its digits and the space
+// after them.
+func (g gutter) width() int {
+	if g.digits == 0 {
+		return 0
+	}
+	return g.digits + 1
+}
+
+// content is what is left for the line itself. A width of zero or less passes
+// through as it came, since that is what fit reads as "nobody has said how wide
+// the terminal is".
+func (g gutter) content(width int) int {
+	if width <= 0 {
+		return width
+	}
+	return width - g.width()
+}
+
+func (g gutter) draw(r row, width int, p styles.Palette) string {
+	if r.class == boundary {
+		return strings.Repeat(" ", max(0, g.digits-1)) + style(r.class, p).Render(gap)
+	}
+	text, cut := fit(expand(r.text), g.content(width))
+	drawn := g.number(r.num, p) + style(r.class, p).Render(text)
 	if cut {
 		drawn += p.Muted.Render(elision)
 	}
 	return drawn
 }
 
-// classify reads a line's class off the character the format puts it in. `\` is
-// the one that is not source: "\ No newline at end of file" is the format
-// talking about the file rather than a line out of it.
-func classify(line string, p styles.Palette) lipgloss.Style {
+// number is one gutter cell: a line's number right-aligned under the widest one
+// in the diff, or the blank a line neither file numbers gets.
+func (g gutter) number(n int, p styles.Palette) string {
 	switch {
-	case strings.HasPrefix(line, "@@"):
-		return p.DiffHunk
-	case strings.HasPrefix(line, "+"):
+	case g.digits == 0:
+		return ""
+	case n == 0:
+		return strings.Repeat(" ", g.width())
+	}
+	s := strconv.Itoa(n)
+	return strings.Repeat(" ", g.digits-len(s)) + p.Muted.Render(s) + " "
+}
+
+func style(c class, p styles.Palette) lipgloss.Style {
+	switch c {
+	case added:
 		return p.DiffAdded
-	case strings.HasPrefix(line, "-"):
+	case removed:
 		return p.DiffRemoved
-	case strings.HasPrefix(line, `\`):
+	case note:
 		return p.Muted
+	case boundary:
+		return p.DiffHunk
 	}
 	return p.DiffContext
 }
