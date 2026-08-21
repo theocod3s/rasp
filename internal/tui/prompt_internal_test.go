@@ -322,7 +322,7 @@ func TestATurnStopsAtTheQuestionAndRunsOnTheAnswer(t *testing.T) {
 				t.Fatalf("agent.New: %v", err)
 			}
 
-			clock := &clock{now: goldenNow}
+			clock := newClock(goldenNow)
 			m := newModel(t.Context(), a, Config{Mode: permission.ModeManual})
 			m.now = clock.read
 			m.permissions = serviceAnswers{service}
@@ -383,7 +383,7 @@ func editRequest() permission.Request {
 func asked(t *testing.T, answers Permissions, req permission.Request) (Model, *clock) {
 	t.Helper()
 
-	c := &clock{now: goldenNow}
+	c := newClock(goldenNow)
 	m := newModel(t.Context(), &promptTurner{}, Config{})
 	m.now = c.read
 	m.permissions = answers
@@ -399,13 +399,6 @@ func asked(t *testing.T, answers Permissions, req permission.Request) (Model, *c
 	}
 	return m, c
 }
-
-// clock is time a test moves by hand. Read only on the goroutine that drives
-// Update, which is the only one that reads the model's own clock.
-type clock struct{ now time.Time }
-
-func (c *clock) read() time.Time      { return c.now }
-func (c *clock) pass(d time.Duration) { c.now = c.now.Add(d) }
 
 // answers is the permission service as the UI reaches it, recording what it was
 // told. decided is what Resolve reports: false is a question the service no

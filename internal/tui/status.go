@@ -54,22 +54,44 @@ type status struct {
 	// size comes from the catalog, along with the price.
 	context int
 
-	// spent is what the finished turns cost, running the turn in flight. Two
-	// fields because a turn's end brings the loop's own total for it
-	// (agent.Event.Usage), summed over the same messages the running total was
-	// built from: it replaces that sum, and adding would count every turn twice.
-	spent, running llm.Usage
+	// spent is what the finished turns cost, running the turn in flight, and step
+	// the step still streaming. Three fields because each is replaced by the one
+	// after it rather than added to it: a turn's end brings the loop's own total
+	// (agent.Event.Usage) over the same messages running was built from, and a
+	// step's end brings the final counts for the message step has been reporting
+	// a growing prefix of.
+	spent, running, step llm.Usage
+}
+
+// streaming is what the step has reported so far, read off the accumulated
+// message a delta carries. Those counts are cumulative for the step, so this
+// replaces rather than adds.
+//
+// A report of nothing is left alone rather than written down: Anthropic sends
+// the input count at message_start and the output count in one message_delta at
+// the end, and an OpenAI-compatible endpoint sends the lot in a final chunk — so
+// a zero here means the provider has not said yet, and taking it at face value
+// would blank a line that was reading correctly a moment ago.
+func (s status) streaming(u llm.Usage) status {
+	if u == (llm.Usage{}) {
+		return s
+	}
+	s.step = u
+	s.context = sent(u) + u.Output
+	return s
 }
 
 func (s status) call(u llm.Usage) status {
 	s.context = sent(u) + u.Output
 	s.running = addUsage(s.running, u)
+	s.step = llm.Usage{}
 	return s
 }
 
 func (s status) turnEnded(u llm.Usage) status {
 	s.spent = addUsage(s.spent, u)
 	s.running = llm.Usage{}
+	s.step = llm.Usage{}
 	return s
 }
 
@@ -78,7 +100,7 @@ func (s status) turnEnded(u llm.Usage) status {
 // the session comes first and survives every drop.
 func (s status) Render(width int, bg styles.Background) string {
 	palette := styles.For(bg)
-	total := addUsage(s.spent, s.running)
+	total := addUsage(addUsage(s.spent, s.running), s.step)
 
 	segments := []string{s.head()}
 	if s.model != "" {

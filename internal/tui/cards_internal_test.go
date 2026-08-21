@@ -128,13 +128,16 @@ func TestATickMovesTheRunningCardAndLeavesTheFinishedOnesAlone(t *testing.T) {
 		}
 	}
 
-	// And the beat stops once nothing is running, rather than waking the program
-	// for the rest of the session.
+	// And the beat outlives the batch: the activity line keeps turning between
+	// two steps, where nothing is running and the model is thinking.
 	m, _ = m.Update(agentMsg{event: agent.Event{
 		Kind: agent.EventToolEnd, CallID: "call_2", Tool: "bash", Result: &tool.Result{Title: "go test"},
 	}})
-	if _, cmd := m.(Model).beat(); cmd != nil {
-		t.Error("the beat scheduled another with no call left running")
+	if _, cmd := m.(Model).beat(); cmd == nil {
+		t.Error("the beat stopped when the last call finished, freezing the spinner for the rest of the turn")
+	}
+	if frame := words(m.View().Content); !strings.Contains(frame, finished) {
+		t.Errorf("the frame no longer reads %q once nothing is running:\n%s", finished, frame)
 	}
 }
 

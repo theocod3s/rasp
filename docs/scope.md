@@ -326,7 +326,12 @@ model, and neither is worth destabilising before the single-session path is prov
 - Themes, configurable keybindings.
 - File-version history for undo/checkpoint.
 - Optional OS keyring backend.
-- Rotating status text while a turn runs, in place of a fixed spinner label.
+- **Decorative** rotating status text while a turn runs — cycling phrases picked for personality,
+  the way Claude Code's "Percolating…"/"Noodling…" do. The *useful* half of this bullet shipped
+  in v1: the activity line already carries a spinner, the turn's elapsed time, and a verb read
+  off the model's real state — thinking, writing, `running <tool>` — so a turn that is thinking
+  no longer looks like one that has hung. What stays deferred is text chosen for how it reads
+  rather than for what it is true of, which is a different feature wearing the same words.
 - **Voice input** — speech-to-text, so a turn can be spoken instead of typed. Much the largest
   item in this phase and the one furthest from the current design, which assumes keyboard input
   throughout. Needs an STT engine: a hosted one adds a second network dependency, a local one

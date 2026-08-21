@@ -133,6 +133,13 @@ type Model struct {
 	// times the frames it compares were drawn between.
 	now func() time.Time
 
+	// started is when the running turn began, and is what the activity line's
+	// elapsed time and spinner frame are measured from (activity.go). Stamped
+	// wherever busy is raised rather than in begin alone: a model driven straight
+	// from events has no begin behind it, and an unstamped start would date the
+	// turn to the zero time.
+	started time.Time
+
 	busy bool
 	err  error
 }
@@ -161,6 +168,16 @@ func (m Model) clock() time.Time {
 	return m.now()
 }
 
+// busied marks a turn as running and stamps when it started, the two halves of
+// one state. Idempotent, because a turn raises it once and every delta after
+// that arrives with it already up.
+func (m Model) busied() Model {
+	if !m.busy {
+		m.busy, m.started = true, m.clock()
+	}
+	return m
+}
+
 // replyKey and callKey are prefixed so that no provider call id can name an
 // assistant message, whatever a server chooses to put in one.
 func replyKey(n int) string    { return "reply/" + strconv.Itoa(n) }
@@ -168,7 +185,28 @@ func callKey(id string) string { return "call/" + id }
 
 func (m Model) Init() tea.Cmd { return nil }
 
+// Update routes the message and then makes sure the beat is running, in that
+// order. The beat is armed here rather than by whatever started the turn
+// because every route into a running turn — a keypress, an event arriving
+// before one — comes through this method, and a route that forgot to ask would
+// leave the activity line frozen while the turn ran on.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.route(msg)
+	next, tick := next.animate()
+	return next, tea.Batch(cmd, tick)
+}
+
+// animate schedules the beat that redraws the activity line and the running
+// cards, and is a no-op with a beat already on its way or no turn to draw one
+// for (beat, below).
+func (m Model) animate() (Model, tea.Cmd) {
+	if !m.busy {
+		return m, nil
+	}
+	return m.pulse()
+}
+
+func (m Model) route(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -271,30 +309,34 @@ func backspace(s string) string {
 func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
 	switch ev.Kind {
 	case agent.EventAssistantDelta:
-		m.busy = true
+		m = m.busied()
 		if ev.Message != nil {
 			m.streaming = ev.Message
 			m.chat.Set(replyKey(m.replies), m.replied(*ev.Message, false))
+			m.status = m.status.streaming(ev.Message.Usage)
 		}
 
 	case agent.EventAssistantEnd:
 		if ev.Message != nil {
 			m.chat.Set(replyKey(m.replies), m.replied(*ev.Message, true))
 			m = m.announce(*ev.Message)
-			// Here and not on a delta: a step's usage is final on the message that
-			// went into the transcript, and a provider that reports its counts only
-			// at the end would otherwise drop the line to nothing for the length of
-			// every stream.
+			// The reconciliation point for whatever the deltas above reported: a
+			// step's usage is final on the message that went into the transcript,
+			// so this is what the counters land on however much of it arrived
+			// early (status.go).
 			m.status = m.status.call(ev.Message.Usage)
 		}
 		m.streaming = nil
 		m.replies++
 
 	case agent.EventToolStart:
-		m = m.announced(ev.CallID, ev.Tool)
+		// A call running is a turn running: nothing dispatches one outside a turn,
+		// so this is the state a model driven straight from events would otherwise
+		// be missing — and the beat is armed off it (Update).
+		m = m.busied().announced(ev.CallID, ev.Tool)
 		c := m.cards[ev.CallID]
 		c.started, c.item.State, c.item.Elapsed = m.clock(), chat.CallRunning, 0
-		return m.draw(ev.CallID, c).pulse()
+		m = m.draw(ev.CallID, c)
 
 	case agent.EventToolEnd:
 		m = m.announced(ev.CallID, ev.Tool)
@@ -451,10 +493,12 @@ func (m Model) anyShown() bool {
 	return false
 }
 
-// tickInterval is how often a running call's elapsed time is redrawn, at the
-// tenth of a second a card shows it to. Nothing else in the frame moves with
-// it: every finished item is frozen (internals §4.5), so a beat re-renders the
-// cards still running and hands back a stored string for everything else.
+// tickInterval is how often the running parts of the frame are redrawn, at the
+// tenth of a second a card shows an elapsed time to. It drives the spinner as
+// well as the cards, which is why the activity line has no clock of its own.
+// Nothing else in the frame moves with it: every finished item is frozen
+// (internals §4.5), so a beat re-renders the cards still running and hands back
+// a stored string for everything else.
 const tickInterval = 100 * time.Millisecond
 
 // tickMsg carries no time. The model reads its own clock instead, so the
@@ -470,28 +514,28 @@ func (m Model) pulse() (Model, tea.Cmd) {
 	return m, tea.Tick(tickInterval, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-// beat moves the running cards on, and stops scheduling itself once none is
-// running. A finished card is never written back here, so its render stays
-// frozen at the text it ended on.
+// beat moves the running cards on, and stops scheduling itself once the turn is
+// over. A finished card is never written back here, so its render stays frozen
+// at the text it ended on.
 func (m Model) beat() (Model, tea.Cmd) {
 	m.beating = false
 
-	var running bool
 	now := m.clock()
 	for id, c := range m.cards {
 		if c.item.State != chat.CallRunning {
 			continue
 		}
-		running = true
 		c.item.Elapsed = now.Sub(c.started)
 		m = m.draw(id, c)
 	}
 
-	// Nothing running is the ordinary end of it. A card still running with no
-	// turn behind it is one whose tool_end went missing, and beating on would
-	// redraw it ten times a second for the rest of the session, timing a call
-	// nothing is left to finish.
-	if !running || !m.busy {
+	// The turn is what the beat runs for, not the cards: the activity line
+	// animates between two steps as well as during one, so stopping the moment a
+	// batch finishes would freeze the spinner exactly where the model is
+	// thinking. The turn ending is the whole of the stop condition — a card still
+	// running past it is one whose tool_end went missing, and beating on would
+	// redraw it ten times a second for the rest of the session.
+	if !m.busy {
 		return m, nil
 	}
 	return m.pulse()
@@ -523,12 +567,13 @@ func (m Model) View() tea.View {
 		writeLine(&b, "error: "+m.err.Error())
 	}
 	switch {
-	case m.armed:
-		writeLine(&b, "press esc again to cancel")
-	case m.quitArmed:
-		writeLine(&b, "press ctrl+c again to quit")
 	case m.busy:
-		writeLine(&b, "working…")
+		writeLine(&b, m.activity(m.width))
+	case m.quitArmed:
+		// The one arm that outlives a turn: ctrl+c guards the session rather than
+		// what is running in it, so its hint has to be drawable with no activity
+		// line to hang off (model.go quitArmed).
+		writeLine(&b, hintQuit)
 	}
 	writeLine(&b, m.status.Render(m.width, m.background))
 	b.WriteString(m.caret() + m.input)
