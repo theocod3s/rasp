@@ -103,7 +103,7 @@ func TestReplacingAFrozenItemDrawsTheNewOne(t *testing.T) {
 
 	v.Set("call", chat.Call{Name: "read", State: chat.CallDone, Result: &tool.Result{IsError: true}})
 
-	if got := v.Render(80); !strings.Contains(got, "read failed") {
+	if got := v.Render(80); !strings.Contains(words(got), "✗ read") {
 		t.Errorf("the frame reads %q; the freeze outlived the item it was taken from", got)
 	}
 }
@@ -116,7 +116,10 @@ func TestSetKeepsAnItemWhereItFirstAppeared(t *testing.T) {
 	v.Set("second", chat.Call{Name: "write", State: chat.CallRunning})
 	v.Set("first", chat.Call{Name: "read", State: chat.CallDone})
 
-	if got, want := v.Render(80), "  read done\n  write running\n"; got != want {
+	// ansi.Strip rather than words(): this test is about the two-space indent
+	// and the newline holding one card apart from the other, and words()
+	// collapses both of those away along with the colour codes.
+	if got, want := ansi.Strip(v.Render(80)), "  ✓ read\n  ⠋ write\n"; got != want {
 		t.Errorf("the conversation reads\n%q\nwant\n%q", got, want)
 	}
 	if v.Len() != 2 {

@@ -11,11 +11,6 @@ import (
 	"github.com/theocod3s/rasp/internal/tui/styles"
 )
 
-// spinner is one revolution per second on the beat the cards already run at.
-// Braille rather than a rotating slash because every glyph is one cell wide, so
-// nothing beside it shifts as it turns.
-var spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
 const (
 	hintInterrupt = "esc esc to interrupt"
 	hintCancel    = "press esc again to cancel"
@@ -54,9 +49,9 @@ func (m Model) activity(width int) string {
 // animation somewhere else — and a test with a fixed clock draws one frame.
 func frame(elapsed time.Duration) string {
 	if elapsed < 0 {
-		return spinner[0]
+		return styles.Spinner[0]
 	}
-	return spinner[int(elapsed/tickInterval)%len(spinner)]
+	return styles.Spinner[int(elapsed/tickInterval)%len(styles.Spinner)]
 }
 
 // duration is the turn's elapsed time as this line says it, and nothing for a

@@ -362,7 +362,7 @@ func TestATurnStopsAtTheQuestionAndRunsOnTheAnswer(t *testing.T) {
 			if m.asking() {
 				t.Error("a question is still on the screen after the turn ended")
 			}
-			if tc.refused && !strings.Contains(words(m.View().Content), "failed") {
+			if tc.refused && !strings.Contains(words(m.View().Content), "was not run") {
 				t.Errorf("nothing on the screen says the rejected call did not run:\n%s", m.View().Content)
 			}
 		})

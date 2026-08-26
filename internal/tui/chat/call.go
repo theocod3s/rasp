@@ -1,8 +1,12 @@
 package chat
 
 import (
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"charm.land/lipgloss/v2"
 
 	"github.com/theocod3s/rasp/internal/tool"
 	"github.com/theocod3s/rasp/internal/tui/diffview"
@@ -16,6 +20,21 @@ const (
 	cardCollapsed = "▸ "
 	cardExpanded  = "▾ "
 )
+
+// The status glyphs a card's line leads with — done, failed, and the rest a
+// call waiting to start, before either is known.
+const (
+	glyphQueued = "○"
+	glyphDone   = "✓"
+	glyphFailed = "✗"
+)
+
+// beatInterval is model.go's tickInterval, duplicated rather than imported:
+// tui imports chat to draw cards, so the dependency cannot run the other way.
+// Elapsed is stamped off that same clock (model.go's beat), so reading it
+// here rather than keeping a second timer is what leaves the running glyph
+// unable to disagree with the elapsed time drawn beside it.
+const beatInterval = 100 * time.Millisecond
 
 // CallState is how far a tool call has got.
 type CallState int
@@ -72,8 +91,10 @@ func (c Call) Render(width int) string {
 	// The headline is set in like the body and then gives its first two columns
 	// back to the marker. Wrapped whole instead, a summary too long for the
 	// terminal continues at column zero and reads as a line of its own.
+	marker := c.marker(c.opens())
 	head := inset(wrap(c.headline(), width-len(cardIndent)), cardIndent)
-	head = c.marker(c.opens()) + strings.TrimPrefix(head, cardIndent)
+	head = marker + strings.TrimPrefix(head, cardIndent)
+	head = c.paint(head, marker)
 
 	if !c.Expanded {
 		return head
@@ -114,47 +135,146 @@ func (c Call) marker(expandable bool) string {
 	return cardCollapsed
 }
 
-// headline is the card's one line: what ran, how it went, and — once it has
-// taken long enough for anyone to notice — how long for.
+// headline is the card's one line, plain text throughout: a status glyph, the
+// tool's name, the argument summary the tool wrote, and — once a call has
+// taken long enough for anyone to notice — how long for. Coloured afterwards,
+// by paint, rather than here — see paint for why.
 func (c Call) headline() string {
-	line := c.Name + " " + c.outcome()
+	line := c.glyphChar() + " " + c.Name
+	if s := c.summary(); s != "" {
+		line += " " + s
+	}
 	if d := elapsed(c.Elapsed); d != "" {
 		line += " " + d
 	}
 	return line
 }
 
-// outcome is the part of the line the tool wrote. A Title already opening with
-// the tool's own name is used whole — read, ls, grep and find each write one
-// that way, while edit and write lead with the path and bash with the command —
-// so the line names the tool exactly once whichever kind arrives.
+// glyphState is which of the four the status glyph draws as, decided once so
+// glyphChar and glyphStyle read the same answer rather than each working it
+// out — a queued call painted the done colour is not a state glyphChar or
+// glyphStyle could reach on their own, only the two disagreeing about it.
+type glyphState int
+
+const (
+	glyphStateQueued glyphState = iota
+	glyphStateRunning
+	glyphStateDone
+	glyphStateFailed
+)
+
+func (c Call) glyphState() glyphState {
+	switch c.State {
+	case CallQueued:
+		return glyphStateQueued
+	case CallRunning:
+		return glyphStateRunning
+	}
+	if c.Result != nil && c.Result.IsError {
+		return glyphStateFailed
+	}
+	return glyphStateDone
+}
+
+// glyphChar is the plain-text status mark headline builds the line from — a
+// circle for a call with nothing to report yet, the running spinner's current
+// frame, or a check or a cross once the result is in.
+func (c Call) glyphChar() string {
+	switch c.glyphState() {
+	case glyphStateQueued:
+		return glyphQueued
+	case glyphStateRunning:
+		return styles.Spinner[spinnerIndex(c.Elapsed)]
+	case glyphStateFailed:
+		return glyphFailed
+	}
+	return glyphDone
+}
+
+// glyphStyle is glyphChar's colour, kept apart from it because it is wanted
+// only once headline's plain text has already been measured and wrapped
+// (paint).
+func (c Call) glyphStyle(p styles.Palette) lipgloss.Style {
+	switch c.glyphState() {
+	case glyphStateQueued:
+		return p.Muted
+	case glyphStateRunning:
+		return p.CallRunning
+	case glyphStateFailed:
+		return p.CallFailed
+	}
+	return p.CallDone
+}
+
+// spinnerIndex is the running glyph's frame for a call this long, one
+// revolution a second. Read off Elapsed rather than counted per tick, so a
+// beat that arrived late or twice never puts the animation somewhere else
+// than the clock says it is.
+func spinnerIndex(d time.Duration) int {
+	if d < 0 {
+		return 0
+	}
+	return int(d/beatInterval) % len(styles.Spinner)
+}
+
+// summary is the argument summary a finished call's own tool wrote, minus the
+// tool's name where the Title repeats it — read, ls, grep and find each write
+// one that way, while edit and write lead with the path and bash with the
+// command, so trimming a name that never opens the Title is a no-op rather
+// than a wrong cut.
 //
-// A failing built-in writes no Title at all, and its Content is the sentence
-// explaining the refusal, which is what the line falls back to.
-func (c Call) outcome() string {
-	switch {
-	case c.State == CallQueued:
-		return "queued"
-	case c.State == CallRunning:
-		return "running"
-	case c.Result == nil:
-		return "done"
+// A queued or running call has no result yet, and rasp has no other route to
+// a call's arguments: Details is the tool's report on what it did, not a
+// preview of what it was asked to do. A failing built-in writes no Title at
+// all, and its Content is the sentence explaining the refusal.
+func (c Call) summary() string {
+	if c.State != CallDone || c.Result == nil {
+		return ""
 	}
 
-	summary := firstLine(c.Result.Title)
+	text := firstLine(c.Result.Title)
 	if c.Result.IsError {
-		if summary == "" {
-			summary = firstLine(c.Result.Content)
+		if text == "" {
+			text = firstLine(c.Result.Content)
 		}
-		if summary == "" {
-			return "failed"
-		}
-		return "failed: " + summary
+		return text
 	}
-	if summary == "" {
-		summary = "done"
+	return strings.TrimPrefix(text, c.Name+" ") + c.fuzzy()
+}
+
+// paint colours headline's glyph and name after wrap has already measured and
+// broken the plain line it built. Colouring before would hand wrap an escape
+// sequence to count: wrap measures runes, every byte of one is a rune, and a
+// styled prefix would be read as that many characters of visible text and cut
+// the line short of where it actually ends. Only the first line is touched,
+// since the glyph and name live there whether or not a long summary wrapped
+// on beneath them.
+//
+// marker is the same string Render already put at the front of head, passed
+// in rather than re-derived, so its width is read off the exact bytes drawn
+// there instead of assumed.
+func (c Call) paint(head, marker string) string {
+	first, rest, hasRest := strings.Cut(head, "\n")
+
+	markerRunes := utf8.RuneCountInString(marker)
+	runes := []rune(first)
+	name := []rune(c.Name)
+	nameEnd := markerRunes + 2 + len(name) // marker, glyph, the space, the name
+	if len(runes) < nameEnd {
+		// Too narrow for the glyph and name to have survived the wrap uncut,
+		// so there is nothing here safe to slice and colour.
+		return head
 	}
-	return strings.TrimPrefix(summary, c.Name+" ") + c.fuzzy()
+
+	p := styles.For(c.Background)
+	glyph := c.glyphStyle(p).Render(string(runes[markerRunes : markerRunes+1]))
+	styledName := p.CallName.Render(string(runes[markerRunes+2 : nameEnd]))
+	first = string(runes[:markerRunes]) + glyph + " " + styledName + string(runes[nameEnd:])
+
+	if !hasRest {
+		return first
+	}
+	return first + "\n" + rest
 }
 
 // fuzzy marks an edit whose old_string was found by a whitespace-normalized
@@ -189,12 +309,51 @@ func (c Call) body(width int) string {
 	// Drawn and then tested, rather than asked and then drawn: HasDiff walks the
 	// whole diff to answer, and this is the one caller that has to walk it
 	// anyway. Empty from a diff and no diff at all are the same card.
+	text := c.text()
 	if !c.Result.IsError {
 		if drawn := diffview.Render(c.unified(), inner(width), styles.For(c.Background)); drawn != "" {
 			return drawn
 		}
+		if c.Name == "read" {
+			if start, lines, ok := readLines(text); ok {
+				return diffview.Numbered(lines, start, inner(width), styles.For(c.Background))
+			}
+		}
 	}
-	return wrap(c.text(), width-len(cardIndent))
+	return wrap(text, width-len(cardIndent))
+}
+
+// readLines undoes the read tool's own line-number prefix — "the line number
+// and a tab", by its own description, added by the tool and not part of the
+// file — recovering both the lines and the offset the window opened at.
+// ReadDetails does carry that offset as a field, but it lives in tool/builtin,
+// a leaf package outside this UI's reach; the prefix already in Content is
+// the route open to this card, and it is required to survive untouched into
+// any edit or write the model makes from what it read, so parsing it back out
+// is reading a contract the tool already keeps rather than a coincidence.
+//
+// A read that failed, or one whose file had nothing in it, put a plain
+// sentence in Content instead — no line carries a number, so the first cut
+// finds no tab and ok is false, and the card falls back to that sentence
+// verbatim rather than guessing at a window.
+func readLines(content string) (start int, lines []string, ok bool) {
+	split := strings.Split(content, "\n")
+	lines = make([]string, 0, len(split))
+	for i, line := range split {
+		numStr, rest, found := strings.Cut(line, "\t")
+		if !found {
+			return 0, nil, false
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(numStr))
+		if err != nil {
+			return 0, nil, false
+		}
+		if i == 0 {
+			start = n
+		}
+		lines = append(lines, rest)
+	}
+	return start, lines, true
 }
 
 // text is the tool's output as the card shows it, and nothing when the line
@@ -248,7 +407,7 @@ func (c Call) diff() *tool.DiffDetails {
 // elapsed is a duration as a card says it, and nothing for one too short to be
 // worth the reader's attention — which is most tool calls.
 func elapsed(d time.Duration) string {
-	if r := d.Round(100 * time.Millisecond); r > 0 {
+	if r := d.Round(beatInterval); r > 0 {
 		return r.String()
 	}
 	return ""
