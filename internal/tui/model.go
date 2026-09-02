@@ -107,6 +107,16 @@ type Model struct {
 	// theme, and this side is ready for it.
 	background styles.Background
 
+	// tty is whether stdout is a real terminal, decided once when Run starts
+	// (tui.go): the window title and the bell both stay off a model this
+	// leaves false, which is every model newModel builds (terminal.go).
+	tty bool
+
+	// ring is where bell (terminal.go) reaches to sound the terminal's own
+	// bell, nil for every model newModel builds. Run sets it alongside tty; a
+	// test sets it to whatever it wants to count instead.
+	ring func()
+
 	// beating says a redraw of the running cards is already on its way. Four
 	// calls starting at once would otherwise leave four timers running, each
 	// rescheduling itself.
@@ -247,7 +257,7 @@ func (m Model) route(msg tea.Msg) (Model, tea.Cmd) {
 	case agentMsg:
 		return m.apply(msg.event)
 	case promptMsg:
-		return m.ask(msg.request), nil
+		return m.ask(msg.request)
 	case tickMsg:
 		return m.beat()
 	case turnDone:
@@ -479,6 +489,10 @@ func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
 		m.armed = false
 		m.status = m.status.turnEnded(ev.Usage)
 		m = m.settle().dismissAll().closed()
+		// The bell belongs here rather than on turnDone: a turn ends with
+		// exactly one EventTurnEnd, whatever else happens to it (agent/event.go),
+		// where turnDone is a second route racing this one and would double it.
+		return m, m.bell()
 	}
 	return m, nil
 }
@@ -721,7 +735,12 @@ func (m Model) View() tea.View {
 	writeLine(&b, m.menuView())
 	writeLine(&b, rule)
 	b.WriteString(m.status.Render(m.width, m.background))
-	return tea.NewView(b.String())
+
+	v := tea.NewView(b.String())
+	if m.tty {
+		v.WindowTitle = m.windowTitle()
+	}
+	return v
 }
 
 func writeLine(b *strings.Builder, s string) {

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"os"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -95,6 +96,15 @@ func (p *Program) Run(a Turner, answers Permissions) error {
 	m.permissions = answers
 	if p.cfg.Yolo && answers != nil {
 		m = m.setYolo(true)
+	}
+	// The window title and the bell both write control sequences a redirected
+	// file would only store, so both stay off a run whose stdout is not a real
+	// terminal (terminal.go) — checked here rather than assumed, since a
+	// caller's own opts could still swap the program's output out from under
+	// this default.
+	if isTerminal(os.Stdout) {
+		m.tty = true
+		m.ring = func() { _, _ = os.Stdout.WriteString("\a") }
 	}
 
 	prog := tea.NewProgram(m, p.opts...)
