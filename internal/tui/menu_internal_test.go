@@ -127,6 +127,24 @@ func TestEnterOnAFilterMatchingNothingSubmitsItAsAnUnknownCommand(t *testing.T) 
 	}
 }
 
+// TestTabOnAFilterMatchingNothingStillBreaksALine. There is nothing for the
+// menu to move a selection across either, so Tab falls through the same way
+// Enter does — command.go's own example of ordinary prose that starts with a
+// slash, "/usr/bin/env is missing", must still get the newline key it always
+// had, menu open or not.
+func TestTabOnAFilterMatchingNothingStillBreaksALine(t *testing.T) {
+	m := typed(newModel(t.Context(), &promptTurner{}, goldenConfig()), "/usr/bin/env")
+	if !m.menuOpen() {
+		t.Fatal("the menu did not open on a slash that later matched nothing")
+	}
+
+	m, _ = m.press(key(tea.KeyTab))
+
+	if m.input.text != "/usr/bin/env\n" {
+		t.Errorf("Tab on a filter matching nothing did not break a line: %q", m.input.text)
+	}
+}
+
 // TestTabAndArrowsMoveTheMenusSelectionAndWrap.
 func TestTabAndArrowsMoveTheMenusSelectionAndWrap(t *testing.T) {
 	m := typed(newModel(t.Context(), &promptTurner{}, goldenConfig()), "/")

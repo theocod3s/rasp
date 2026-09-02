@@ -106,17 +106,19 @@ func (m Model) menuTracks() Model {
 }
 
 // menuClaims is whether Tab, an arrow or Enter answers to the menu rather
-// than the draft. Enter only when there is a match to complete onto the line:
-// with none, it falls through to submit, which is what answers "no such
-// command" for a name the menu never suggested (command.go).
+// than the draft, and only when there is a match for one of them to move
+// across or complete: with none, there is nothing to move or complete either.
+// Enter falls through to submit, which is what answers "no such command" for
+// a name the menu never suggested (command.go); Tab falls through to
+// breaksLine, so a slash that never matched anything — /usr/bin/env, prose
+// parseCommand already reads as ordinary text — keeps the newline key it
+// would have had with the menu never in the picture.
 func (m Model) menuClaims(key tea.Key) bool {
 	if key.Mod != 0 || !m.menuOpen() {
 		return false
 	}
 	switch key.Code {
-	case tea.KeyTab, tea.KeyUp, tea.KeyDown:
-		return true
-	case tea.KeyEnter:
+	case tea.KeyTab, tea.KeyUp, tea.KeyDown, tea.KeyEnter:
 		return len(menuMatches(m.menuQuery())) > 0
 	}
 	return false
