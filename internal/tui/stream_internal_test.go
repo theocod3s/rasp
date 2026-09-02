@@ -67,8 +67,15 @@ func TestStreamingIntoARunningProgramMutatesOnlyInUpdate(t *testing.T) {
 		return msg
 	}
 
+	// A clock fixed rather than absent: begin stamps started off it and
+	// EventTurnEnd reads it again, so a clock that never moves keeps the turn's
+	// own duration at exactly zero and the closing "took" line (turn.go) out of
+	// the comparison below — without which the assertion would be at the mercy
+	// of how fast this specific run happened to stream, real wall-clock timing
+	// this test has no business depending on.
+	fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	b := newBridge()
-	prog := tea.NewProgram(Model{}, append(headless(), tea.WithFilter(watch))...)
+	prog := tea.NewProgram(Model{now: func() time.Time { return fixed }}, append(headless(), tea.WithFilter(watch))...)
 	b.start(prog)
 
 	type outcome struct {

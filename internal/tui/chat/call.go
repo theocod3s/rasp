@@ -115,9 +115,13 @@ func (c Call) Render(width int) string {
 // terminal too narrow for the indent must not arrive spelled that way or every
 // diff line goes out at full length and wraps.
 //
-// The diff alone uses it. Everything else here is wrapped rather than cut, and
-// wrap reads that same zero as "leave the line whole", which is the better
-// answer: clamping to a column breaks a line into one character per row.
+// The diff alone uses it. Everything else here — the headline, a card's own
+// text body, a prompt's gutter (item.go's userBlock), a reply's thinking
+// (item.go's insetPainted) — is wrapped rather than cut, and wrap reads that
+// same zero as "leave the line whole", which is the better answer for a
+// terminal too narrow even for the indent: clamping to a column instead
+// breaks a line into one character per row
+// (TestANarrowTerminalDoesNotShredATextBody, call_test.go).
 func inner(width int) int {
 	if width <= 0 {
 		return width

@@ -204,6 +204,31 @@ func TestTheLineBeingTypedOnSaysItToo(t *testing.T) {
 	}
 }
 
+// TestTheInputFrameWarnsWhileTheBypassIsArmed. design §7.8 asks for a coloured
+// border on the input area on top of the badge and the caret, so the rules
+// above and below the line being typed on take yolo's own inverse video —
+// consistent with how loud the rest of the indicator already is — rather than
+// staying the plain faint every other session draws them in.
+func TestTheInputFrameWarnsWhileTheBypassIsArmed(t *testing.T) {
+	m := newModel(t.Context(), &promptTurner{}, Config{Mode: permission.ModeManual})
+	m.permissions = &answers{}
+	m.width = goldenWidth
+
+	if before := m.rule(); strings.Contains(before, "\x1b[1;7m") {
+		t.Fatalf("a gated session already draws its frame in reverse video: %q", before)
+	}
+
+	m = typeCommand(m, "/yolo "+yoloConfirm)
+
+	want := yoloStyle.Render(strings.Repeat(frameRule, goldenWidth))
+	if got := m.rule(); got != want {
+		t.Errorf("the rule reads %q while the bypass is armed, want %q", got, want)
+	}
+	if frame := m.View().Content; !strings.Contains(frame, want) {
+		t.Errorf("the frame does not carry the rule styled for yolo:\n%s", frame)
+	}
+}
+
 // TestTheBadgeStandsWhereTheModeNameWould. Under the bypass no preset is
 // consulted at all, so a line still reading "plan" beside the badge would name
 // rules nothing is running — and the mode is the segment a reader trusts.

@@ -1,9 +1,11 @@
-› fix the failing auth test
-[38;2;92;99;109mThe test asserts the header is parsed before the body. If the parser reorders[m
-[38;2;92;99;109mthem, both call sites are reading a header that was parsed twice.[m
+[38;2;192;132;252m▌[m › fix the failing auth test
+
+  [38;2;92;99;109mThe test asserts the header is parsed before the body. If the parser reorders[m
+  [38;2;92;99;109mthem, both call sites are reading a header that was parsed twice.[m
 
   [38;5;252mReading [m[38;5;203;48;5;236m auth_test.go [m[38;5;252m now. The header is[m[38;5;252m parsed[m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m[38;5;252m [m
-error: the provider closed the stream mid-message
+
+[38;2;248;81;73merror: the provider closed the stream mid-message[m
 [38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
 › [38;2;92;99;109mask rasp anything…[m
 [38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m

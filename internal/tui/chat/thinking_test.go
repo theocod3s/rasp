@@ -35,8 +35,16 @@ func TestThinkingIsDrawnAboveTheReplyInTheFaintToken(t *testing.T) {
 
 	faint := styles.For(styles.Dark).Faint
 	for _, line := range strings.Split(head, "\n") {
-		if want := faint.Render(ansi.Strip(line)); line != want {
-			t.Errorf("a thinking line drew\n\t%q\nand the faint token draws it\n\t%q", line, want)
+		// Indented two columns, the plain prefix a card's own body carries too
+		// (item.go), and off before the faint token is asked to draw the rest —
+		// styling the indent along with the words would move it inside the
+		// escape codes, which is not how paint built the line.
+		text, ok := strings.CutPrefix(line, "  ")
+		if !ok {
+			t.Fatalf("a thinking line is not indented two columns: %q", line)
+		}
+		if want := faint.Render(ansi.Strip(text)); text != want {
+			t.Errorf("a thinking line drew\n\t%q\nand the faint token draws it\n\t%q", text, want)
 		}
 	}
 }
@@ -93,6 +101,24 @@ func TestThinkingStreamsAndThenStaysWhole(t *testing.T) {
 	if len(lines(whole)) <= len(lines(short))+8 {
 		t.Errorf("a thought twelve times longer drew %d lines against %d; the segment is being capped",
 			len(lines(whole)), len(lines(short)))
+	}
+}
+
+// TestAParagraphBreakInThinkingStaysBlank guards the trap in composing inset
+// with a style: lipgloss.Style.Render("") is not "" — it wraps even nothing in
+// its own open and close codes — so styling a blank line before inset ever
+// sees it leaves nothing for inset's own "blank lines stay blank" check to
+// recognise, and every paragraph break in a real, multi-paragraph thought
+// picks up a two-column margin and a dead escape sequence it should not carry.
+func TestAParagraphBreakInThinkingStaysBlank(t *testing.T) {
+	item := chat.Message{Content: thoughtful("first line\n\nthird line", "")}
+
+	lines := strings.Split(item.Render(60), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("the thought drew %d line(s), want the paragraph break as one of them:\n%q", len(lines), lines)
+	}
+	if lines[1] != "" {
+		t.Errorf("the paragraph break reads %q, want a truly blank line", lines[1])
 	}
 }
 

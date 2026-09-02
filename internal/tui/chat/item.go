@@ -13,6 +13,13 @@ import (
 // typing below, so a conversation of two speakers reads as one.
 const Caret = "› "
 
+// userBar is the accent every line of a prompt opens with, run down the left
+// edge — Claude Code's `>` box, drawn as a rule instead of a rectangle. Its
+// width matches cardIndent's: two columns, the same margin a tool card's own
+// marker column takes, so the transcript keeps one gutter width whichever kind
+// of item is standing in it.
+const userBar = "▌"
+
 // Message is one turn of the conversation, a prompt or a reply, as the view
 // draws it.
 type Message struct {
@@ -44,14 +51,17 @@ func (m Message) Render(width int) string {
 		if text == "" {
 			return ""
 		}
-		return wrap(Caret+text, width)
+		return userBlock(text, width, styles.For(m.Background).UserBar)
 	}
 
 	var head, body string
 	// Trimmed: an accumulation caught mid-stream often ends on the newline before
 	// the next paragraph, and a faint blank line under the segment reads as a gap.
+	// Indented two columns, the same margin a card's own body is set in by, so
+	// the segment a reader is meant to skim past reads as subordinate the same
+	// way everywhere else in the transcript says it.
 	if text := strings.TrimSpace(thinking(m.Content)); text != "" {
-		head = paint(text, styles.For(m.Background).Faint, width)
+		head = insetPainted(text, styles.For(m.Background).Faint, width)
 	}
 	// Guarded rather than left to the renderer: an empty string shares no prefix
 	// with the memo, so rendering one drops the head of the arriving reply
@@ -78,12 +88,53 @@ func content(msg llm.Message, kind llm.BlockType) string {
 	return b.String()
 }
 
+// userBlock draws a prompt as its own block rather than a line indistinguishable
+// from whatever the model said above it: the bar opens the first line, the same
+// way a card's own marker opens its headline and nothing else, so a prompt long
+// enough to wrap reads as one block set in by a margin rather than a bar
+// repeated down its own left edge.
+//
+// Built the way Call.Render builds its own headline (call.go): inset first, so
+// a blank line inside the prompt — a blank line between two paragraphs the
+// user typed — stays blank rather than picking up a margin nothing follows,
+// and only then is the indent inset gave line one traded for the bar. The
+// width computation matches the headline's too, deliberately not inner's: a
+// terminal too narrow even for the gutter reads the negative width as "leave
+// the line whole" the same way the headline does, rather than wrap with a
+// floor of one and shred it into a column one character wide
+// (TestANarrowTerminalDoesNotShredATextBody, call_test.go).
+func userBlock(text string, width int, bar lipgloss.Style) string {
+	head := inset(wrap(Caret+text, width-len(cardIndent)), cardIndent)
+	return bar.Render(userBar) + " " + strings.TrimPrefix(head, cardIndent)
+}
+
+// insetPainted draws text wrapped, indented two columns and styled — paint
+// takes the wrapping and the indent is added after, the same order Notice and
+// every other painted segment already uses; paint's own blank-line rule is
+// what keeps this composition correct (see paint below). The width is the
+// card body's own computation, for the reason userBlock's is the headline's:
+// a terminal too narrow for the indent leaves a thought whole rather than
+// wrapping it a character at a time.
+func insetPainted(text string, style lipgloss.Style, width int) string {
+	return inset(paint(text, style, width-len(cardIndent)), cardIndent)
+}
+
 // paint wraps text to width and styles it a line at a time: Lip Gloss renders a
 // multi-line string as a block, padding every line out to the longest with
 // spaces the reader would find again on the end of anything they copied.
+//
+// A blank line is left blank rather than styled, and that is load-bearing
+// rather than an optimisation: a style's Render("") is not "", it is that
+// style's open and close codes around nothing, and inset — the one caller
+// that goes looking for a blank line afterwards to leave alone — would find a
+// non-empty string where the paragraph break in a real, multi-line thought or
+// notice used to be.
 func paint(text string, style lipgloss.Style, width int) string {
 	lines := strings.Split(wrap(text, width), "\n")
 	for i, line := range lines {
+		if line == "" {
+			continue
+		}
 		lines[i] = style.Render(line)
 	}
 	return strings.Join(lines, "\n")

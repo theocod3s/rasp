@@ -79,3 +79,49 @@ func TestAnEmptyNoticeTakesNoLine(t *testing.T) {
 		t.Errorf("an empty notice drew %q", drawn)
 	}
 }
+
+// TestAParagraphBreakInANoticeStaysBlank. A notice with two paragraphs — a
+// mode reminder, an unknown-command reply with more than one sentence in it —
+// is drawn through paint the same way thinking is, and paint's own rule about
+// a blank line applies here too: a style's Render("") is not "", so a naive
+// per-line style would leave a paragraph break carrying nothing but a dead
+// escape sequence rather than staying blank.
+func TestAParagraphBreakInANoticeStaysBlank(t *testing.T) {
+	drawn := chat.Notice{Text: "first line\n\nthird line"}.Render(wide)
+
+	lines := strings.Split(drawn, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("the notice drew %d line(s), want the paragraph break as one of them:\n%q", len(lines), lines)
+	}
+	if lines[1] != "" {
+		t.Errorf("the paragraph break reads %q, want a truly blank line", lines[1])
+	}
+}
+
+// TestAnErrorNoticeIsDrawnInTheErrorToken. A failed turn is the one thing this
+// family says that a reader must not be able to skim past, so it takes the
+// palette's own accent for "this went wrong" rather than the Faint every other
+// notice draws in — asserted against the token on both backgrounds, for the
+// reason TestANoticeIsDrawnFaint already is.
+func TestAnErrorNoticeIsDrawnInTheErrorToken(t *testing.T) {
+	for _, bg := range []struct {
+		name string
+		bg   styles.Background
+	}{
+		{"dark", styles.Dark},
+		{"light", styles.Light},
+	} {
+		t.Run(bg.name, func(t *testing.T) {
+			const text = "error: the provider closed the stream mid-message"
+
+			drawn := chat.Notice{Text: text, Kind: chat.NoticeError, Background: bg.bg}.Render(wide)
+
+			if want := styles.For(bg.bg).Error.Render(text); drawn != want {
+				t.Errorf("an error notice drew\n\t%q\nand the error token draws it\n\t%q", drawn, want)
+			}
+			if faint := styles.For(bg.bg).Faint.Render(text); drawn == faint {
+				t.Errorf("an error notice drew the same bytes an ordinary one would:\n\t%q", drawn)
+			}
+		})
+	}
+}

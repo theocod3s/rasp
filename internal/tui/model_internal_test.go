@@ -11,6 +11,7 @@ import (
 	"github.com/theocod3s/rasp/internal/agent"
 	"github.com/theocod3s/rasp/internal/llm"
 	"github.com/theocod3s/rasp/internal/tool"
+	"github.com/theocod3s/rasp/internal/tui/styles"
 )
 
 // TestUpdateDrawsWhatATurnProduced walks one turn's events through Update and
@@ -128,6 +129,41 @@ func TestATurnThatEndedMidReplyLeavesNothingOpen(t *testing.T) {
 	}
 	if root := m.(Model); root.streaming != nil {
 		t.Error("a reply is still marked as arriving after the turn carrying it ended")
+	}
+}
+
+// TestAFailedTurnIsDrawnThroughTheStyledErrorToken. Every other line the UI
+// says in its own voice draws through chat.Notice; a bare `"error: " + err`
+// line was the one holdout, and reads as plain text on any terminal.
+func TestAFailedTurnIsDrawnThroughTheStyledErrorToken(t *testing.T) {
+	broke := errors.New("the stream broke")
+
+	var m tea.Model = Model{}
+	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventError, Err: broke}})
+
+	frame := m.View().Content
+	want := styles.For(styles.Dark).Error.Render("error: " + broke.Error())
+	if !strings.Contains(frame, want) {
+		t.Errorf("the frame does not carry the error in its own token:\n%q\nwant it to contain\n%q",
+			frame, want)
+	}
+}
+
+// TestAFailedTurnsErrorHasABlankLineAboveIt. Every item chat.View draws gets
+// one blank line of breathing room before it (chat/view.go); the error line
+// is chrome rather than one of those items, and had to be given the same gap
+// by hand rather than picking it up for free.
+func TestAFailedTurnsErrorHasABlankLineAboveIt(t *testing.T) {
+	broke := errors.New("the stream broke")
+
+	var m tea.Model = Model{}
+	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventAssistantEnd, Message: reply("Reading it now.")}})
+	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventError, Err: broke}})
+
+	frame := m.View().Content
+	want := "\n\n" + styles.For(styles.Dark).Error.Render("error: "+broke.Error())
+	if !strings.Contains(frame, want) {
+		t.Errorf("the error line is not set apart from the transcript above it by a blank line:\n%q", frame)
 	}
 }
 
