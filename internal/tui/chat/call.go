@@ -110,14 +110,13 @@ func (c Call) Render(width int) string {
 	return head + "\n" + inset(body, cardIndent)
 }
 
-// inner is the width left inside the card's indent, never zero or less — which
-// the diff renderer reads as "no size reported yet, do not cut", so a real
-// terminal too narrow for the indent must not arrive spelled that way or every
-// diff line goes out at full length and wraps.
-//
-// The diff alone uses it. Everything else here is wrapped rather than cut, and
-// wrap reads that same zero as "leave the line whole", which is the better
-// answer: clamping to a column breaks a line into one character per row.
+// inner is the width left inside a two-column indent, never zero or less. The
+// diff renderer needs that floor strictly — it cuts a line to width rather
+// than wrapping it, and zero reads as "no size reported yet, do not cut", so a
+// real terminal too narrow for the indent must not arrive spelled that way or
+// every diff line goes out at full length. Every caller here shares the same
+// floor rather than each working out its own version of it, even where wrap
+// would have read zero just as safely on its own.
 func inner(width int) int {
 	if width <= 0 {
 		return width

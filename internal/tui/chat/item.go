@@ -61,7 +61,7 @@ func (m Message) Render(width int) string {
 	// the segment a reader is meant to skim past reads as subordinate the same
 	// way everywhere else in the transcript says it.
 	if text := strings.TrimSpace(thinking(m.Content)); text != "" {
-		head = inset(paint(text, styles.For(m.Background).Faint, width-len(cardIndent)), cardIndent)
+		head = insetPainted(text, styles.For(m.Background).Faint, width)
 	}
 	// Guarded rather than left to the renderer: an empty string shares no prefix
 	// with the memo, so rendering one drops the head of the arriving reply
@@ -93,14 +93,30 @@ func content(msg llm.Message, kind llm.BlockType) string {
 // way a card's own marker opens its headline and nothing else, so a prompt long
 // enough to wrap reads as one block set in by a margin rather than a bar
 // repeated down its own left edge.
+//
+// Built the way Call.Render builds its own headline (call.go): inset first, so
+// a blank line inside the prompt — a blank line between two paragraphs the
+// user typed — stays blank rather than picking up a margin nothing follows,
+// and only then is the indent inset gave line one traded for the bar.
 func userBlock(text string, width int, bar lipgloss.Style) string {
-	lines := strings.Split(wrap(Caret+text, width-len(cardIndent)), "\n")
+	head := inset(wrap(Caret+text, inner(width)), cardIndent)
+	return bar.Render(userBar) + " " + strings.TrimPrefix(head, cardIndent)
+}
+
+// insetPainted draws text wrapped, indented two columns and styled — inset
+// before paint rather than after, which matters and is not merely order for
+// order's sake: a style's Render("") is not "", Lip Gloss wraps even nothing in
+// its own open and close codes, so a blank line painted first is no longer
+// blank by the time inset goes looking for one to leave alone. Insetting the
+// plain text first, then styling only the content past each line's own
+// indent, is what keeps a blank line inside a thought blank rather than two
+// spaces and a dead escape sequence.
+func insetPainted(text string, style lipgloss.Style, width int) string {
+	lines := strings.Split(inset(wrap(text, inner(width)), cardIndent), "\n")
 	for i, line := range lines {
-		if i == 0 {
-			lines[i] = bar.Render(userBar) + " " + line
-			continue
+		if body, ok := strings.CutPrefix(line, cardIndent); ok {
+			lines[i] = cardIndent + style.Render(body)
 		}
-		lines[i] = cardIndent + line
 	}
 	return strings.Join(lines, "\n")
 }

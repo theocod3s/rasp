@@ -104,6 +104,24 @@ func TestThinkingStreamsAndThenStaysWhole(t *testing.T) {
 	}
 }
 
+// TestAParagraphBreakInThinkingStaysBlank guards the trap in composing inset
+// with a style: lipgloss.Style.Render("") is not "" — it wraps even nothing in
+// its own open and close codes — so styling a blank line before inset ever
+// sees it leaves nothing for inset's own "blank lines stay blank" check to
+// recognise, and every paragraph break in a real, multi-paragraph thought
+// picks up a two-column margin and a dead escape sequence it should not carry.
+func TestAParagraphBreakInThinkingStaysBlank(t *testing.T) {
+	item := chat.Message{Content: thoughtful("first line\n\nthird line", "")}
+
+	lines := strings.Split(item.Render(60), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("the thought drew %d line(s), want the paragraph break as one of them:\n%q", len(lines), lines)
+	}
+	if lines[1] != "" {
+		t.Errorf("the paragraph break reads %q, want a truly blank line", lines[1])
+	}
+}
+
 // TestAMessageWithOnlyThinkingDrawsIt. A model that thinks for ten seconds
 // before it says anything is the whole reason this is drawn at all, and an item
 // that answers with the empty string takes no line in the conversation (view.go)

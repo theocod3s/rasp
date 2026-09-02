@@ -243,6 +243,40 @@ func TestAPromptIsDrawnInTheUserBarTokenOnBothBackgrounds(t *testing.T) {
 	}
 }
 
+// TestAParagraphBreakInAPromptStaysBlank. userBlock builds its continuation
+// margin by inset rather than a hand-rolled loop precisely so a blank line
+// between two paragraphs the user typed comes out truly blank — inset's own
+// job — rather than the two-space margin and nothing else a naive per-line
+// prefix would leave on it.
+func TestAParagraphBreakInAPromptStaysBlank(t *testing.T) {
+	msg := llm.Message{Role: llm.RoleUser, Content: []llm.Block{{Type: llm.BlockText, Text: "first line\n\nthird line"}}}
+
+	lines := strings.Split(ansi.Strip((chat.Message{Content: msg, Done: true}).Render(80)), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("the prompt drew %d line(s), want the paragraph break as one of them:\n%q", len(lines), lines)
+	}
+	if lines[1] != "" {
+		t.Errorf("the paragraph break reads %q, want a truly blank line", lines[1])
+	}
+}
+
+// TestAPromptWrapsEvenNarrowerThanItsOwnGutter. The gutter userBlock reserves
+// for the bar is two columns, and a terminal narrower than that must still
+// wrap rather than read the negative width left over as "nothing reported
+// yet, leave the line whole" — the one difference between a resize race
+// landing on an unrealistic width and a prompt that goes out flush unwrapped.
+func TestAPromptWrapsEvenNarrowerThanItsOwnGutter(t *testing.T) {
+	long := strings.Repeat("word ", 30)
+	msg := llm.Message{Role: llm.RoleUser, Content: []llm.Block{{Type: llm.BlockText, Text: long}}}
+
+	for _, width := range []int{1, 2} {
+		lines := strings.Split(ansi.Strip((chat.Message{Content: msg, Done: true}).Render(width)), "\n")
+		if len(lines) < 2 {
+			t.Errorf("at width %d the prompt drew %d line(s) rather than wrapping at all", width, len(lines))
+		}
+	}
+}
+
 // words is what a frame says: the escape sequences markdown is styled with
 // taken out, and the wrapping and margins squeezed away.
 func words(frame string) string {

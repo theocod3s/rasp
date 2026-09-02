@@ -67,8 +67,15 @@ func TestStreamingIntoARunningProgramMutatesOnlyInUpdate(t *testing.T) {
 		return msg
 	}
 
+	// A clock fixed rather than absent: begin stamps started off it and
+	// EventTurnEnd reads it again, so a clock that never moves keeps the turn's
+	// own duration at exactly zero and the closing "took" line (turn.go) out of
+	// the comparison below — without which the assertion would be at the mercy
+	// of how fast this specific run happened to stream, real wall-clock timing
+	// this test has no business depending on.
+	fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	b := newBridge()
-	prog := tea.NewProgram(Model{}, append(headless(), tea.WithFilter(watch))...)
+	prog := tea.NewProgram(Model{now: func() time.Time { return fixed }}, append(headless(), tea.WithFilter(watch))...)
 	b.start(prog)
 
 	type outcome struct {
@@ -124,17 +131,11 @@ func TestStreamingIntoARunningProgramMutatesOnlyInUpdate(t *testing.T) {
 	}
 
 	// Without this the test passes on a bridge that delivers nothing at all,
-	// which is the one outcome that is trivially race-free. Not pinned to an
-	// exact count: a turn this fast may or may not clear the second the
-	// closing "took" line is held to (turn.go), and which way it lands is real
-	// wall-clock timing this test has no business asserting on.
-	if final.chat.Len() == 0 {
-		t.Fatal("the conversation holds no items and the turn produced one reply")
+	// which is the one outcome that is trivially race-free.
+	if final.chat.Len() != 1 {
+		t.Fatalf("the conversation holds %d item(s) and the turn produced one reply", final.chat.Len())
 	}
-	// withoutDuration drops the turn's own closing "took Ns" line if it landed
-	// (turn.go): whether it does depends on how long this run actually took in
-	// real time, which is not what this comparison is about.
-	if got := withoutDuration(words(final.chat.Render(0))); got != want {
+	if got := words(final.chat.Render(0)); got != want {
 		t.Fatalf("the UI drew a reply of %d characters and the model streamed %d", len(got), len(want))
 	}
 	if final.busy {
@@ -153,14 +154,4 @@ func headless() []tea.ProgramOption {
 		tea.WithoutRenderer(),
 		tea.WithoutSignalHandler(),
 	}
-}
-
-// withoutDuration drops a trailing "took Ns" a turn's own closing line left in
-// words(frame), so a check about the reply is not at the mercy of whether this
-// run happened to cross the one-second floor that line is held to (turn.go).
-func withoutDuration(got string) string {
-	if i := strings.LastIndex(got, " took "); i >= 0 {
-		return got[:i]
-	}
-	return got
 }

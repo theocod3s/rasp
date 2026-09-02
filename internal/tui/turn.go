@@ -107,13 +107,20 @@ func (m Model) report(err error) Model {
 // question published straight onto an idle model reaches EventTurnEnd with no
 // begin behind it, and dating that turn's length from year one would print
 // something absurd rather than nothing.
+//
+// started is cleared here rather than left at the turn it just closed: the
+// zero-time guard above only means what it says — "no begin behind this" — if
+// nothing but begin ever sets it, and a stray or duplicate EventTurnEnd with no
+// begin between it and the last one would otherwise read the previous turn's
+// stamp and print its length a second time.
 func (m Model) closed() Model {
 	if m.started.IsZero() {
 		return m
 	}
 	if text := turnDuration(m.clock().Sub(m.started)); text != "" {
-		m.chat.Append(chat.Notice{Text: text, Background: m.background})
+		m = m.say(text)
 	}
+	m.started = time.Time{}
 	return m
 }
 

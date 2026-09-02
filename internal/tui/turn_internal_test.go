@@ -286,6 +286,38 @@ func TestAFinishedTurnUnderASecondClosesWithNothing(t *testing.T) {
 	}
 }
 
+// TestAStrayTurnEndAfterOneAlreadyClosedAddsNothing is the zero-time guard
+// checked the way it actually fails without a reset: started is stamped once
+// by begin and read by every EventTurnEnd that follows, so a first turn
+// closing correctly is not proof the guard holds for a second one — only that
+// it held for the one begin behind it. A stray EventTurnEnd reaching an idle
+// model an hour later, with no begin in between, must add nothing rather than
+// read the previous turn's stamp and print its length again.
+func TestAStrayTurnEndAfterOneAlreadyClosedAddsNothing(t *testing.T) {
+	c := newClock(goldenNow)
+	turner := &promptTurner{started: make(chan context.Context, 1)}
+	m := newModel(t.Context(), turner, Config{})
+	m.now = c.read
+
+	m = typed(m, "go")
+	m, _ = m.press(key(tea.KeyEnter))
+	c.pass(12 * time.Second)
+	m = update(m, agentMsg{event: agent.Event{Kind: agent.EventTurnEnd}})
+	held := m.chat.Len()
+
+	c.pass(time.Hour)
+	m = update(m, agentMsg{event: agent.Event{Kind: agent.EventTurnEnd}})
+
+	if m.chat.Len() != held {
+		t.Errorf("a stray EventTurnEnd with no begin behind it grew the conversation from %d items to %d",
+			held, m.chat.Len())
+	}
+	if frame := words(m.View().Content); strings.Count(frame, "took") != 1 {
+		t.Errorf("the frame carries %d duration line(s), want the one turn's own:\n%s",
+			strings.Count(frame, "took"), frame)
+	}
+}
+
 // TestATurnEndedWithNoBeginBehindItClosesWithNothing covers EventTurnEnd
 // reaching a model started never stamped — a question published straight onto
 // an idle session (prompt_internal_test.go's asked helper does exactly this).
