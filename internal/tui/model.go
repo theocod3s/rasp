@@ -78,10 +78,10 @@ type Model struct {
 	// asked to draw itself again.
 	status status
 
-	// cards is every tool call drawn so far, by the provider's call id, so one
-	// can be redrawn without the event that made it: an elapsed time that has
-	// moved on, an expansion the user has just asked for. Shared between copies
-	// of the model as chat.View's own map is, and for the same reason.
+	// cards is every card drawn so far, keyed by cardKey, so one can be redrawn
+	// without the event that made it: an elapsed time that has moved on, an
+	// expansion the user has just asked for. Shared between copies of the model
+	// as chat.View's own map is, and for the same reason.
 	cards map[string]card
 
 	// open is whether the reader has overridden how much of a card is shown, and
@@ -147,9 +147,16 @@ type Model struct {
 // card is what the model needs to redraw one tool call: the item itself, and
 // when the call started — which the item does not carry, because it renders an
 // elapsed time rather than measuring one.
+//
+// startedID is whose start that is. For an ordinary tool it is always the one
+// call this entry ever holds. todos shares one entry across every call id
+// that reaches its stable key (cardKey), so a second call starting before the
+// first ends overwrites started — and startedID is what lets tool_end tell
+// its own start from a start that was never its call's.
 type card struct {
-	item    chat.Call
-	started time.Time
+	item      chat.Call
+	started   time.Time
+	startedID string
 }
 
 func newModel(ctx context.Context, turner Turner, cfg Config) Model {
@@ -183,6 +190,20 @@ func (m Model) busied() Model {
 // assistant message, whatever a server chooses to put in one.
 func replyKey(n int) string    { return "reply/" + strconv.Itoa(n) }
 func callKey(id string) string { return "call/" + id }
+
+// cardKey is where a call's card lives, in both m.cards and the conversation:
+// its own call id for an ordinary tool, so a batch of six reads draws six
+// cards, and a name-only key for todos. The todos tool holds one list and
+// rewrites the whole of it on every call (internal/tool/builtin/todos.go), so
+// the card showing that list is one card too — every todos call, however many
+// different call ids the model used to reach it, updates the same entry
+// rather than appending a copy of a plan the next call already replaced.
+func cardKey(id, name string) string {
+	if name == "todos" {
+		return name
+	}
+	return id
+}
 
 func (m Model) Init() tea.Cmd { return nil }
 
@@ -335,21 +356,25 @@ func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
 		// so this is the state a model driven straight from events would otherwise
 		// be missing — and the beat is armed off it (Update).
 		m = m.busied().announced(ev.CallID, ev.Tool)
-		c := m.cards[ev.CallID]
-		c.started, c.item.State, c.item.Elapsed = m.clock(), chat.CallRunning, 0
-		m = m.draw(ev.CallID, c)
+		key := cardKey(ev.CallID, ev.Tool)
+		c := m.cards[key]
+		c.started, c.startedID, c.item.State, c.item.Elapsed = m.clock(), ev.CallID, chat.CallRunning, 0
+		m = m.draw(key, c)
 
 	case agent.EventToolEnd:
 		m = m.announced(ev.CallID, ev.Tool)
-		c := m.cards[ev.CallID]
+		key := cardKey(ev.CallID, ev.Tool)
+		c := m.cards[key]
 		c.item.State, c.item.Result = chat.CallDone, ev.Result
 		// Asked again now the result is here: whether the card opens itself is a
 		// question about what it holds, and it held nothing until this event.
 		c.item.Expanded = m.open.shows(c.item)
-		if !c.started.IsZero() {
+		// startedID must still be this call's own: a later call sharing the same
+		// key (todos) can have overwritten started with its own, later start.
+		if !c.started.IsZero() && c.startedID == ev.CallID {
 			c.item.Elapsed = m.clock().Sub(c.started)
 		}
-		m = m.draw(ev.CallID, c)
+		m = m.draw(key, c)
 
 	case agent.EventError:
 		m = m.report(ev.Err)
@@ -391,9 +416,13 @@ func (m Model) announce(msg llm.Message) Model {
 
 // announced adds a queued card for a call the conversation has none for, so a
 // tool event arriving without the assistant message that asked for it is drawn
-// rather than dropped.
+// rather than dropped. A second todos call finds its key already taken by the
+// first, so it leaves the existing card — still showing the prior list — up
+// rather than resetting it to queued, which is what lets the card read as one
+// continuously-updated list instead of flashing empty between calls.
 func (m Model) announced(id, name string) Model {
-	if _, ok := m.cards[id]; ok {
+	key := cardKey(id, name)
+	if _, ok := m.cards[key]; ok {
 		return m
 	}
 	if m.cards == nil {
@@ -401,7 +430,7 @@ func (m Model) announced(id, name string) Model {
 	}
 	item := chat.Call{Name: name, Background: m.background}
 	item.Expanded = m.open.shows(item)
-	return m.draw(id, card{item: item})
+	return m.draw(key, card{item: item})
 }
 
 // repaint moves every card onto the terminal's own palette. The whole list
@@ -425,9 +454,11 @@ func (m Model) repaint(isDark bool) Model {
 	return m
 }
 
-func (m Model) draw(id string, c card) Model {
-	m.cards[id] = c
-	m.chat.Set(callKey(id), c.item)
+// draw stores c under key, a cardKey result rather than a raw call id, and
+// puts it in the conversation at the matching callKey.
+func (m Model) draw(key string, c card) Model {
+	m.cards[key] = c
+	m.chat.Set(callKey(key), c.item)
 	return m
 }
 
