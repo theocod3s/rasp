@@ -290,13 +290,14 @@ func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		return m.menuPress(key), nil
 	case breaksLine(key):
 		m.input = m.input.insert("\n")
+		m = m.menuTracks()
 	case key.Code == tea.KeyEnter:
 		return m.submit()
 	case key.Mod == tea.ModCtrl && key.Code == 'r':
 		return m.expand(), nil
 	case key.Code == tea.KeyBackspace:
 		m.input = m.input.backspace()
-		m.menu.selected = 0
+		m = m.menuTracks()
 	case key.Code == tea.KeyLeft:
 		m.input = m.input.left()
 	case key.Code == tea.KeyRight:
@@ -319,14 +320,19 @@ func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 // keystroke, and is where the menu's one opening trigger lives: "/" typed
 // onto an empty line, and nowhere else — a paste or a "/" typed after other
 // text never reaches this, so neither ever opens it (menu.go's own rule for
-// what parseCommand already reads as a command).
+// what parseCommand already reads as a command). Guarded on s itself because
+// a key with nothing to insert — an unhandled function key, say — reaches
+// this the same way a real one does, and must not reset the menu's selection
+// for having pressed nothing.
 func (m Model) typeText(s string) Model {
+	if s == "" {
+		return m
+	}
 	if s == "/" && m.input.empty() {
 		m.menu.open = true
 	}
-	m.menu.selected = 0
 	m.input = m.input.insert(s)
-	return m
+	return m.menuTracks()
 }
 
 // breaksLine is the keys that continue a draft rather than send it. Three of
@@ -360,8 +366,7 @@ func (m Model) paste(content string) Model {
 		return m
 	}
 	m.input = m.input.insert(newlines(content))
-	m.menu.selected = 0
-	return m
+	return m.menuTracks()
 }
 
 // newlines is pasted text with its line endings as the draft holds them. A

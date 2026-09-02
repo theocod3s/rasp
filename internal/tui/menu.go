@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strings"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -27,14 +28,19 @@ type commandMenu struct {
 const menuHint = "↑↓⇥ select · ⏎ complete · esc close"
 
 // menuQuery is the command name typed so far, and whether the draft is still
-// shaped like one: starting the line, and not yet into arguments. A space
-// ends it because there is nothing here to complete once the user is past the
-// name — that is what /effort's own argument is for.
+// shaped like one: starting the line, and not yet into arguments. Where that
+// ends is unicode.IsSpace, parseCommand's own rule (command.go) — a menu that
+// used a narrower one could keep filtering past the point submit already
+// reads as the start of arguments, and complete a match Enter would not.
 func menuQuery(text string) (query string, ok bool) {
-	if !strings.HasPrefix(text, "/") || strings.ContainsAny(text, " \t\n") {
+	if !strings.HasPrefix(text, "/") {
 		return "", false
 	}
-	return text[1:], true
+	name := text[1:]
+	if strings.ContainsFunc(name, unicode.IsSpace) {
+		return "", false
+	}
+	return name, true
 }
 
 // menuMatches is the commands whose name query prefixes, in the table's own
@@ -81,6 +87,22 @@ func (m Model) selected(n int) int {
 		return 0
 	}
 	return m.menu.selected % n
+}
+
+// menuTracks is the one place every draft-mutating key runs through
+// afterward: the selection goes back to the top of whatever the edit just
+// changed the filter to, and an empty draft drops the sticky "opened" flag
+// too. That second half matters more than it looks: without it, dispatching a
+// command or backspacing to nothing leaves open() true with no session left
+// to be open, and an unrelated paste landing on the empty line — which is
+// never supposed to open the menu on its own (typeText) — inherits it and
+// shows the menu anyway.
+func (m Model) menuTracks() Model {
+	m.menu.selected = 0
+	if m.input.empty() {
+		m.menu.open = false
+	}
+	return m
 }
 
 // menuClaims is whether Tab, an arrow or Enter answers to the menu rather
@@ -156,14 +178,11 @@ func (m Model) menuView() string {
 	}
 
 	selected := m.selected(len(matches))
-	var width int
-	for _, c := range matches {
-		width = max(width, len(c.name))
-	}
+	width := commandWidth(matches)
 
 	lines := make([]string, len(matches))
 	for i, c := range matches {
-		row := "/" + c.name + strings.Repeat(" ", width-len(c.name)+2) + c.summary
+		row := commandRow(c, width)
 		marker := "  "
 		if i == selected {
 			marker = "> "

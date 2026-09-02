@@ -250,6 +250,83 @@ func TestTheMenuNeverFightsThePermissionOverlayForTheKeyboard(t *testing.T) {
 	}
 }
 
+// TestAPasteNeverOpensTheMenuEvenAfterADispatchedCommand. typeText's own rule
+// is that a paste never opens the menu on its own, and a stale open() left
+// over from a session that already dispatched is the same thing wearing a
+// different keystroke: the menu must not reappear just because the draft it
+// lands on happens to look like a command again.
+func TestAPasteNeverOpensTheMenuEvenAfterADispatchedCommand(t *testing.T) {
+	m := typed(newModel(t.Context(), &promptTurner{}, goldenConfig()), "/zzz")
+	m, _ = m.press(key(tea.KeyEnter))
+	if m.input.text != "" || m.menuOpen() {
+		t.Fatalf("the unknown command did not submit cleanly: text=%q open=%v", m.input.text, m.menuOpen())
+	}
+
+	m = update(m, tea.PasteMsg{Content: "/c"})
+
+	if m.menuOpen() {
+		t.Error("a paste after a dispatched command reopened the menu on its own")
+	}
+}
+
+// TestAPasteNeverOpensTheMenuAfterBackspacingToEmpty. The same rule from the
+// other route to an empty draft: backspacing the menu's own trigger away
+// rather than sending it.
+func TestAPasteNeverOpensTheMenuAfterBackspacingToEmpty(t *testing.T) {
+	m := typed(newModel(t.Context(), &promptTurner{}, goldenConfig()), "/")
+	m, _ = m.press(key(tea.KeyBackspace))
+	if m.input.text != "" || m.menuOpen() {
+		t.Fatalf("backspacing the trigger away did not leave an empty, closed draft: text=%q open=%v",
+			m.input.text, m.menuOpen())
+	}
+
+	m = update(m, tea.PasteMsg{Content: "/etc"})
+
+	if m.menuOpen() {
+		t.Error("a paste after backspacing to empty reopened the menu on its own")
+	}
+}
+
+// TestMenuQueryEndsAtTheSameSpaceParseCommandDoes. The menu and submit have to
+// agree on where the command name ends, or the menu can say "no such command"
+// over a name Enter goes on to dispatch anyway (or the reverse).
+// parseCommand's own rule is unicode.IsSpace (command.go); U+00A0 (NBSP) is
+// one such space that " \t\n" alone misses.
+func TestMenuQueryEndsAtTheSameSpaceParseCommandDoes(t *testing.T) {
+	const text = "/help\u00A0now"
+
+	if _, ok := menuQuery(text); ok {
+		t.Fatalf("menuQuery(%q) read a unicode space as part of the command name", text)
+	}
+	if name, args, ok := parseCommand(text); !ok || name != "help" || args != "now" {
+		t.Fatalf("parseCommand(%q) = (%q, %q, %v), want (\"help\", \"now\", true) — "+
+			"this test's premise is that submit already treats that space as the end of the name",
+			text, name, args, ok)
+	}
+}
+
+// TestAnUnhandledKeyWithNoTextLeavesTheMenuAlone. A key press's() only routes
+// to typeText for what it does not otherwise bind, and one that carries no
+// text — an unmapped function key or ctrl-chord — is not a keystroke that
+// changed anything the menu filters on, so it must not reset the selection
+// either.
+func TestAnUnhandledKeyWithNoTextLeavesTheMenuAlone(t *testing.T) {
+	m := typed(newModel(t.Context(), &promptTurner{}, goldenConfig()), "/")
+	m, _ = m.press(key(tea.KeyTab))
+	if m.menu.selected != 1 {
+		t.Fatalf("Tab did not move the selection to 1 first: got %d", m.menu.selected)
+	}
+
+	m, _ = m.press(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+
+	if m.menu.selected != 1 {
+		t.Errorf("an unhandled key with no text reset the selection to %d", m.menu.selected)
+	}
+	if m.input.text != "/" {
+		t.Errorf("an unhandled key with no text changed the draft to %q", m.input.text)
+	}
+}
+
 // TestTheHintNamesTheMenusKeysWhileItIsOpen. inputHint promises "newline" and
 // "send", and neither Tab nor Enter does that while the menu answers to them
 // instead — so the hint line has to say what they do now.
