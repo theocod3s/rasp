@@ -57,6 +57,12 @@ type Model struct {
 	// stands in it (draft.go).
 	input draft
 
+	// menu is the slash-command completion overlay's sticky half: whether "/"
+	// on an empty line has opened it and Esc has not closed it again, and
+	// which filtered entry Tab or an arrow last moved to. Everything else
+	// about it is read off input each time rather than cached here (menu.go).
+	menu commandMenu
+
 	// chat is the conversation and its render cache. Items land here as their
 	// events arrive, which is what keeps a reply, the tools it asked for and the
 	// next reply in the order they happened.
@@ -277,8 +283,11 @@ func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	case m.asking():
 		// Every key while a question stands, not only the three that answer it:
 		// the turn is blocked on the answer, so a line composed now has nowhere
-		// to be sent (prompt.go).
+		// to be sent (prompt.go). Ahead of the menu below for the same reason:
+		// the overlay's keyboard claim always outranks the menu's.
 		return m.answer(key), nil
+	case m.menuClaims(key):
+		return m.menuPress(key), nil
 	case breaksLine(key):
 		m.input = m.input.insert("\n")
 	case key.Code == tea.KeyEnter:
@@ -287,6 +296,7 @@ func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		return m.expand(), nil
 	case key.Code == tea.KeyBackspace:
 		m.input = m.input.backspace()
+		m.menu.selected = 0
 	case key.Code == tea.KeyLeft:
 		m.input = m.input.left()
 	case key.Code == tea.KeyRight:
@@ -300,9 +310,23 @@ func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	case key.Code == tea.KeyEnd:
 		m.input = m.input.end()
 	default:
-		m.input = m.input.insert(key.Text)
+		m = m.typeText(key.Text)
 	}
 	return m, nil
+}
+
+// typeText inserts s at the caret, the default case's own half of a normal
+// keystroke, and is where the menu's one opening trigger lives: "/" typed
+// onto an empty line, and nowhere else — a paste or a "/" typed after other
+// text never reaches this, so neither ever opens it (menu.go's own rule for
+// what parseCommand already reads as a command).
+func (m Model) typeText(s string) Model {
+	if s == "/" && m.input.empty() {
+		m.menu.open = true
+	}
+	m.menu.selected = 0
+	m.input = m.input.insert(s)
+	return m
 }
 
 // breaksLine is the keys that continue a draft rather than send it. Three of
@@ -312,7 +336,10 @@ func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 // names (input.go).
 //
 // Tab is free to mean this because the mode cycle took shift+tab (design §7.8)
-// rather than tab, and because nothing here completes anything yet.
+// rather than tab. The completion menu also wants bare Tab, to move its
+// selection rather than break a line, and wins the collision by sitting ahead
+// of this case in press's switch (menuClaims, menu.go) — so this is only ever
+// reached with the menu closed.
 func breaksLine(key tea.Key) bool {
 	if key.Code == tea.KeyTab {
 		return key.Mod == 0
@@ -333,6 +360,7 @@ func (m Model) paste(content string) Model {
 		return m
 	}
 	m.input = m.input.insert(newlines(content))
+	m.menu.selected = 0
 	return m
 }
 
@@ -349,8 +377,15 @@ func newlines(s string) string {
 
 // escape is Esc's two-stage cancel (design §6 rule 7): a turn with nothing
 // running has nothing to arm, the first press against a running turn only
-// arms, and the second confirms it by cancelling.
+// arms, and the second confirms it by cancelling. The completion menu takes
+// Esc first and closes on it alone — unless a question is standing, since the
+// overlay's claim on the keyboard outranks the menu's the same way it does in
+// press's switch, and this is the one key both would otherwise answer.
 func (m Model) escape() Model {
+	if m.menuOpen() && !m.asking() {
+		m.menu.open = false
+		return m
+	}
 	if !m.busy {
 		return m
 	}
@@ -678,6 +713,7 @@ func (m Model) View() tea.View {
 	rule := m.rule()
 	writeLine(&b, rule)
 	writeLine(&b, m.typing())
+	writeLine(&b, m.menuView())
 	writeLine(&b, rule)
 	b.WriteString(m.status.Render(m.width, m.background))
 	return tea.NewView(b.String())

@@ -1,0 +1,13 @@
+[38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
+› /[7m [m                                         [38;2;92;99;109m↑↓⇥ select · ⏎ complete · esc close[m
+> /model    show the model in use — switching needs the model catalog
+  [38;2;92;99;109m/effort   how much depth a turn asks for — /effort <level> sets it[m
+  [38;2;92;99;109m/new      clear the screen; a conversation that starts over needs sessions[m
+  [38;2;92;99;109m/resume   reopen an earlier session — needs session support[m
+  [38;2;92;99;109m/compact  summarize the conversation to free context — needs compaction[m
+  [38;2;92;99;109m/clear    clear the conversation off the screen[m
+  [38;2;92;99;109m/yolo     run every tool call with no approval — /yolo confirm turns it on[m
+  [38;2;92;99;109m/help     list these commands[m
+  [38;2;92;99;109m/quit     stop a running turn and leave[m
+[38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
+[38;2;125;133;144m…p-demo (main)[m  manual[38;2;125;133;144m · ctx 0 · in 0 · out 0 · cost — · anthropic/claude-opus-5[m

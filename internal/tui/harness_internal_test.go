@@ -196,6 +196,15 @@ func snapshots() []snapshot {
 		// the provider — a rung missing, a mark on the wrong line — is visible as
 		// something other than an unchanged green run.
 		{name: "effort", keys: typedLine("/effort")},
+		// The completion menu, opened on "/" and left standing rather than
+		// answered — the other place the whole command table is visible, and the
+		// one that also has to draw its own hint line rather than the draft's
+		// (input.go).
+		{name: "menu", keys: typedKeys("/")},
+		// The same menu narrowed to the two commands starting with "c", which is
+		// what proves typing filters the list rather than only being able to draw
+		// it once, unfiltered.
+		{name: "menu-filtered", keys: typedKeys("/c")},
 		// A mode switched from the keyboard. Recorded because it is the one place
 		// the words a switch tells the model are visible to a reader, and they are
 		// the same words the next turn carries (design §7.5) — so an edit to them
