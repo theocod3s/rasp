@@ -1,0 +1,6 @@
+[38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
+› /c[7m [m                                        [38;2;92;99;109m↑↓⇥ select · ⏎ complete · esc close[m
+> /compact  summarize the conversation to free context — needs compaction
+  [38;2;92;99;109m/clear    clear the conversation off the screen[m
+[38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
+[38;2;125;133;144m…p-demo (main)[m  manual[38;2;125;133;144m · ctx 0 · in 0 · out 0 · cost — · anthropic/claude-opus-5[m

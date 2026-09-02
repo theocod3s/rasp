@@ -78,6 +78,7 @@ func plain(r rune) bool {
 func (m Model) submit() (Model, tea.Cmd) {
 	if name, args, ok := parseCommand(strings.TrimSpace(m.input.text)); ok {
 		m.input = draft{}
+		m = m.menuTracks()
 		return m.dispatch(name, args)
 	}
 	return m.begin()
@@ -137,17 +138,32 @@ func compact(m Model, _ string) (Model, tea.Cmd) {
 
 func help(m Model, _ string) (Model, tea.Cmd) {
 	list := commands()
-	var width int
-	for _, c := range list {
-		width = max(width, len(c.name))
-	}
+	width := commandWidth(list)
 
 	var b strings.Builder
 	b.WriteString("Commands")
 	for _, c := range list {
-		b.WriteString("\n  /" + c.name + strings.Repeat(" ", width-len(c.name)+2) + c.summary)
+		b.WriteString("\n  " + commandRow(c, width))
 	}
 	return m.say(b.String()), nil
+}
+
+// commandWidth is the longest name in list, which commandRow pads every other
+// name out to.
+func commandWidth(list []command) int {
+	var width int
+	for _, c := range list {
+		width = max(width, len(c.name))
+	}
+	return width
+}
+
+// commandRow is one command as a name-aligned line: /help and the completion
+// menu (menu.go) both draw the table this way, and this is the one place that
+// says how — so the two stay one row format apart rather than two that can
+// drift out of step.
+func commandRow(c command, width int) string {
+	return "/" + c.name + strings.Repeat(" ", width-len(c.name)+2) + c.summary
 }
 
 // leave quits, in ctrl+c's order: the turn is already unwinding while Bubble Tea

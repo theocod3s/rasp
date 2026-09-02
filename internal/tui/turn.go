@@ -38,6 +38,7 @@ func (m Model) begin() (Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.cancel = cancel
 	m.input = draft{}
+	m = m.menuTracks()
 	m = m.busied()
 	m.err = nil
 	m.chat.Append(chat.Message{

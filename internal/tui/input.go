@@ -89,15 +89,23 @@ func (m Model) typing() string {
 	return strings.Join(lines, "\n")
 }
 
-// hinted puts inputHint against the right edge of the draft's last line, and
-// drops it whole the moment what is already on that line leaves no room — the
-// order the activity line drops its own hint in (activity.go), and for the same
-// reason: the advice is not what the reader came for.
+// hinted puts the draft's own hint against the right edge of its last line,
+// and drops it whole the moment what is already on that line leaves no room —
+// the order the activity line drops its own hint in (activity.go), and for
+// the same reason: the advice is not what the reader came for.
+//
+// menuHint stands in for inputHint while the completion menu is open: Tab and
+// Enter answer to it there, not to the line, and a hint still naming
+// "newline" and "send" would be advice about keys that no longer do that.
 func (m Model) hinted(line string) string {
-	used, hint := ansi.StringWidth(line), ansi.StringWidth(inputHint)
+	text := inputHint
+	if m.menuOpen() {
+		text = menuHint
+	}
+	used, hint := ansi.StringWidth(line), ansi.StringWidth(text)
 	if m.width <= 0 || used+hintGap+hint > m.width {
 		return line
 	}
 	return line + strings.Repeat(" ", m.width-used-hint) +
-		styles.For(m.background).Faint.Render(inputHint)
+		styles.For(m.background).Faint.Render(text)
 }
