@@ -260,19 +260,22 @@ func TestAParagraphBreakInAPromptStaysBlank(t *testing.T) {
 	}
 }
 
-// TestAPromptWrapsEvenNarrowerThanItsOwnGutter. The gutter userBlock reserves
-// for the bar is two columns, and a terminal narrower than that must still
-// wrap rather than read the negative width left over as "nothing reported
-// yet, leave the line whole" — the one difference between a resize race
-// landing on an unrealistic width and a prompt that goes out flush unwrapped.
-func TestAPromptWrapsEvenNarrowerThanItsOwnGutter(t *testing.T) {
+// TestANarrowTerminalDoesNotShredAPrompt is the same rule call.go's own
+// headline is held to (TestANarrowTerminalDoesNotShredATextBody, call_test.go),
+// read across to the gutter userBlock reserves for its bar: a terminal
+// narrower than that gutter reads the width left over as negative, and wrap
+// treats a width at or under zero as "leave the line whole" rather than wrap
+// it — which is deliberately not a bug to fix by flooring it. A floor of one
+// would wrap a real prompt into a column one character wide, and a terminal
+// this narrow can at least show one long line something of.
+func TestANarrowTerminalDoesNotShredAPrompt(t *testing.T) {
 	long := strings.Repeat("word ", 30)
 	msg := llm.Message{Role: llm.RoleUser, Content: []llm.Block{{Type: llm.BlockText, Text: long}}}
 
 	for _, width := range []int{1, 2} {
 		lines := strings.Split(ansi.Strip((chat.Message{Content: msg, Done: true}).Render(width)), "\n")
-		if len(lines) < 2 {
-			t.Errorf("at width %d the prompt drew %d line(s) rather than wrapping at all", width, len(lines))
+		if len(lines) > 1 {
+			t.Errorf("at width %d the prompt drew %d line(s), want it left whole:\n%q", width, len(lines), lines)
 		}
 	}
 }

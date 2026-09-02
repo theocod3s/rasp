@@ -149,6 +149,24 @@ func TestAFailedTurnIsDrawnThroughTheStyledErrorToken(t *testing.T) {
 	}
 }
 
+// TestAFailedTurnsErrorHasABlankLineAboveIt. Every item chat.View draws gets
+// one blank line of breathing room before it (chat/view.go); the error line
+// is chrome rather than one of those items, and had to be given the same gap
+// by hand rather than picking it up for free.
+func TestAFailedTurnsErrorHasABlankLineAboveIt(t *testing.T) {
+	broke := errors.New("the stream broke")
+
+	var m tea.Model = Model{}
+	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventAssistantEnd, Message: reply("Reading it now.")}})
+	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventError, Err: broke}})
+
+	frame := m.View().Content
+	want := "\n\n" + styles.For(styles.Dark).Error.Render("error: "+broke.Error())
+	if !strings.Contains(frame, want) {
+		t.Errorf("the error line is not set apart from the transcript above it by a blank line:\n%q", frame)
+	}
+}
+
 func reply(text string) *llm.Message {
 	return &llm.Message{
 		Role:    llm.RoleAssistant,

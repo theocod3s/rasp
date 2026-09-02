@@ -102,8 +102,9 @@ func (m Model) report(err error) Model {
 
 // closed appends the turn's own duration to the transcript, faint, once
 // EventTurnEnd says it is over. Nothing for a turn too short to round to a
-// second — the floor the activity line's own elapsed time already holds to
-// (activity.go) — and nothing at all when started is still the zero time: a
+// second — a coarser floor than the activity line's own elapsed time holds to
+// (activity.go rounds to a tenth of a second; turnDuration below rounds to a
+// whole one) — and nothing at all when started is still the zero time: a
 // question published straight onto an idle model reaches EventTurnEnd with no
 // begin behind it, and dating that turn's length from year one would print
 // something absurd rather than nothing.
@@ -129,8 +130,8 @@ func (m Model) closed() Model {
 // activity-line timers because a turn's own length is read once rather than
 // watched moving.
 func turnDuration(d time.Duration) string {
-	if r := d.Round(time.Second); r > 0 {
-		return "took " + r.String()
+	if r := rounded(d, time.Second); r != "" {
+		return "took " + r
 	}
 	return ""
 }

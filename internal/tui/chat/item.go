@@ -97,36 +97,44 @@ func content(msg llm.Message, kind llm.BlockType) string {
 // Built the way Call.Render builds its own headline (call.go): inset first, so
 // a blank line inside the prompt — a blank line between two paragraphs the
 // user typed — stays blank rather than picking up a margin nothing follows,
-// and only then is the indent inset gave line one traded for the bar.
+// and only then is the indent inset gave line one traded for the bar. The
+// width computation matches the headline's too, deliberately not inner's: a
+// terminal too narrow even for the gutter reads the negative width as "leave
+// the line whole" the same way the headline does, rather than wrap with a
+// floor of one and shred it into a column one character wide
+// (TestANarrowTerminalDoesNotShredATextBody, call_test.go).
 func userBlock(text string, width int, bar lipgloss.Style) string {
-	head := inset(wrap(Caret+text, inner(width)), cardIndent)
+	head := inset(wrap(Caret+text, width-len(cardIndent)), cardIndent)
 	return bar.Render(userBar) + " " + strings.TrimPrefix(head, cardIndent)
 }
 
-// insetPainted draws text wrapped, indented two columns and styled — inset
-// before paint rather than after, which matters and is not merely order for
-// order's sake: a style's Render("") is not "", Lip Gloss wraps even nothing in
-// its own open and close codes, so a blank line painted first is no longer
-// blank by the time inset goes looking for one to leave alone. Insetting the
-// plain text first, then styling only the content past each line's own
-// indent, is what keeps a blank line inside a thought blank rather than two
-// spaces and a dead escape sequence.
+// insetPainted draws text wrapped, indented two columns and styled — paint
+// takes the wrapping and the indent is added after, the same order Notice and
+// every other painted segment already uses; paint's own blank-line rule is
+// what keeps this composition correct (see paint below). The width is the
+// card body's own computation, for the reason userBlock's is the headline's:
+// a terminal too narrow for the indent leaves a thought whole rather than
+// wrapping it a character at a time.
 func insetPainted(text string, style lipgloss.Style, width int) string {
-	lines := strings.Split(inset(wrap(text, inner(width)), cardIndent), "\n")
-	for i, line := range lines {
-		if body, ok := strings.CutPrefix(line, cardIndent); ok {
-			lines[i] = cardIndent + style.Render(body)
-		}
-	}
-	return strings.Join(lines, "\n")
+	return inset(paint(text, style, width-len(cardIndent)), cardIndent)
 }
 
 // paint wraps text to width and styles it a line at a time: Lip Gloss renders a
 // multi-line string as a block, padding every line out to the longest with
 // spaces the reader would find again on the end of anything they copied.
+//
+// A blank line is left blank rather than styled, and that is load-bearing
+// rather than an optimisation: a style's Render("") is not "", it is that
+// style's open and close codes around nothing, and inset — the one caller
+// that goes looking for a blank line afterwards to leave alone — would find a
+// non-empty string where the paragraph break in a real, multi-line thought or
+// notice used to be.
 func paint(text string, style lipgloss.Style, width int) string {
 	lines := strings.Split(wrap(text, width), "\n")
 	for i, line := range lines {
+		if line == "" {
+			continue
+		}
 		lines[i] = style.Render(line)
 	}
 	return strings.Join(lines, "\n")

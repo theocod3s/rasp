@@ -110,13 +110,18 @@ func (c Call) Render(width int) string {
 	return head + "\n" + inset(body, cardIndent)
 }
 
-// inner is the width left inside a two-column indent, never zero or less. The
-// diff renderer needs that floor strictly — it cuts a line to width rather
-// than wrapping it, and zero reads as "no size reported yet, do not cut", so a
-// real terminal too narrow for the indent must not arrive spelled that way or
-// every diff line goes out at full length. Every caller here shares the same
-// floor rather than each working out its own version of it, even where wrap
-// would have read zero just as safely on its own.
+// inner is the width left inside the card's indent, never zero or less — which
+// the diff renderer reads as "no size reported yet, do not cut", so a real
+// terminal too narrow for the indent must not arrive spelled that way or every
+// diff line goes out at full length and wraps.
+//
+// The diff alone uses it. Everything else here — the headline, a card's own
+// text body, a prompt's gutter (item.go's userBlock), a reply's thinking
+// (item.go's insetPainted) — is wrapped rather than cut, and wrap reads that
+// same zero as "leave the line whole", which is the better answer for a
+// terminal too narrow even for the indent: clamping to a column instead
+// breaks a line into one character per row
+// (TestANarrowTerminalDoesNotShredATextBody, call_test.go).
 func inner(width int) int {
 	if width <= 0 {
 		return width

@@ -58,7 +58,18 @@ func frame(elapsed time.Duration) string {
 // turn too short to have one — at the threshold a card uses, so the two start
 // reading together.
 func duration(d time.Duration) string {
-	if r := d.Round(tickInterval); r > 0 {
+	return rounded(d, tickInterval)
+}
+
+// rounded is a duration rounded to unit, or nothing for one that rounds away
+// to zero — the shape a card's own elapsed time, the activity line's, and a
+// finished turn's closing line all read a duration through, each at its own
+// unit rather than sharing one across every caller: a card and the activity
+// line move together on purpose (duration, above), and a turn's own length is
+// read once rather than watched moving, which is a coarser question and gets
+// a coarser answer (turn.go's turnDuration).
+func rounded(d, unit time.Duration) string {
+	if r := d.Round(unit); r > 0 {
 		return r.String()
 	}
 	return ""

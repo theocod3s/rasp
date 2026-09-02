@@ -565,6 +565,13 @@ func (m Model) View() tea.View {
 	var b strings.Builder
 	b.WriteString(m.chat.Render(m.width))
 	if m.err != nil {
+		// Blank first, when there is a transcript above to hold apart from — the
+		// same one line of breathing room every item inside chat.View already gets
+		// (chat/view.go), which this notice is drawn as though it were one of
+		// without actually joining the conversation.
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
 		// Through the same notice path a command's own answer draws through,
 		// styled in the accent that says "this went wrong" rather than as a bare
 		// line — the one place left where an error was drawn in no colour at all.
