@@ -21,6 +21,7 @@ import (
 	"github.com/theocod3s/rasp/internal/llm"
 	"github.com/theocod3s/rasp/internal/permission"
 	"github.com/theocod3s/rasp/internal/tool"
+	"github.com/theocod3s/rasp/internal/tool/builtin"
 )
 
 // The terminal every frame is recorded at. A reply is wrapped and padded to the
@@ -252,6 +253,20 @@ func snapshots() []snapshot {
 			{Kind: agent.EventToolEnd, CallID: "call_3", Tool: "edit", Result: edited},
 			{Kind: agent.EventToolStart, CallID: "call_4", Tool: "write"},
 			{Kind: agent.EventToolEnd, CallID: "call_4", Tool: "write", Result: created},
+			{Kind: agent.EventTurnEnd},
+		}},
+		// A todos call, drawn as its checklist rather than as a headline and a
+		// body — recorded because the glyphs and the muted/marked styling only
+		// show up in a real frame, not in the words a test reduces one to.
+		{name: "todos", prompt: prompt, events: []agent.Event{
+			{Kind: agent.EventToolStart, CallID: "call_1", Tool: "todos"},
+			{Kind: agent.EventToolEnd, CallID: "call_1", Tool: "todos", Result: &tool.Result{
+				Details: &builtin.TodosDetails{Items: []builtin.TodoItem{
+					{Content: "Read the failing test", Status: builtin.TodoCompleted},
+					{Content: "Fix the header parser", Status: builtin.TodoInProgress},
+					{Content: "Add a regression test", Status: builtin.TodoPending},
+				}},
+			}},
 			{Kind: agent.EventTurnEnd},
 		}},
 		// A turn caught two and a half seconds in, which is the one frame here

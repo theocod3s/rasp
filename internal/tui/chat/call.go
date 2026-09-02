@@ -88,6 +88,13 @@ func (c Call) HasDiff() bool {
 }
 
 func (c Call) Render(width int) string {
+	// A checklist replaces the headline and body outright rather than filling
+	// one of them: todos.go decides whether this call is one, and everything
+	// below is the generic card every other tool still draws.
+	if items, ok := c.todosItems(); ok {
+		return checklist(items, width, c.Background)
+	}
+
 	// The headline is set in like the body and then gives its first two columns
 	// back to the marker. Wrapped whole instead, a summary too long for the
 	// terminal continues at column zero and reads as a line of its own.
