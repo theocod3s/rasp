@@ -13,6 +13,13 @@ import (
 // typing below, so a conversation of two speakers reads as one.
 const Caret = "› "
 
+// userBar is the accent every line of a prompt opens with, run down the left
+// edge — Claude Code's `>` box, drawn as a rule instead of a rectangle. Its
+// width matches cardIndent's: two columns, the same margin a tool card's own
+// marker column takes, so the transcript keeps one gutter width whichever kind
+// of item is standing in it.
+const userBar = "▌"
+
 // Message is one turn of the conversation, a prompt or a reply, as the view
 // draws it.
 type Message struct {
@@ -44,14 +51,17 @@ func (m Message) Render(width int) string {
 		if text == "" {
 			return ""
 		}
-		return wrap(Caret+text, width)
+		return userBlock(text, width, styles.For(m.Background).UserBar)
 	}
 
 	var head, body string
 	// Trimmed: an accumulation caught mid-stream often ends on the newline before
 	// the next paragraph, and a faint blank line under the segment reads as a gap.
+	// Indented two columns, the same margin a card's own body is set in by, so
+	// the segment a reader is meant to skim past reads as subordinate the same
+	// way everywhere else in the transcript says it.
 	if text := strings.TrimSpace(thinking(m.Content)); text != "" {
-		head = paint(text, styles.For(m.Background).Faint, width)
+		head = inset(paint(text, styles.For(m.Background).Faint, width-len(cardIndent)), cardIndent)
 	}
 	// Guarded rather than left to the renderer: an empty string shares no prefix
 	// with the memo, so rendering one drops the head of the arriving reply
@@ -76,6 +86,23 @@ func content(msg llm.Message, kind llm.BlockType) string {
 		}
 	}
 	return b.String()
+}
+
+// userBlock draws a prompt as its own block rather than a line indistinguishable
+// from whatever the model said above it: the bar opens the first line, the same
+// way a card's own marker opens its headline and nothing else, so a prompt long
+// enough to wrap reads as one block set in by a margin rather than a bar
+// repeated down its own left edge.
+func userBlock(text string, width int, bar lipgloss.Style) string {
+	lines := strings.Split(wrap(Caret+text, width-len(cardIndent)), "\n")
+	for i, line := range lines {
+		if i == 0 {
+			lines[i] = bar.Render(userBar) + " " + line
+			continue
+		}
+		lines[i] = cardIndent + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 // paint wraps text to width and styles it a line at a time: Lip Gloss renders a

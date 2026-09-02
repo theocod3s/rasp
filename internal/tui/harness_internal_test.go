@@ -69,6 +69,13 @@ type snapshot struct {
 	ask    *permission.Request
 	keys   []tea.KeyPressMsg
 
+	// pause moves the fake clock on once the prompt has landed and before its
+	// events arrive, which is what gives a turn's own duration line something
+	// other than zero to say: every card's own Elapsed is measured from when
+	// its call started, after the jump, so the pause reads as thinking time
+	// ahead of the first tool rather than time any card also claims.
+	pause time.Duration
+
 	// after moves the fake clock on once the events have landed, which is how a
 	// frame gets an animation on it: the spinner glyph and the elapsed times are
 	// read off that clock, so naming the instant names the frame.
@@ -234,8 +241,11 @@ func snapshots() []snapshot {
 		}},
 		// Two file changes, drawn. Nothing here presses a key: a card holding a
 		// diff opens itself, which is the difference between a transcript that
-		// shows what changed and one that shows a path.
-		{name: "diff", prompt: prompt, events: []agent.Event{
+		// shows what changed and one that shows a path. The turn's own pause is
+		// recorded here too, since this is the one snapshot that reaches
+		// EventTurnEnd with nothing else moving the clock first — the frame
+		// where the closing "took" line has something other than zero to say.
+		{name: "diff", prompt: prompt, pause: 12 * time.Second, events: []agent.Event{
 			{Kind: agent.EventAssistantDelta, Message: changed},
 			{Kind: agent.EventAssistantEnd, Message: changed},
 			{Kind: agent.EventToolStart, CallID: "call_3", Tool: "edit"},
@@ -397,6 +407,9 @@ func draw(t *testing.T, state snapshot) string {
 	tm, turner, clock := program(t)
 	if state.prompt != "" {
 		submit(t, tm, turner, state.prompt)
+	}
+	if state.pause > 0 {
+		clock.pass(state.pause)
 	}
 	for _, ev := range state.events {
 		tm.Send(agentMsg{event: ev})

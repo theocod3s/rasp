@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -97,4 +98,32 @@ func (m Model) report(err error) Model {
 		m.err = err
 	}
 	return m
+}
+
+// closed appends the turn's own duration to the transcript, faint, once
+// EventTurnEnd says it is over. Nothing for a turn too short to round to a
+// second — the floor the activity line's own elapsed time already holds to
+// (activity.go) — and nothing at all when started is still the zero time: a
+// question published straight onto an idle model reaches EventTurnEnd with no
+// begin behind it, and dating that turn's length from year one would print
+// something absurd rather than nothing.
+func (m Model) closed() Model {
+	if m.started.IsZero() {
+		return m
+	}
+	if text := turnDuration(m.clock().Sub(m.started)); text != "" {
+		m.chat.Append(chat.Notice{Text: text, Background: m.background})
+	}
+	return m
+}
+
+// turnDuration is a finished turn's length as the notice closing it reads —
+// "took 12s" — rounded to the second, which is coarser than the card and
+// activity-line timers because a turn's own length is read once rather than
+// watched moving.
+func turnDuration(d time.Duration) string {
+	if r := d.Round(time.Second); r > 0 {
+		return "took " + r.String()
+	}
+	return ""
 }

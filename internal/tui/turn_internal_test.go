@@ -246,6 +246,62 @@ func TestAFinishedTurnReleasesItsContext(t *testing.T) {
 	}
 }
 
+// TestAFinishedTurnClosesWithItsDuration reads the closing "took" line off the
+// fake clock rather than off how long the test itself took to run: begin
+// stamps started when the turn is submitted, EventTurnEnd reads the clock
+// again, and the gap between the two is entirely the test's own doing.
+func TestAFinishedTurnClosesWithItsDuration(t *testing.T) {
+	c := newClock(goldenNow)
+	turner := &promptTurner{started: make(chan context.Context, 1)}
+	m := newModel(t.Context(), turner, Config{})
+	m.now = c.read
+
+	m = typed(m, "go")
+	m, _ = m.press(key(tea.KeyEnter))
+	c.pass(12 * time.Second)
+	m = update(m, agentMsg{event: agent.Event{Kind: agent.EventTurnEnd}})
+
+	if frame := words(m.View().Content); !strings.Contains(frame, "took 12s") {
+		t.Errorf("the frame does not close the turn with its duration:\n%s", frame)
+	}
+}
+
+// TestAFinishedTurnUnderASecondClosesWithNothing mirrors the card and activity
+// line's own floor (call.go's elapsed, activity.go's duration): a turn the
+// clock says took under a second says nothing about it rather than "took 0s"
+// on every turn a synchronous test or a fast reply produces.
+func TestAFinishedTurnUnderASecondClosesWithNothing(t *testing.T) {
+	c := newClock(goldenNow)
+	turner := &promptTurner{started: make(chan context.Context, 1)}
+	m := newModel(t.Context(), turner, Config{})
+	m.now = c.read
+
+	m = typed(m, "go")
+	m, _ = m.press(key(tea.KeyEnter))
+	c.pass(400 * time.Millisecond)
+	m = update(m, agentMsg{event: agent.Event{Kind: agent.EventTurnEnd}})
+
+	if frame := words(m.View().Content); strings.Contains(frame, "took") {
+		t.Errorf("a turn under a second closed with a duration line:\n%s", frame)
+	}
+}
+
+// TestATurnEndedWithNoBeginBehindItClosesWithNothing covers EventTurnEnd
+// reaching a model started never stamped — a question published straight onto
+// an idle session (prompt_internal_test.go's asked helper does exactly this).
+// Dating that turn's length from the zero time would print a duration in the
+// thousands of years rather than the nothing a turn that never really ran
+// should close with.
+func TestATurnEndedWithNoBeginBehindItClosesWithNothing(t *testing.T) {
+	m := newModel(t.Context(), &promptTurner{}, Config{})
+
+	m = update(m, agentMsg{event: agent.Event{Kind: agent.EventTurnEnd}})
+
+	if frame := words(m.View().Content); strings.Contains(frame, "took") {
+		t.Errorf("a turn with no begin behind it closed with a duration line:\n%s", frame)
+	}
+}
+
 // TestCtrlCCancelsTheTurnBeforeItQuits is Ctrl-C's own two-stage arm (design
 // §6 rule 7): the first press cancels a running turn — because the program's
 // context would end with the program anyway, but only after Bubble Tea has

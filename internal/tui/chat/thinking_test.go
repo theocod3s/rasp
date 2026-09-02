@@ -35,8 +35,16 @@ func TestThinkingIsDrawnAboveTheReplyInTheFaintToken(t *testing.T) {
 
 	faint := styles.For(styles.Dark).Faint
 	for _, line := range strings.Split(head, "\n") {
-		if want := faint.Render(ansi.Strip(line)); line != want {
-			t.Errorf("a thinking line drew\n\t%q\nand the faint token draws it\n\t%q", line, want)
+		// Indented two columns, the plain prefix a card's own body carries too
+		// (item.go), and off before the faint token is asked to draw the rest —
+		// styling the indent along with the words would move it inside the
+		// escape codes, which is not how paint built the line.
+		text, ok := strings.CutPrefix(line, "  ")
+		if !ok {
+			t.Fatalf("a thinking line is not indented two columns: %q", line)
+		}
+		if want := faint.Render(ansi.Strip(text)); text != want {
+			t.Errorf("a thinking line drew\n\t%q\nand the faint token draws it\n\t%q", text, want)
 		}
 	}
 }

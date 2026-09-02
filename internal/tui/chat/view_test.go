@@ -10,6 +10,7 @@ import (
 	"github.com/theocod3s/rasp/internal/llm"
 	"github.com/theocod3s/rasp/internal/tool"
 	"github.com/theocod3s/rasp/internal/tui/chat"
+	"github.com/theocod3s/rasp/internal/tui/styles"
 )
 
 // TestAFinishedItemIsRenderedOnceAndThenFrozen is internals §4.5's freeze: a
@@ -117,9 +118,9 @@ func TestSetKeepsAnItemWhereItFirstAppeared(t *testing.T) {
 	v.Set("first", chat.Call{Name: "read", State: chat.CallDone})
 
 	// ansi.Strip rather than words(): this test is about the two-space indent
-	// and the newline holding one card apart from the other, and words()
+	// and the blank line holding one card apart from the other, and words()
 	// collapses both of those away along with the colour codes.
-	if got, want := ansi.Strip(v.Render(80)), "  ✓ read\n  ⠋ write\n"; got != want {
+	if got, want := ansi.Strip(v.Render(80)), "  ✓ read\n\n  ⠋ write\n"; got != want {
 		t.Errorf("the conversation reads\n%q\nwant\n%q", got, want)
 	}
 	if v.Len() != 2 {
@@ -158,7 +159,7 @@ func TestAMessageDrawsOnlyWhatAReaderIsMeantToSee(t *testing.T) {
 				Role:    llm.RoleUser,
 				Content: []llm.Block{{Type: llm.BlockText, Text: "fix the auth test"}},
 			},
-			want: chat.Caret + "fix the auth test",
+			want: userBarPrefix + chat.Caret + "fix the auth test",
 		},
 		{
 			name: "thinking is drawn above the reply",
@@ -205,8 +206,40 @@ func TestAReplyIsMarkdownAndAPromptIsNot(t *testing.T) {
 		Content: llm.Message{Role: llm.RoleUser, Content: []llm.Block{{Type: llm.BlockText, Text: heading}}},
 		Done:    true,
 	}
-	if got, want := words(typed.Render(40)), chat.Caret+heading; got != want {
+	if got, want := words(typed.Render(40)), userBarPrefix+chat.Caret+heading; got != want {
 		t.Errorf("the prompt draws %q, want %q", got, want)
+	}
+}
+
+// TestAPromptIsDrawnInTheUserBarTokenOnBothBackgrounds. The accent is what
+// tells the two voices in the transcript apart, so it has to be the palette's
+// own token rather than a colour that happens to look right on one background
+// — the same failure a Faint notice once shipped as Muted and every
+// ansi.Strip-ed assertion here would miss (notice_test.go).
+func TestAPromptIsDrawnInTheUserBarTokenOnBothBackgrounds(t *testing.T) {
+	msg := llm.Message{Role: llm.RoleUser, Content: []llm.Block{{Type: llm.BlockText, Text: "fix the auth test"}}}
+
+	for _, bg := range []struct {
+		name string
+		bg   styles.Background
+	}{
+		{"dark", styles.Dark},
+		{"light", styles.Light},
+	} {
+		t.Run(bg.name, func(t *testing.T) {
+			prompt := chat.Message{Content: msg, Done: true, Background: bg.bg}.Render(wide)
+			bar := styles.For(bg.bg).UserBar.Render("▌")
+			if !strings.Contains(prompt, bar) {
+				t.Errorf("a prompt drawn on %s does not carry the user bar token:\n%q", bg.name, prompt)
+			}
+
+			// The negative control: a reply must not pick up the same accent, or
+			// the two voices stop reading as different blocks.
+			answer := chat.Message{Content: reply("Found it."), Done: true, Background: bg.bg}.Render(wide)
+			if strings.Contains(answer, bar) {
+				t.Errorf("a reply on %s is drawn in the same accent a prompt is:\n%q", bg.name, answer)
+			}
+		})
 	}
 }
 
@@ -215,6 +248,11 @@ func TestAReplyIsMarkdownAndAPromptIsNot(t *testing.T) {
 func words(frame string) string {
 	return strings.Join(strings.Fields(ansi.Strip(frame)), " ")
 }
+
+// userBarPrefix is the accent every prompt opens with, as words() reduces it
+// to: the glyph, unstyled once ansi.Strip has run, and the single space
+// words() leaves between it and the caret that follows.
+const userBarPrefix = "▌ "
 
 // BenchmarkCursorBlink is the frame a blinking cursor costs in a 200-message
 // conversation: nothing has changed, so no item is drawn at all. The count is

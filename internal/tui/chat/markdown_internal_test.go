@@ -88,7 +88,7 @@ func TestThinkingNeverReachesTheMarkdownRenderer(t *testing.T) {
 // must leave every prefix rendering exactly as it did without one.
 func TestThinkingLeavesTheReplysBoundariesWhereTheyWere(t *testing.T) {
 	const width = 60
-	head := paint(aloud, styles.For(styles.Dark).Faint, width)
+	head := inset(paint(aloud, styles.For(styles.Dark).Faint, width-len(cardIndent)), cardIndent)
 
 	for name, doc := range corpus {
 		t.Run(name, func(t *testing.T) {

@@ -79,3 +79,31 @@ func TestAnEmptyNoticeTakesNoLine(t *testing.T) {
 		t.Errorf("an empty notice drew %q", drawn)
 	}
 }
+
+// TestAnErrorNoticeIsDrawnInTheErrorToken. A failed turn is the one thing this
+// family says that a reader must not be able to skim past, so it takes the
+// palette's own accent for "this went wrong" rather than the Faint every other
+// notice draws in — asserted against the token on both backgrounds, for the
+// reason TestANoticeIsDrawnFaint already is.
+func TestAnErrorNoticeIsDrawnInTheErrorToken(t *testing.T) {
+	for _, bg := range []struct {
+		name string
+		bg   styles.Background
+	}{
+		{"dark", styles.Dark},
+		{"light", styles.Light},
+	} {
+		t.Run(bg.name, func(t *testing.T) {
+			const text = "error: the provider closed the stream mid-message"
+
+			drawn := chat.Notice{Text: text, Kind: chat.NoticeError, Background: bg.bg}.Render(wide)
+
+			if want := styles.For(bg.bg).Error.Render(text); drawn != want {
+				t.Errorf("an error notice drew\n\t%q\nand the error token draws it\n\t%q", drawn, want)
+			}
+			if faint := styles.For(bg.bg).Faint.Render(text); drawn == faint {
+				t.Errorf("an error notice drew the same bytes an ordinary one would:\n\t%q", drawn)
+			}
+		})
+	}
+}

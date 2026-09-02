@@ -71,6 +71,18 @@ type Palette struct {
 	BannerFrom lipgloss.Style
 	BannerVia  lipgloss.Style
 	BannerTo   lipgloss.Style
+
+	// UserBar accents the left edge of a prompt the user sent, in BannerVia's
+	// own violet — the identity gradient's middle stop — so the one voice in
+	// the transcript that is unambiguously the reader's own reads as part of
+	// rasp's identity rather than a fourth hue nothing else on screen uses.
+	UserBar lipgloss.Style
+
+	// Error tints the notice a failed turn is reported through, the same red
+	// CallFailed marks a tool with and DiffRemoved marks a deleted line — one
+	// colour for "this went wrong" everywhere it appears, rather than a second
+	// palette for the one place rasp reports a failure in its own voice.
+	Error lipgloss.Style
 }
 
 // For returns the palette for bg. Anything that is not Light is dark, so a
@@ -120,5 +132,8 @@ func build(isDark bool) Palette {
 		BannerFrom: fg(lipgloss.Color("#a3204e"), lipgloss.Color("#ff6b9d")),
 		BannerVia:  fg(lipgloss.Color("#7c3aed"), lipgloss.Color("#c084fc")),
 		BannerTo:   fg(lipgloss.Color("#4338ca"), lipgloss.Color("#818cf8")),
+
+		UserBar: fg(lipgloss.Color("#7c3aed"), lipgloss.Color("#c084fc")),
+		Error:   fg(lipgloss.Color("#cf222e"), lipgloss.Color("#f85149")),
 	}
 }

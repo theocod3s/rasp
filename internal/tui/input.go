@@ -22,11 +22,20 @@ const (
 // rule is one edge of the input frame, at the terminal's full width. A terminal
 // that has not reported a size has no width to draw across, and View drops the
 // empty line rather than leaving a gap where the rule would be.
+//
+// Both edges take yolo's own inverse video while the bypass is armed (design
+// §7.8) — the badge's own styling rather than a colour, so the border reads as
+// loud on a terminal whose theme this build knows nothing about, the same
+// reason the badge is drawn in it (status.go).
 func (m Model) rule() string {
 	if m.width <= 0 {
 		return ""
 	}
-	return styles.For(m.background).Faint.Render(strings.Repeat(frameRule, m.width))
+	line := strings.Repeat(frameRule, m.width)
+	if m.status.yolo {
+		return yoloStyle.Render(line)
+	}
+	return styles.For(m.background).Faint.Render(line)
 }
 
 // typing is the line inside the frame: what the user has behind the caret, or

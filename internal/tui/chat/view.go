@@ -69,17 +69,25 @@ func (v *View) Set(key string, item Item) {
 // Len is how many items the conversation holds.
 func (v *View) Len() int { return len(v.items) }
 
-// Render draws the whole conversation. An item that draws nothing takes no line
-// of its own — a step whose reply was only a tool call has no text to show.
+// Render draws the whole conversation, a blank line between each pair of items
+// so the transcript reads as separate turns rather than one dense scroll. An
+// item that draws nothing takes no line of its own and opens no gap either — a
+// step whose reply was only a tool call has no text to show, and the item
+// before it is followed by exactly one blank line, not two.
 func (v *View) Render(width int) string {
 	var b strings.Builder
+	open := false
 	for i := range v.items {
 		text := v.items[i].render(width)
 		if text == "" {
 			continue
 		}
+		if open {
+			b.WriteByte('\n')
+		}
 		b.WriteString(text)
 		b.WriteByte('\n')
+		open = true
 	}
 	return b.String()
 }
