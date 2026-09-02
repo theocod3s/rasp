@@ -43,16 +43,22 @@ func promptKey(id string) string { return "ask/" + id }
 
 func (m Model) asking() bool { return len(m.asked) > 0 }
 
-func (m Model) ask(req permission.Request) Model {
+// ask queues req and, when it is the only one waiting, draws it and rings the
+// bell — the moment worth coming back for. A second request arriving behind
+// one already on screen is not: it stays silent until dismiss (below) shows
+// it in turn, which in practice never happens, since a batch asks its
+// questions one at a time and the first is always answered before the next
+// is published (show's own comment).
+func (m Model) ask(req permission.Request) (Model, tea.Cmd) {
 	if m.permissions == nil {
 		return m.say("A tool asked for approval and there is nothing wired up to answer it, so " +
-			"the turn is stopped where it stands. Press esc twice to end it.")
+			"the turn is stopped where it stands. Press esc twice to end it."), nil
 	}
 	m.asked = append(m.asked, req)
 	if len(m.asked) == 1 {
-		m = m.show()
+		return m.show(), m.bell()
 	}
-	return m
+	return m, nil
 }
 
 // show draws the question at the head of the queue and starts its grace period.

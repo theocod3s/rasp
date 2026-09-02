@@ -94,7 +94,7 @@ func TestTheFrameHoldsWhileAQuestionStands(t *testing.T) {
 	m.width = goldenWidth
 
 	before := strings.Count(ansi.Strip(m.View().Content), strings.Repeat(frameRule, goldenWidth))
-	m = m.ask(permission.Request{CallID: "call_1", Tool: "edit", Action: permission.ActionEdit, Path: "auth.go"})
+	m, _ = m.ask(permission.Request{CallID: "call_1", Tool: "edit", Action: permission.ActionEdit, Path: "auth.go"})
 
 	frame := ansi.Strip(m.View().Content)
 	if !strings.Contains(frame, "needs your approval") {
@@ -433,7 +433,7 @@ func TestACommandIsTheFirstWordOfTheFirstLine(t *testing.T) {
 func TestAQuestionTakesTheNewlineKeyAndThePasteToo(t *testing.T) {
 	m := newModel(t.Context(), &promptTurner{}, Config{Mode: permission.ModeManual})
 	m.permissions = &answers{decided: true}
-	m = m.ask(permission.Request{CallID: "call_1", Tool: "edit", Action: permission.ActionEdit, Path: "auth.go"})
+	m, _ = m.ask(permission.Request{CallID: "call_1", Tool: "edit", Action: permission.ActionEdit, Path: "auth.go"})
 
 	m = update(m, tea.PasteMsg{Content: "a patch\nwith two lines"})
 	if m.input.text != "" {
