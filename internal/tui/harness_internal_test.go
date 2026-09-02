@@ -63,12 +63,15 @@ func goldenConfig() Config {
 // snapshot is one state of the UI worth freezing: the prompt that starts a turn,
 // the events the loop then emits into it, the question a gated tool call put to
 // the user, and anything they typed after.
+//
+// keys is any message rather than a keypress alone, because a bracketed paste
+// reaches Update as its own message and nothing about it is a key (model.go).
 type snapshot struct {
 	name   string
 	prompt string
 	events []agent.Event
 	ask    *permission.Request
-	keys   []tea.KeyPressMsg
+	keys   []tea.Msg
 
 	// pause moves the fake clock on once the prompt has landed and before its
 	// events arrive, which is what gives a turn's own duration line something
@@ -176,6 +179,13 @@ func snapshots() []snapshot {
 	return []snapshot{
 		{name: "empty"},
 		{name: "busy", prompt: prompt},
+		// A draft of four lines, one of them typed and three of them pasted. The
+		// only frame where the input frame is taller than one line, so it is where
+		// a footer that stopped following the frame down, a continuation line that
+		// lost its indent, or a hint drawn anywhere but the last line shows up.
+		{name: "composing", keys: append(typedKeys("why does this hunk fail to apply?"),
+			key(tea.KeyTab),
+			tea.PasteMsg{Content: "--- a/auth.go\n+++ b/auth.go\n@@ -12,5 +12,6 @@"})},
 		// The command list. Recorded rather than only asserted because it is the
 		// one place the whole set of commands is visible to a reader, so a command
 		// added, renamed or newly able to do its job shows up here as a diff in the
@@ -190,7 +200,7 @@ func snapshots() []snapshot {
 		// the words a switch tells the model are visible to a reader, and they are
 		// the same words the next turn carries (design §7.5) — so an edit to them
 		// shows up here rather than only inside a transcript nobody reads.
-		{name: "mode", keys: []tea.KeyPressMsg{shiftTab}},
+		{name: "mode", keys: []tea.Msg{shiftTab}},
 		// The bypass, reached the only way a session can reach it: the warning the
 		// bare /yolo answers with, and then the badge the confirmed one leaves on
 		// the status line. Recorded because those are the words standing between a
@@ -200,11 +210,11 @@ func snapshots() []snapshot {
 		// The first Esc against a running turn, which arms rather than cancels
 		// (design §6 rule 7) — the arm taking the activity line's hint half is the
 		// only thing this state exists to draw.
-		{name: "armed", prompt: prompt, keys: []tea.KeyPressMsg{key(tea.KeyEscape)}},
+		{name: "armed", prompt: prompt, keys: []tea.Msg{key(tea.KeyEscape)}},
 		// The first Ctrl-C, Esc's sibling arm (design §6 rule 7): its own hint
 		// drawn in the same place, over a turn it has already cancelled — proof
 		// the two arms use the same line without merging into one state.
-		{name: "ctrlc-armed", prompt: prompt, keys: []tea.KeyPressMsg{ctrlCKey}},
+		{name: "ctrlc-armed", prompt: prompt, keys: []tea.Msg{ctrlCKey}},
 		// A step that has thought and said nothing yet, and the same step once the
 		// reply has started under it. Two states rather than one because they are
 		// the only frames where the faint segment is the whole of what a reader has
@@ -219,7 +229,7 @@ func snapshots() []snapshot {
 		{name: "tools", prompt: prompt, events: tools},
 		// The same conversation with every card opened, which is the only state
 		// that draws what a tool actually returned.
-		{name: "expanded", prompt: prompt, events: tools, keys: []tea.KeyPressMsg{expandKey}},
+		{name: "expanded", prompt: prompt, events: tools, keys: []tea.Msg{expandKey}},
 		// A gated call, waiting on the user. The cards for the batch are already
 		// drawn and queued, and the question stands under them where it was
 		// asked — which is the whole of what "inline" means here.
@@ -290,12 +300,17 @@ func snapshots() []snapshot {
 }
 
 // typedLine is a line typed into the input and sent.
-func typedLine(line string) []tea.KeyPressMsg {
-	keys := make([]tea.KeyPressMsg, 0, len(line)+1)
+func typedLine(line string) []tea.Msg {
+	return append(typedKeys(line), key(tea.KeyEnter))
+}
+
+// typedKeys is a line typed and left standing in the input.
+func typedKeys(line string) []tea.Msg {
+	keys := make([]tea.Msg, 0, len(line))
 	for _, r := range line {
 		keys = append(keys, tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
-	return append(keys, key(tea.KeyEnter))
+	return keys
 }
 
 // asking is a reply that also asked for tools, the blocks in the order the

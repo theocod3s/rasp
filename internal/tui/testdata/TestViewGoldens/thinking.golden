@@ -4,6 +4,6 @@
   [38;2;92;99;109mthem, both call sites are reading a header that was parsed twice.[m
 ⠋ thinking[38;2;125;133;144m · esc esc to interrupt[m
 [38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
-› [38;2;92;99;109mask rasp anything…[m
+› [38;2;92;99;109mask rasp anything…[m                                          [38;2;92;99;109m⇥ newline · ⏎ send[m
 [38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
 [38;2;125;133;144m…p-demo (main)[m  manual[38;2;125;133;144m · ctx 0 · in 0 · out 0 · cost — · anthropic/claude-opus-5[m

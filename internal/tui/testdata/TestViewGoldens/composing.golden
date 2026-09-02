@@ -1,7 +1,7 @@
-[38;2;92;99;109m[Mode changed to auto. Edits, writes and ordinary commands run without asking. A[m
-[38;2;92;99;109mfew destructive commands still stop for the user, so a refusal there is not a[m
-[38;2;92;99;109mmistake.][m
 [38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
-› [38;2;92;99;109mask rasp anything…[m                                          [38;2;92;99;109m⇥ newline · ⏎ send[m
+› why does this hunk fail to apply?
+  --- a/auth.go
+  +++ b/auth.go
+  @@ -12,5 +12,6 @@[7m [m                                          [38;2;92;99;109m⇥ newline · ⏎ send[m
 [38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
-[38;2;125;133;144m…asp-demo (main)[m  [38;2;210;153;34mauto[m[38;2;125;133;144m · ctx 0 · in 0 · out 0 · cost — · anthropic/claude-opus-5[m
+[38;2;125;133;144m…p-demo (main)[m  manual[38;2;125;133;144m · ctx 0 · in 0 · out 0 · cost — · anthropic/claude-opus-5[m

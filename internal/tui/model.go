@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -54,8 +53,9 @@ type Model struct {
 	// cancel stops the running turn, and is nil when none is (design §6 rule 7).
 	cancel context.CancelFunc
 
-	// input is what the user has typed and not yet sent.
-	input string
+	// input is what the user has typed and not yet sent, and where the caret
+	// stands in it (draft.go).
+	input draft
 
 	// chat is the conversation and its render cache. Items land here as their
 	// events arrive, which is what keeps a reply, the tools it asked for and the
@@ -236,6 +236,8 @@ func (m Model) route(msg tea.Msg) (Model, tea.Cmd) {
 		return m.repaint(msg.IsDark()), nil
 	case tea.KeyPressMsg:
 		return m.press(msg)
+	case tea.PasteMsg:
+		return m.paste(msg.Content), nil
 	case agentMsg:
 		return m.apply(msg.event)
 	case promptMsg:
@@ -277,16 +279,72 @@ func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		// the turn is blocked on the answer, so a line composed now has nowhere
 		// to be sent (prompt.go).
 		return m.answer(key), nil
+	case breaksLine(key):
+		m.input = m.input.insert("\n")
 	case key.Code == tea.KeyEnter:
 		return m.submit()
 	case key.Mod == tea.ModCtrl && key.Code == 'r':
 		return m.expand(), nil
 	case key.Code == tea.KeyBackspace:
-		m.input = backspace(m.input)
+		m.input = m.input.backspace()
+	case key.Code == tea.KeyLeft:
+		m.input = m.input.left()
+	case key.Code == tea.KeyRight:
+		m.input = m.input.right()
+	case key.Code == tea.KeyUp:
+		m.input = m.input.up()
+	case key.Code == tea.KeyDown:
+		m.input = m.input.down()
+	case key.Code == tea.KeyHome:
+		m.input = m.input.home()
+	case key.Code == tea.KeyEnd:
+		m.input = m.input.end()
 	default:
-		m.input += key.Text
+		m.input = m.input.insert(key.Text)
 	}
 	return m, nil
+}
+
+// breaksLine is the keys that continue a draft rather than send it. Three of
+// them because terminals differ in what they deliver: shift+enter and alt+enter
+// arrive only where the terminal can encode a modified Enter, and most send a
+// bare Enter for both — so Tab is bound as well, and it is the one the hint
+// names (input.go).
+//
+// Tab is free to mean this because the mode cycle took shift+tab (design §7.8)
+// rather than tab, and because nothing here completes anything yet.
+func breaksLine(key tea.Key) bool {
+	if key.Code == tea.KeyTab {
+		return key.Mod == 0
+	}
+	return key.Code == tea.KeyEnter && key.Mod&(tea.ModShift|tea.ModAlt) != 0
+}
+
+// paste is a bracketed paste, which reaches Update as its own message: the
+// terminal brackets the text and Bubble Tea hands the whole of it over at once,
+// so a newline inside a pasted diff is never delivered as the keypress that
+// would have sent the line half-composed.
+//
+// The arms are cleared as press clears them: an Esc from before the paste must
+// not still be one press from cancelling a turn (design §6 rule 7).
+func (m Model) paste(content string) Model {
+	m.armed, m.quitArmed = false, false
+	if m.asking() {
+		return m
+	}
+	m.input = m.input.insert(newlines(content))
+	return m
+}
+
+// newlines is pasted text with its line endings as the draft holds them. A
+// terminal that took the paste off a Windows clipboard, or that encodes the
+// Enter inside one as a carriage return, sends CRLF or a bare CR — neither of
+// which the model reads as a line break.
+func newlines(s string) string {
+	if !strings.ContainsRune(s, '\r') {
+		return s
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
 }
 
 // escape is Esc's two-stage cancel (design §6 rule 7): a turn with nothing
@@ -318,14 +376,6 @@ func (m Model) ctrlC() (Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, tea.Quit
-}
-
-func backspace(s string) string {
-	if s == "" {
-		return s
-	}
-	_, width := utf8.DecodeLastRuneInString(s)
-	return s[:len(s)-width]
 }
 
 func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
