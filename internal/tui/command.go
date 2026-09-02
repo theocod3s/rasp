@@ -40,15 +40,17 @@ func commands() []command {
 	}
 }
 
-// parseCommand reads a submitted line as a slash command: the name after the
+// parseCommand reads a submitted draft as a slash command: the name after the
 // slash, and whatever follows the first space.
 //
-// A line is a command only when its first word is a slash and one plain word of
+// A draft is a command only when its first word is a slash and one plain word of
 // letters, digits, hyphens and underscores, which is what keeps prose carrying a
 // slash prose: `/usr/bin/env is missing` has a second slash in its first word,
-// and a line whose slash is anywhere but the front never gets this far. The
-// trade is deliberate and has another side — `/tmp is full` is read as a command
-// — so the answer to an unknown one has to say what happened.
+// and a draft whose slash is anywhere but the front never gets this far — the
+// front of the first line included, since a draft of several lines is trimmed
+// and read from its start like any other. The trade is deliberate and has
+// another side — `/tmp is full` is read as a command — so the answer to an
+// unknown one has to say what happened.
 func parseCommand(line string) (name, args string, ok bool) {
 	if !strings.HasPrefix(line, "/") {
 		return "", "", false
@@ -74,8 +76,8 @@ func plain(r rune) bool {
 // answer rather than be swallowed by the check that holds a second prompt back
 // until the first turn ends (turn.go).
 func (m Model) submit() (Model, tea.Cmd) {
-	if name, args, ok := parseCommand(strings.TrimSpace(m.input)); ok {
-		m.input = ""
+	if name, args, ok := parseCommand(strings.TrimSpace(m.input.text)); ok {
+		m.input = draft{}
 		return m.dispatch(name, args)
 	}
 	return m.begin()

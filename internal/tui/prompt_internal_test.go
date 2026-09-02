@@ -33,9 +33,9 @@ func TestAnOpenQuestionTakesTheKeyboardOffTheInputLine(t *testing.T) {
 		m, _ = m.press(press)
 	}
 
-	if m.input != "" {
+	if m.input.text != "" {
 		t.Errorf("the input line holds %q; a key pressed against an open question is the answer to "+
-			"it, not a message", m.input)
+			"it, not a message", m.input.text)
 	}
 	if m.busy {
 		t.Error("Enter started a turn while a question was standing")
@@ -88,8 +88,8 @@ func TestTheThreeAnswersReachTheService(t *testing.T) {
 
 			// And the keyboard goes back to composing, or the session is over.
 			m, _ = m.press(tea.KeyPressMsg{Code: 'h', Text: "h"})
-			if m.input != "h" {
-				t.Errorf("the input line holds %q after the question was answered", m.input)
+			if m.input.text != "h" {
+				t.Errorf("the input line holds %q after the question was answered", m.input.text)
 			}
 		})
 	}
@@ -111,8 +111,8 @@ func TestAKeystrokeInsideTheGracePeriodIsAbsorbed(t *testing.T) {
 	if !m.asking() {
 		t.Fatal("the swallowed key closed the question anyway")
 	}
-	if m.input != "" {
-		t.Errorf("the swallowed key was composed into %q instead", m.input)
+	if m.input.text != "" {
+		t.Errorf("the swallowed key was composed into %q instead", m.input.text)
 	}
 
 	clock.pass(time.Nanosecond)
@@ -175,9 +175,9 @@ func TestATurnThatEndedTakesItsQuestionWithIt(t *testing.T) {
 			}
 
 			m, _ = m.press(tea.KeyPressMsg{Code: 'y', Text: "y"})
-			if m.input != "y" {
+			if m.input.text != "y" {
 				t.Errorf("the input line holds %q; the keyboard is still pointed at the dead question",
-					m.input)
+					m.input.text)
 			}
 		})
 	}
@@ -217,8 +217,8 @@ func TestAQuestionWithNothingToAnswerItSaysSo(t *testing.T) {
 
 	// And the keyboard is still the user's, so the interrupt is reachable.
 	m, _ = m.press(tea.KeyPressMsg{Code: 'y', Text: "y"})
-	if m.input != "y" {
-		t.Errorf("the input line holds %q", m.input)
+	if m.input.text != "y" {
+		t.Errorf("the input line holds %q", m.input.text)
 	}
 }
 

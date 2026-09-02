@@ -44,8 +44,8 @@ func TestEnterHandsTheTurnToACommandRatherThanRunningIt(t *testing.T) {
 	if !m.busy {
 		t.Error("the model is not busy, so nothing tells the user the turn started")
 	}
-	if m.input != "" {
-		t.Errorf("the input still holds %q after it was sent", m.input)
+	if m.input.text != "" {
+		t.Errorf("the input still holds %q after it was sent", m.input.text)
 	}
 	if m.cancel == nil {
 		t.Error("no cancel func on the model, so an interrupt has nothing to call (design §6 rule 7)")
@@ -519,8 +519,8 @@ func TestASecondPromptWhileATurnRunsIsNotSent(t *testing.T) {
 	}
 	// And the text is still there to send once the turn ends, rather than eaten
 	// by a keystroke that did nothing.
-	if m.input != "second" {
-		t.Errorf("the input holds %q, want what the user typed and could not send yet", m.input)
+	if m.input.text != "second" {
+		t.Errorf("the input holds %q, want what the user typed and could not send yet", m.input.text)
 	}
 }
 

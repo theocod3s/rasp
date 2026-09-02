@@ -134,8 +134,8 @@ func TestEnterAnswersACommandAndSendsEverythingElse(t *testing.T) {
 			t.Fatal("the command was sent to the model as a prompt")
 		default:
 		}
-		if m.input != "" {
-			t.Errorf("the input still holds %q after the command was answered", m.input)
+		if m.input.text != "" {
+			t.Errorf("the input still holds %q after the command was answered", m.input.text)
 		}
 		if m.busy {
 			t.Error("a command left the UI saying a turn is running")

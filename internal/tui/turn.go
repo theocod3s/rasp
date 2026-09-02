@@ -30,14 +30,14 @@ type turnDone struct{ err error }
 // The user's message is appended before the model has seen it, so the
 // conversation shows the prompt on the keystroke that sent it.
 func (m Model) begin() (Model, tea.Cmd) {
-	text := strings.TrimSpace(m.input)
+	text := strings.TrimSpace(m.input.text)
 	if text == "" || m.busy {
 		return m, nil
 	}
 
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.cancel = cancel
-	m.input = ""
+	m.input = draft{}
 	m = m.busied()
 	m.err = nil
 	m.chat.Append(chat.Message{

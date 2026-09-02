@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theocod3s/rasp/internal/tui/styles"
@@ -17,7 +18,23 @@ const (
 	// than muted: the frame is structure, and a reader who never notices it is
 	// reading it correctly.
 	frameRule = "─"
+
+	// inputHint names the key that breaks a line and the key that sends it,
+	// because nothing else on the screen says a draft can hold more than one
+	// line. It names Tab rather than shift+enter for the reason breaksLine binds
+	// all three (model.go): Tab is the one every terminal delivers.
+	inputHint = "⇥ newline · ⏎ send"
+
+	// hintGap is the least space between the draft and the hint against the
+	// right edge, so the two never read as one run.
+	hintGap = 2
 )
+
+// cursorStyle draws the cell the caret is on. Inverse video for the reason
+// yoloStyle is (status.go) — legible on a terminal whose theme this build knows
+// nothing about — and it is the only mark saying where the next keystroke lands:
+// View leaves tea.View's own Cursor nil, which hides the terminal's.
+var cursorStyle = lipgloss.NewStyle().Reverse(true)
 
 // rule is one edge of the input frame, at the terminal's full width. A terminal
 // that has not reported a size has no width to draw across, and View drops the
@@ -38,19 +55,49 @@ func (m Model) rule() string {
 	return styles.For(m.background).Faint.Render(line)
 }
 
-// typing is the line inside the frame: what the user has behind the caret, or
-// the placeholder while that is empty.
+// typing is what sits inside the frame: the draft behind the caret, one line
+// per line of it, or the placeholder while it is empty. The lines are returned
+// as one string for View to write, so the frame's lower rule and the footer
+// under it move down as the draft grows and back up as it shrinks.
 //
 // The placeholder is cut to the terminal rather than left to wrap, which would
 // grow the frame by a line for a string nobody is reading. What the user typed
 // is not, because it is theirs.
 func (m Model) typing() string {
-	if m.input != "" {
-		return m.caret() + m.input
+	caret := m.caret()
+	if m.input.empty() {
+		line := caret + styles.For(m.background).Faint.Render(placeholder)
+		if m.width > 0 && ansi.StringWidth(line) > m.width {
+			line = ansi.Truncate(line, m.width, "")
+		}
+		return m.hinted(line)
 	}
-	line := m.caret() + styles.For(m.background).Faint.Render(placeholder)
-	if m.width > 0 && ansi.StringWidth(line) > m.width {
-		return ansi.Truncate(line, m.width, "")
+
+	before, under, after := m.input.split()
+	lines := strings.Split(before+cursorStyle.Render(under)+after, "\n")
+	// Continuation lines are set in under the caret rather than against the left
+	// margin, so a draft of several lines reads as one block the caret opens.
+	indent := strings.Repeat(" ", ansi.StringWidth(caret))
+	for i := range lines {
+		if i == 0 {
+			lines[i] = caret + lines[i]
+			continue
+		}
+		lines[i] = indent + lines[i]
 	}
-	return line
+	lines[len(lines)-1] = m.hinted(lines[len(lines)-1])
+	return strings.Join(lines, "\n")
+}
+
+// hinted puts inputHint against the right edge of the draft's last line, and
+// drops it whole the moment what is already on that line leaves no room — the
+// order the activity line drops its own hint in (activity.go), and for the same
+// reason: the advice is not what the reader came for.
+func (m Model) hinted(line string) string {
+	used, hint := ansi.StringWidth(line), ansi.StringWidth(inputHint)
+	if m.width <= 0 || used+hintGap+hint > m.width {
+		return line
+	}
+	return line + strings.Repeat(" ", m.width-used-hint) +
+		styles.For(m.background).Faint.Render(inputHint)
 }
