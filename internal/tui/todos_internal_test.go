@@ -101,3 +101,37 @@ func TestASecondTodosCallLeavesOtherFinishedCardsFrozen(t *testing.T) {
 		t.Errorf("the todos card did not update to the latest list:\n%s", frame)
 	}
 }
+
+// TestOverlappingTodosCallsDoNotCrossContaminateElapsedTime. todos is not
+// tool.Sequential (internal/tool/builtin/todos.go), so a batch can dispatch
+// two todos calls at once, and both share cardKey's one entry. call_B's
+// tool_start must not leave call_A's own tool_end reading an elapsed time
+// measured from a start that was never call_A's.
+//
+// The checklist itself never draws Elapsed, so the only place this is
+// visible is the generic card a failed call falls back to.
+func TestOverlappingTodosCallsDoNotCrossContaminateElapsedTime(t *testing.T) {
+	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	var m tea.Model = Model{now: func() time.Time { return now }}
+
+	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventToolStart, CallID: "call_A", Tool: "todos"}})
+	now = now.Add(1 * time.Second)
+	// call_B starts while call_A is still running, in the same batch.
+	m, _ = m.Update(agentMsg{event: agent.Event{Kind: agent.EventToolStart, CallID: "call_B", Tool: "todos"}})
+	now = now.Add(1 * time.Second)
+
+	m, _ = m.Update(agentMsg{event: agent.Event{
+		Kind: agent.EventToolEnd, CallID: "call_A", Tool: "todos",
+		Result: &tool.Result{IsError: true, Content: "call A failed"},
+	}})
+
+	// call_A's own elapsed is 2s. 1s is call_B's, measured from a start that
+	// was never call_A's own.
+	frame := words(m.View().Content)
+	if strings.Contains(frame, "todos call A failed 1s") {
+		t.Errorf("call A's card reads an elapsed time measured from call B's start rather than its own:\n%s", frame)
+	}
+	if !strings.Contains(frame, "call A failed") {
+		t.Errorf("the refusal itself is missing:\n%s", frame)
+	}
+}

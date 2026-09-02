@@ -147,9 +147,16 @@ type Model struct {
 // card is what the model needs to redraw one tool call: the item itself, and
 // when the call started — which the item does not carry, because it renders an
 // elapsed time rather than measuring one.
+//
+// startedID is whose start that is. For an ordinary tool it is always the one
+// call this entry ever holds. todos shares one entry across every call id
+// that reaches its stable key (cardKey), so a second call starting before the
+// first ends overwrites started — and startedID is what lets tool_end tell
+// its own start from a start that was never its call's.
 type card struct {
-	item    chat.Call
-	started time.Time
+	item      chat.Call
+	started   time.Time
+	startedID string
 }
 
 func newModel(ctx context.Context, turner Turner, cfg Config) Model {
@@ -351,7 +358,7 @@ func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
 		m = m.busied().announced(ev.CallID, ev.Tool)
 		key := cardKey(ev.CallID, ev.Tool)
 		c := m.cards[key]
-		c.started, c.item.State, c.item.Elapsed = m.clock(), chat.CallRunning, 0
+		c.started, c.startedID, c.item.State, c.item.Elapsed = m.clock(), ev.CallID, chat.CallRunning, 0
 		m = m.draw(key, c)
 
 	case agent.EventToolEnd:
@@ -362,7 +369,9 @@ func (m Model) apply(ev agent.Event) (Model, tea.Cmd) {
 		// Asked again now the result is here: whether the card opens itself is a
 		// question about what it holds, and it held nothing until this event.
 		c.item.Expanded = m.open.shows(c.item)
-		if !c.started.IsZero() {
+		// startedID must still be this call's own: a later call sharing the same
+		// key (todos) can have overwritten started with its own, later start.
+		if !c.started.IsZero() && c.startedID == ev.CallID {
 			c.item.Elapsed = m.clock().Sub(c.started)
 		}
 		m = m.draw(key, c)
