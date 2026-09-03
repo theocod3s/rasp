@@ -1,6 +1,12 @@
 package tui
 
 import (
+	"bytes"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,12 +24,7 @@ import (
 // which is what pushes the shell prompt that started the session into
 // scrollback (model.go gap).
 func TestTheFirstFrameFillsTheTerminal(t *testing.T) {
-	m := idleModel(t)
-	// The item Run appends ahead of the conversation (tui.go), which is what a
-	// real session's first frame opens with and what the top edge is asserted on.
-	m.chat.Append(banner(goldenConfig()))
-
-	tm := teatest.NewTestModel(t, m,
+	tm := teatest.NewTestModel(t, opened(t),
 		teatest.WithInitialTermSize(goldenWidth, goldenHeight),
 		teatest.WithProgramOptions(tea.WithoutRenderer()),
 	)
@@ -211,11 +212,12 @@ func TestThePaddingOpensAboveTheWholeBottomBlock(t *testing.T) {
 			if at+n >= len(lines) {
 				t.Fatalf("the pad is the end of the frame, so the chrome is above it:\n%s", frame)
 			}
-			for i, line := range lines[at+n:] {
-				if strings.TrimSpace(line) == "" {
-					t.Errorf("line %d of the frame is blank and the pad ended at %d, so the block "+
-						"against the bottom edge has a hole in it:\n%s", at+n+i, at+n, frame)
-				}
+			// The line the pad runs into, and only that one: a chrome that grew a
+			// blank line of its own would be a change to the chrome, not a pad in
+			// the wrong place, and this is about where the pad ends.
+			if strings.TrimSpace(lines[at+n]) == "" {
+				t.Errorf("line %d is blank and the pad ended at %d, so the pad does not end where "+
+					"the block against the bottom edge begins:\n%s", at+n, at+n, frame)
 			}
 			if !strings.Contains(words(strings.Join(lines[at+n:], "\n")), tc.want) {
 				t.Errorf("nothing under the pad says %q, so the state is not the one being drawn:\n%s",
@@ -271,10 +273,7 @@ func TestTheLastFrameGivesTheScreenBack(t *testing.T) {
 		{name: "the quit command", keys: typedLine("/quit")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := idleModel(t)
-			m.chat.Append(banner(goldenConfig()))
-
-			tm := teatest.NewTestModel(t, m,
+			tm := teatest.NewTestModel(t, opened(t),
 				teatest.WithInitialTermSize(goldenWidth, goldenHeight),
 				teatest.WithProgramOptions(tea.WithoutRenderer()),
 			)
@@ -296,21 +295,147 @@ func TestTheLastFrameGivesTheScreenBack(t *testing.T) {
 	}
 }
 
+// TestTheLastFrameIsRepaintedOnTheWayOut is the half the test above cannot see.
+// It reads the model the program ended on, where what a user is left looking at
+// is a render Bubble Tea does after the event loop has stopped (tea.go) — drop
+// that render in a future version of the SDK and the flag would go on being set,
+// the frame above would go on being short, and the screen would stay full of
+// blank rows. So the renderer is left on here and the bytes are read back.
+//
+// The invitation stands in for the whole frame: a repaint redraws every line,
+// where the arming press before it changes one.
+func TestTheLastFrameIsRepaintedOnTheWayOut(t *testing.T) {
+	const invitation = "type /help for slash commands"
+
+	for _, tc := range []struct {
+		name     string
+		stop     func(*testing.T, *teatest.TestModel)
+		repaints bool
+	}{
+		{
+			name: "quit from the keyboard",
+			stop: func(_ *testing.T, tm *teatest.TestModel) {
+				tm.Send(ctrlCKey)
+				tm.Send(ctrlCKey)
+			},
+			repaints: true,
+		},
+		{
+			// The control, and the reason the case above says anything: a program
+			// stopped from outside never reaches Update (harness_internal_test.go
+			// quit), so its last frame is the one already on the screen and Bubble
+			// Tea has nothing to paint.
+			name: "stopped from outside",
+			stop: func(t *testing.T, tm *teatest.TestModel) {
+				if err := tm.Quit(); err != nil {
+					t.Fatalf("quitting the program: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tm := teatest.NewTestModel(t, opened(t),
+				teatest.WithInitialTermSize(goldenWidth, goldenHeight))
+
+			// Drains the output as far as the first frame, so what is read below is
+			// only what the way out drew. Waiting on it also says the frame reached
+			// the screen at all, which nothing else here would notice.
+			teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
+				return bytes.Contains(b, []byte(invitation))
+			}, teatest.WithDuration(settle))
+
+			tc.stop(t, tm)
+			tm.WaitFinished(t, teatest.WithFinalTimeout(settle))
+
+			rest, err := io.ReadAll(tm.Output())
+			if err != nil {
+				t.Fatalf("reading what the program drew on the way out: %v", err)
+			}
+			if got := bytes.Contains(rest, []byte(invitation)); got != tc.repaints {
+				t.Errorf("the frame was repainted on the way out: %t, want %t — %d bytes drawn "+
+					"after the first frame:\n%q", got, tc.repaints, len(rest), rest)
+			}
+		})
+	}
+}
+
+// TestEveryQuitGoesThroughQuitting reads the package's own source, because the
+// thing that has to hold is about every route out and not about any one of them:
+// a tea.Quit returned from somewhere new — an alias for /quit, a dialog that
+// leaves, a fatal error — would put the padding back on the frame the session
+// leaves behind, and every test here would still pass. Only quitting() may name
+// it (model.go).
+func TestEveryQuitGoesThroughQuitting(t *testing.T) {
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(f os.FileInfo) bool {
+		return !strings.HasSuffix(f.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("parsing the package: %v", err)
+	}
+
+	var found int
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok {
+					continue
+				}
+				ast.Inspect(fn, func(n ast.Node) bool {
+					sel, ok := n.(*ast.SelectorExpr)
+					if !ok || sel.Sel.Name != "Quit" {
+						return true
+					}
+					if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != "tea" {
+						return true
+					}
+					found++
+					if fn.Name.Name != "quitting" {
+						t.Errorf("%s names tea.Quit at %s; the session's last frame is drawn by a "+
+							"model that was told it is leaving, so quitting() is the one place that "+
+							"may end a session", fn.Name.Name, fset.Position(sel.Pos()))
+					}
+					return true
+				})
+			}
+		}
+	}
+
+	// Nothing matching is the failure this is most likely to have: a rename, an
+	// import under another name, a move out of this directory — each of which
+	// leaves the walk above examining nothing and reporting a pass.
+	if found == 0 {
+		t.Fatal("nothing in this package names tea.Quit, so this examined nothing; the session " +
+			"still has to end somewhere, and this check has stopped being able to see where")
+	}
+}
+
 // padLines is how many lines of padding frame carries, and fails unless it is
 // the same frame unpadded plus that run of blank lines — which is what says a
 // regenerated golden gained blank lines and nothing else.
+//
+// Zero has to mean the state fills the screen on its own, so it is checked
+// rather than returned: a frame the padding failed to touch is zero too, and a
+// caller counting them as the same thing would let a short golden be recorded
+// as a full one and then hold it there for good.
 func padLines(t *testing.T, m Model, frame string) int {
 	t.Helper()
 
 	at, n := padRun(t, frame, unpadded(m))
+	lines := strings.Split(frame, "\n")
 	if n == 0 {
+		if len(lines) < goldenHeight {
+			t.Errorf("the frame is %d lines in a terminal %d high and carries no padding at all:\n%s",
+				len(lines), goldenHeight, frame)
+		}
 		return 0
 	}
-	if lines := strings.Split(frame, "\n"); at+n >= len(lines) || strings.TrimSpace(lines[at+n]) == "" {
+	if at+n >= len(lines) || strings.TrimSpace(lines[at+n]) == "" {
 		t.Errorf("the pad does not end where the chrome begins:\n%s", frame)
 	}
-	if lines := len(strings.Split(frame, "\n")); lines != goldenHeight {
-		t.Errorf("the frame is %d lines in a terminal %d high:\n%s", lines, goldenHeight, frame)
+	if len(lines) != goldenHeight {
+		t.Errorf("the frame is %d lines in a terminal %d high:\n%s", len(lines), goldenHeight, frame)
 	}
 	return n
 }

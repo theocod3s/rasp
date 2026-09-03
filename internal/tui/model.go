@@ -147,6 +147,12 @@ type Model struct {
 	// model once more after Update returns tea.Quit and leaves that frame on the
 	// screen, so a padded one would hand the shell back a screenful of blank rows
 	// under a dead input frame (gap).
+	//
+	// Only the routes out that Update sees can raise it, which is every one a user
+	// takes (quitting, below). A SIGTERM or an external Program.Quit is answered by
+	// Bubble Tea's own event loop before Update is called, and SIGINT skips the
+	// final render altogether, so a session killed from outside still leaves a
+	// padded frame — there is no route from those back into the model to fix.
 	leaving bool
 
 	// turns counts turn goroutines still running. Bubble Tea's own shutdown
@@ -439,6 +445,14 @@ func (m Model) ctrlC() (Model, tea.Cmd) {
 		m.quitArmed = true
 		return m, nil
 	}
+	return m.quitting()
+}
+
+// quitting is the only way this package ends a session: it marks the frame
+// Bubble Tea leaves on the screen (leaving, above) before asking for the quit
+// that draws it. A route returning tea.Quit on its own would put the padding
+// back on the way out, so a test reads the package's source for one.
+func (m Model) quitting() (Model, tea.Cmd) {
 	m.leaving = true
 	return m, tea.Quit
 }
@@ -711,10 +725,9 @@ func (m Model) settle() Model {
 	return m
 }
 
-// View draws the frame in two blocks — the conversation, which grows down from
-// the top, and the chrome, which is held against the bottom edge — with blank
-// lines between them for as long as the two together are shorter than the
-// terminal (gap, below).
+// View draws the frame in two blocks — the conversation growing down from the
+// top, the chrome held against the bottom edge — with blank lines between them
+// while the two together are shorter than the terminal (gap, below).
 func (m Model) View() tea.View {
 	above, below := m.transcript(), m.chrome()
 
@@ -729,8 +742,9 @@ func (m Model) View() tea.View {
 // history, and so stays with it when the gap opens underneath. A standing
 // permission question is in here too — it is set into the conversation where it
 // was asked (prompt.go), which is the whole of what makes it inline. Returned as
-// chat.View rendered it rather than copied through a builder: this runs on every
-// frame, over the largest string the UI holds (internals §4.5).
+// chat.View rendered it rather than accumulated through a builder of its own,
+// which cost the largest string the UI holds a second copy on every frame before
+// View concatenated it (internals §4.5).
 func (m Model) transcript() string {
 	text := m.chat.Render(m.width)
 	if m.err == nil {
@@ -754,11 +768,10 @@ func (m Model) transcript() string {
 	}.Render(m.width) + "\n"
 }
 
-// chrome is what is held against the bottom of the screen: the activity line,
-// then the input inside its frame, then the footer. The activity line is in this
-// block, and above the frame rather than inside it, because it is about the turn
-// running now — it belongs beside the keys that interrupt it, not at the end of
-// a history the gap has moved away from them.
+// chrome is what is held against the bottom of the screen. The activity line is
+// in this block, and above the input frame rather than inside it, because it is
+// about the turn running now: it belongs beside the keys that interrupt it, not
+// at the end of a history the gap has moved away from them.
 func (m Model) chrome() string {
 	var b strings.Builder
 	switch {
@@ -785,10 +798,9 @@ func (m Model) chrome() string {
 // frame to be exactly as tall as the terminal, and none once what is drawn
 // already fills it.
 //
-// It is what makes a session's first frame cover the window. rasp draws inline
+// It is what makes a session's first frame cover the window: rasp draws inline
 // rather than on the alternate screen, so a short frame leaves the shell's own
-// output above it and the session opens in a band under the prompt that started
-// it; a full-height one scrolls that into scrollback.
+// output above it and a full-height one scrolls that into scrollback.
 //
 // Nothing is ever dropped to fit: past a screenful the frame is byte for byte
 // what it would be unpadded, because the terminal's scrollback is the only
@@ -799,9 +811,8 @@ func (m Model) gap(above, below string) string {
 	}
 	// The lines the two blocks make once concatenated — logical lines, which are
 	// rows too because the renderer cuts a line wider than the terminal rather
-	// than wrapping it. A terminal that has not reported a size is zero high, and
-	// so shorter than any frame: that is where this stands down, as the rules and
-	// the hints do on an unknown width (input.go).
+	// than wrapping it. A terminal that has not reported a size is zero high and
+	// shorter than any frame, which is where this stands down (input.go).
 	drawn := strings.Count(above, "\n") + strings.Count(below, "\n") + 1
 	if drawn >= m.height {
 		return ""

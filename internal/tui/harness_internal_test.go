@@ -401,6 +401,13 @@ func TestViewGoldens(t *testing.T) {
 
 	distinct(t, drawn)
 	recorded(t, states)
+
+	// Only when every state ran. These two are counts over the whole set, and a
+	// -run selecting one subtest — the way a single golden gets looked at — would
+	// otherwise fail with a complaint about states it never drew.
+	if short+full < len(states) {
+		return
+	}
 	if short == 0 {
 		t.Error("no recorded state is shorter than the screen, so nothing above compared a padded " +
 			"frame with anything")
@@ -418,12 +425,8 @@ func TestViewGoldens(t *testing.T) {
 // the cost of re-reviewing every one on a change to wording nothing else there
 // is about.
 func TestBannerGolden(t *testing.T) {
-	turner := newTurner(agent.ErrInterrupted)
-	m := newModel(t.Context(), turner, goldenConfig())
-	m.chat.Append(banner(goldenConfig()))
+	m := opened(t)
 	m.permissions = &answers{decided: true}
-	m.now = func() time.Time { return goldenNow }
-	m.status.branch = goldenBranch
 
 	tm := teatest.NewTestModel(t, m,
 		teatest.WithInitialTermSize(goldenWidth, goldenHeight),
@@ -532,6 +535,20 @@ func program(t *testing.T) (*teatest.TestModel, *turner, *clock) {
 	), turner, fake
 }
 
+// opened is the model a session opens with: the identity block ahead of the
+// conversation and the same configuration behind both it and the footer, which
+// is what a real first frame has — a banner naming one session over a status
+// line naming another is a frame nothing can produce.
+func opened(t *testing.T) Model {
+	t.Helper()
+
+	m := newModel(t.Context(), newTurner(nil), goldenConfig())
+	m.chat.Append(banner(goldenConfig()))
+	m.now = newClock(goldenNow).read
+	m.status.branch = goldenBranch
+	return m
+}
+
 // clock is time a test moves by hand. Atomic because a snapshot moves it from
 // the test's own goroutine while a running program reads it on Bubble Tea's;
 // the tests that drive Update themselves never cross that line and pay nothing
@@ -562,6 +579,12 @@ func submit(t *testing.T, tm *teatest.TestModel, turn *turner, text string) {
 // quit stops the program and hands back the model it ended on. Quit travels the
 // same channel as everything sent before it, so the program stops having handled
 // all of it rather than at whatever point it had reached.
+//
+// It stops the program from outside, which Bubble Tea's event loop answers
+// without calling Update (tea.go) — so the model comes back with the session
+// still running as far as it knows, and its frame is the padded one every state
+// here is recorded at. A test about the frame a session *leaves* has to reach
+// tea.Quit through Update instead (frame_internal_test.go).
 func quit(t *testing.T, tm *teatest.TestModel) Model {
 	t.Helper()
 
