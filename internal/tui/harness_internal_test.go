@@ -452,6 +452,14 @@ func TestAResizeRedrawsTheConversationAtItsNewWidth(t *testing.T) {
 // ended on.
 func draw(t *testing.T, state snapshot) string {
 	t.Helper()
+	return ended(t, state).View().Content
+}
+
+// ended is that run handed back as the model it finished on, which is what a
+// test that wants the state drawn a second time at another size needs
+// (frame_internal_test.go).
+func ended(t *testing.T, state snapshot) Model {
+	t.Helper()
 
 	tm, turner, clock := program(t)
 	if state.prompt != "" {
@@ -476,7 +484,7 @@ func draw(t *testing.T, state snapshot) string {
 		tm.Send(key)
 	}
 
-	return quit(t, tm).View().Content
+	return quit(t, tm)
 }
 
 // program starts the root model under teatest, with no terminal at either end.

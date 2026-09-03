@@ -704,26 +704,56 @@ func (m Model) settle() Model {
 	return m
 }
 
+// View draws the frame in two blocks — the conversation, which grows down from
+// the top, and the chrome, which is held against the bottom edge — with blank
+// lines between them for as long as the two together are shorter than the
+// terminal (gap, below).
 func (m Model) View() tea.View {
+	above, below := m.transcript(), m.chrome()
+
+	v := tea.NewView(above + m.gap(above, below) + below)
+	if m.tty {
+		v.WindowTitle = m.windowTitle()
+	}
+	return v
+}
+
+// transcript is the conversation and the failure notice under it: what reads as
+// history, and so stays with the history when the gap opens underneath. A
+// standing permission question is in here too — it is set into the conversation
+// where it was asked (prompt.go), which is the whole of what makes it inline.
+func (m Model) transcript() string {
 	var b strings.Builder
 	b.WriteString(m.chat.Render(m.width))
-	if m.err != nil {
-		// Blank first, when there is a transcript above to hold apart from — the
-		// same one line of breathing room every item inside chat.View already gets
-		// (chat/view.go), which this notice is drawn as though it were one of
-		// without actually joining the conversation.
-		if b.Len() > 0 {
-			b.WriteByte('\n')
-		}
-		// Through the same notice path a command's own answer draws through,
-		// styled in the accent that says "this went wrong" rather than as a bare
-		// line — the one place left where an error was drawn in no colour at all.
-		writeLine(&b, chat.Notice{
-			Text:       "error: " + m.err.Error(),
-			Kind:       chat.NoticeError,
-			Background: m.background,
-		}.Render(m.width))
+	if m.err == nil {
+		return b.String()
 	}
+
+	// Blank first, when there is a transcript above to hold apart from — the same
+	// one line of breathing room every item inside chat.View already gets
+	// (chat/view.go), which this notice is drawn as though it were one of without
+	// actually joining the conversation.
+	if b.Len() > 0 {
+		b.WriteByte('\n')
+	}
+	// Through the same notice path a command's own answer draws through, styled
+	// in the accent that says "this went wrong" rather than as a bare line — the
+	// one place left where an error was drawn in no colour at all.
+	writeLine(&b, chat.Notice{
+		Text:       "error: " + m.err.Error(),
+		Kind:       chat.NoticeError,
+		Background: m.background,
+	}.Render(m.width))
+	return b.String()
+}
+
+// chrome is what is held against the bottom of the screen: the activity line,
+// then the input inside its frame, then the footer. The activity line is in this
+// block, and above the frame rather than inside it, because it is about the turn
+// running now — it belongs beside the keys that interrupt it, not at the end of
+// a history the gap has moved away from them.
+func (m Model) chrome() string {
+	var b strings.Builder
 	switch {
 	case m.busy:
 		writeLine(&b, m.activity(m.width))
@@ -734,9 +764,6 @@ func (m Model) View() tea.View {
 		writeLine(&b, hintQuit)
 	}
 
-	// The bottom chrome: the input inside its frame, and the footer under it.
-	// The activity line stays above the frame — it belongs to the turn that is
-	// running, not to the line the user is composing.
 	rule := m.rule()
 	writeLine(&b, rule)
 	writeLine(&b, m.typing())
@@ -744,12 +771,31 @@ func (m Model) View() tea.View {
 	writeLine(&b, m.queued())
 	writeLine(&b, rule)
 	b.WriteString(m.status.Render(m.width, m.background))
+	return b.String()
+}
 
-	v := tea.NewView(b.String())
-	if m.tty {
-		v.WindowTitle = m.windowTitle()
+// gap is the blank lines between the two blocks: as many as it takes for the
+// frame to be exactly as tall as the terminal, and none once what is drawn
+// already fills it.
+//
+// It is what makes a session's first frame cover the window. rasp draws inline
+// rather than on the alternate screen, so a frame shorter than the terminal
+// leaves the shell's own output above it and the session opens in a band under
+// the prompt that started it; a full-height one scrolls that into scrollback.
+//
+// Nothing is ever dropped to fit: past a screenful the frame is byte for byte
+// what it would be unpadded, because the terminal's scrollback is the only
+// history the conversation has, and lines trimmed here never reach it.
+func (m Model) gap(above, below string) string {
+	// above ends every line with a newline and below ends none, so the two counts
+	// and the last line are the frame's height. An unreported terminal size is a
+	// height of zero — shorter than any frame — which is where this stands down,
+	// as the rules and the hints do on an unknown width (input.go).
+	drawn := strings.Count(above, "\n") + strings.Count(below, "\n") + 1
+	if drawn >= m.height {
+		return ""
 	}
-	return v
+	return strings.Repeat("\n", m.height-drawn)
 }
 
 func writeLine(b *strings.Builder, s string) {
