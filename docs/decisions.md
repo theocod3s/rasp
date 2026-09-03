@@ -403,3 +403,30 @@ user's config on top of the preset". It reads as composition, it compiles, and b
 invisible from a green run.
 
 *Settled in M2-16, the work that made the modes data.*
+
+---
+
+## A turn ends by two unordered signals, and a once-only action names which one it needs
+
+A turn reaches the UI as `agent.EventTurnEnd`, through the bridge's pump, and as `turnDone`,
+Bubble Tea delivering the `tea.Cmd`'s return value. They arrive on different routes and nothing
+orders them. State that must be *down* by either — `busy`, `armed`, an open approval question —
+is cleared on both. Anything that must happen exactly *once* picks one, and which one is not a
+matter of taste:
+
+- `EventTurnEnd` means **the loop stopped**. The completion bell rides it, because a turn emits
+  exactly one whatever else happens to it (agent/event.go).
+- `turnDone` means **the agent has returned from `Send`**, and so is the only signal under which
+  a second turn can be started. The type-ahead queue drains there.
+
+The gap between them is real and reachable from the keyboard: `EventTurnEnd` puts `busy` down
+while `Send` has not returned, and `agent.Send` answers a second call in that window with
+`ErrTurnInProgress`. So "is a turn running?" for the purpose of starting one is `busy ||
+cancel != nil`, not `busy` — `cancel` is cleared only on the `turnDone` route.
+
+**Reversing it looks like:** draining the queue on `EventTurnEnd` too, "so the next message goes
+out a beat sooner", or on both "in case one is dropped". Locally it is a one-line addition that
+passes every test written against a fast fake. In a real session it is a queued message replaced
+by a red error line, or sent twice — on slow turns only, and never on the developer's machine.
+
+*Settled in M2-34, the work that let the user type ahead of a running turn.*
