@@ -9,18 +9,16 @@ import (
 	tea "charm.land/bubbletea/v2"
 	teatest "github.com/charmbracelet/x/exp/teatest/v2"
 
-	"github.com/theocod3s/rasp/internal/agent"
 	"github.com/theocod3s/rasp/internal/permission"
 	"github.com/theocod3s/rasp/internal/tui/chat"
 )
 
-// TestTheFirstFrameFillsTheTerminal. rasp draws inline, so a frame shorter than
-// the window leaves whatever the shell was showing on the screen above it and
-// the session opens in a band under the prompt that started it. A first frame as
-// tall as the terminal scrolls that away: the banner lands on the top row and
-// the input frame on the bottom one.
+// TestTheFirstFrameFillsTheTerminal: the banner on the top row, the footer on
+// the bottom one, and the frame exactly as tall as the terminal in between —
+// which is what pushes the shell prompt that started the session into
+// scrollback (model.go gap).
 func TestTheFirstFrameFillsTheTerminal(t *testing.T) {
-	m := newModel(t.Context(), newTurner(agent.ErrInterrupted), goldenConfig())
+	m := idleModel(t)
 	// The item Run appends ahead of the conversation (tui.go), which is what a
 	// real session's first frame opens with and what the top edge is asserted on.
 	m.chat.Append(banner(goldenConfig()))
@@ -32,9 +30,13 @@ func TestTheFirstFrameFillsTheTerminal(t *testing.T) {
 
 	frame := quit(t, tm).View().Content
 	lines := strings.Split(frame, "\n")
-	if len(lines) != goldenHeight {
-		t.Fatalf("the first frame is %d lines in a terminal %d high, so it does not cover the "+
-			"window:\n%s", len(lines), goldenHeight, frame)
+	switch {
+	case len(lines) < goldenHeight:
+		t.Fatalf("the first frame is %d lines in a terminal %d high, so it leaves dead space under "+
+			"it:\n%s", len(lines), goldenHeight, frame)
+	case len(lines) > goldenHeight:
+		t.Fatalf("the first frame is %d lines in a terminal %d high, so it runs off the screen and "+
+			"the top of it is lost:\n%s", len(lines), goldenHeight, frame)
 	}
 	if strings.TrimSpace(lines[0]) == "" {
 		t.Errorf("the frame opens on a blank line, so the banner is not against the top edge:\n%s", frame)
@@ -47,17 +49,15 @@ func TestTheFirstFrameFillsTheTerminal(t *testing.T) {
 
 // TestThePaddingShrinksAsTheConversationGrowsAndThenStops. Every line the
 // conversation gains is a line of padding it takes back, and past a screenful
-// there is none: the frame is then byte for byte what it would be with no
-// height to pad to, which is what leaves the terminal's own scrollback holding
-// the transcript rather than something here deciding what fits.
+// there is none: the frame is then what it would be with no height to pad to,
+// byte for byte.
 func TestThePaddingShrinksAsTheConversationGrowsAndThenStops(t *testing.T) {
-	m := newModel(t.Context(), &promptTurner{}, Config{Mode: permission.ModeManual})
-	m = update(m, tea.WindowSizeMsg{Width: goldenWidth, Height: goldenHeight})
+	m := update(idleModel(t), tea.WindowSizeMsg{Width: goldenWidth, Height: goldenHeight})
 
 	var (
-		last   = goldenHeight + 1
-		padded int
-		filled int
+		last  = goldenHeight + 1
+		short int
+		full  int
 	)
 	for i := range 40 {
 		m.chat.Set(strconv.Itoa(i), chat.Notice{Text: "line " + strconv.Itoa(i)})
@@ -70,48 +70,47 @@ func TestThePaddingShrinksAsTheConversationGrowsAndThenStops(t *testing.T) {
 		}
 		last = n
 
-		short := len(strings.Split(without, "\n")) < goldenHeight
+		bare := len(strings.Split(without, "\n"))
 		switch {
 		case n > 0:
-			padded++
-			if !short {
+			short++
+			if bare >= goldenHeight {
 				t.Fatalf("a frame already %d lines long in a terminal %d high was padded with %d "+
-					"more:\n%s", len(strings.Split(without, "\n")), goldenHeight, n, with)
+					"more:\n%s", bare, goldenHeight, n, with)
 			}
 			if got := len(strings.Split(with, "\n")); got != goldenHeight {
 				t.Fatalf("the padded frame is %d lines in a terminal %d high:\n%s", got, goldenHeight, with)
 			}
-		case short:
+		case bare < goldenHeight:
 			t.Fatalf("a frame %d lines long was not padded to the terminal's %d:\n%s",
-				len(strings.Split(with, "\n")), goldenHeight, with)
+				bare, goldenHeight, with)
 		default:
-			filled++
+			full++
 		}
 	}
 
-	if padded == 0 {
+	if short == 0 {
 		t.Error("no frame in the walk was ever padded, so nothing above compared a padded frame " +
 			"with anything")
 	}
-	if filled == 0 {
+	if full == 0 {
 		t.Error("the conversation never grew past a screenful, so nothing above pinned the frame " +
 			"a full screen leaves alone")
 	}
 }
 
-// TestATerminalOfUnknownHeightDrawsNoPadding. The height to pad to is something
-// the terminal reports, and the frames before the first tea.WindowSizeMsg have
-// none — the rule the rules and the hints already follow (input.go). It doubles
-// as the control for the padding: the same model one message later is a frame
-// that fills the screen.
-func TestATerminalOfUnknownHeightDrawsNoPadding(t *testing.T) {
+// TestATerminalOfUnknownSizeDrawsNoPadding. A height to pad to is something the
+// terminal reports, and the frames before the first tea.WindowSizeMsg have none
+// — the silence the rules and the hints already keep on an unknown width
+// (input.go). Nothing is set by hand here: the size arrives as one message, so
+// a model that has not had it has no width either.
+func TestATerminalOfUnknownSizeDrawsNoPadding(t *testing.T) {
 	m := newModel(t.Context(), &promptTurner{}, Config{Mode: permission.ModeManual})
-	m.width = goldenWidth
 
 	before := m.View().Content
 	if n := len(strings.Split(before, "\n")); n >= goldenHeight {
-		t.Fatalf("a frame with nothing in it is already %d lines, so a padding of nothing is not "+
-			"what is being measured here:\n%s", n, before)
+		t.Fatalf("a session that has drawn nothing is already %d lines, so a frame of %d proves "+
+			"nothing below:\n%s", n, goldenHeight, before)
 	}
 
 	m = update(m, tea.WindowSizeMsg{Width: goldenWidth, Height: goldenHeight})
@@ -120,16 +119,17 @@ func TestATerminalOfUnknownHeightDrawsNoPadding(t *testing.T) {
 	if n := len(strings.Split(after, "\n")); n != goldenHeight {
 		t.Errorf("the frame is %d lines once the terminal has reported %d:\n%s", n, goldenHeight, after)
 	}
-	padRun(t, after, before)
+	// Against the same model with the height taken back out rather than against
+	// the frame above, which was drawn at another width and differs on every line.
+	padRun(t, after, unpadded(m))
 }
 
-// TestAResizeRePadsTheFrameBothWays. The height arrives again on every resize,
-// and a window dragged taller has more to fill while one dragged shorter has
-// less — down to one too short for the chrome alone, where the frame is left
-// running off the screen rather than cut to fit.
+// TestAResizeRePadsTheFrameBothWays. The height arrives again on every resize:
+// a window dragged taller has more to fill and one dragged shorter has less,
+// down to one too short for the chrome alone, where the frame is left running
+// off the screen rather than cut to fit.
 func TestAResizeRePadsTheFrameBothWays(t *testing.T) {
-	m := newModel(t.Context(), &promptTurner{}, Config{Mode: permission.ModeManual})
-	m = update(m, tea.WindowSizeMsg{Width: goldenWidth, Height: goldenHeight})
+	m := update(idleModel(t), tea.WindowSizeMsg{Width: goldenWidth, Height: goldenHeight})
 	for i := range 3 {
 		m.chat.Set(strconv.Itoa(i), chat.Notice{Text: "line " + strconv.Itoa(i)})
 	}
@@ -253,45 +253,66 @@ func TestAStandingQuestionStaysWithTheConversation(t *testing.T) {
 	}
 }
 
-// TestEveryRecordedFrameGainedOnlyBlankLines walks the states the goldens record
-// and compares each frame against the same frame drawn with no height to pad to.
-// It is what says the recorded frames gained blank lines and nothing else — a
-// claim otherwise made by eye, over twenty files, once.
-func TestEveryRecordedFrameGainedOnlyBlankLines(t *testing.T) {
-	states := snapshots()
-	if len(states) == 0 {
-		t.Fatal("there are no states to walk, and a walk over nothing passes forever")
-	}
+// TestTheLastFrameGivesTheScreenBack. Bubble Tea renders the model once more
+// after Update has returned tea.Quit and leaves that frame on the screen, so a
+// session quit before it filled one would hand the shell back a screenful of
+// blank rows under a dead input frame — the same dead space the padding exists
+// to remove, after the session rather than before it.
+//
+// Driven through a real program because the flag has to survive the route
+// Update takes to tea.Quit, and read off the model the program ended on, which
+// is the one that final render draws.
+func TestTheLastFrameGivesTheScreenBack(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		keys []tea.Msg
+	}{
+		{name: "ctrl+c twice", keys: []tea.Msg{ctrlCKey, ctrlCKey}},
+		{name: "the quit command", keys: typedLine("/quit")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := idleModel(t)
+			m.chat.Append(banner(goldenConfig()))
 
-	var padded, filled int
-	for _, state := range states {
-		t.Run(state.name, func(t *testing.T) {
-			m := ended(t, state)
+			tm := teatest.NewTestModel(t, m,
+				teatest.WithInitialTermSize(goldenWidth, goldenHeight),
+				teatest.WithProgramOptions(tea.WithoutRenderer()),
+			)
+			for _, key := range tc.keys {
+				tm.Send(key)
+			}
 
-			frame := m.View().Content
-			at, n := padRun(t, frame, unpadded(m))
-			if n == 0 {
-				filled++
-				return
+			last := quit(t, tm)
+			frame := last.View().Content
+			if n := len(strings.Split(frame, "\n")); n >= goldenHeight {
+				t.Fatalf("the last frame is %d lines in a terminal %d high, so the session was "+
+					"never short of a screenful and this proves nothing:\n%s", n, goldenHeight, frame)
 			}
-			padded++
-			if lines := len(strings.Split(frame, "\n")); lines != goldenHeight {
-				t.Errorf("the frame is %d lines in a terminal %d high:\n%s", lines, goldenHeight, frame)
-			}
-			if under := strings.Split(frame, "\n")[at+n:]; strings.TrimSpace(under[0]) == "" {
-				t.Errorf("the line under the pad is blank, so the pad did not end where the chrome "+
-					"begins:\n%s", frame)
+			if _, n := padRun(t, frame, unpadded(last)); n != 0 {
+				t.Errorf("the frame left on the screen carries %d blank line(s) of padding, which "+
+					"is where the shell prompt comes back:\n%s", n, frame)
 			}
 		})
 	}
+}
 
-	if padded == 0 {
-		t.Error("no recorded state was padded, so nothing above compared a padded frame with anything")
+// padLines is how many lines of padding frame carries, and fails unless it is
+// the same frame unpadded plus that run of blank lines — which is what says a
+// regenerated golden gained blank lines and nothing else.
+func padLines(t *testing.T, m Model, frame string) int {
+	t.Helper()
+
+	at, n := padRun(t, frame, unpadded(m))
+	if n == 0 {
+		return 0
 	}
-	if filled == 0 {
-		t.Error("no recorded state fills the screen on its own, so nothing above pinned a frame " +
-			"the padding has to leave alone")
+	if lines := strings.Split(frame, "\n"); at+n >= len(lines) || strings.TrimSpace(lines[at+n]) == "" {
+		t.Errorf("the pad does not end where the chrome begins:\n%s", frame)
 	}
+	if lines := len(strings.Split(frame, "\n")); lines != goldenHeight {
+		t.Errorf("the frame is %d lines in a terminal %d high:\n%s", lines, goldenHeight, frame)
+	}
+	return n
 }
 
 // padRun is where the padding opens in frame and how many lines it takes, given

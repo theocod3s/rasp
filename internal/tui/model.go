@@ -143,6 +143,12 @@ type Model struct {
 	// nothing clears it when a turn ends the way finish clears armed.
 	quitArmed bool
 
+	// leaving is whether this is the session's last frame. Bubble Tea renders the
+	// model once more after Update returns tea.Quit and leaves that frame on the
+	// screen, so a padded one would hand the shell back a screenful of blank rows
+	// under a dead input frame (gap).
+	leaving bool
+
 	// turns counts turn goroutines still running. Bubble Tea's own shutdown
 	// leaks a tea.Cmd goroutine rather than wait on one that can run as long as
 	// a turn does, so Run waits on this instead — what stops ctrl+c returning
@@ -433,6 +439,7 @@ func (m Model) ctrlC() (Model, tea.Cmd) {
 		m.quitArmed = true
 		return m, nil
 	}
+	m.leaving = true
 	return m, tea.Quit
 }
 
@@ -719,32 +726,32 @@ func (m Model) View() tea.View {
 }
 
 // transcript is the conversation and the failure notice under it: what reads as
-// history, and so stays with the history when the gap opens underneath. A
-// standing permission question is in here too — it is set into the conversation
-// where it was asked (prompt.go), which is the whole of what makes it inline.
+// history, and so stays with it when the gap opens underneath. A standing
+// permission question is in here too — it is set into the conversation where it
+// was asked (prompt.go), which is the whole of what makes it inline. Returned as
+// chat.View rendered it rather than copied through a builder: this runs on every
+// frame, over the largest string the UI holds (internals §4.5).
 func (m Model) transcript() string {
-	var b strings.Builder
-	b.WriteString(m.chat.Render(m.width))
+	text := m.chat.Render(m.width)
 	if m.err == nil {
-		return b.String()
+		return text
 	}
 
 	// Blank first, when there is a transcript above to hold apart from — the same
 	// one line of breathing room every item inside chat.View already gets
 	// (chat/view.go), which this notice is drawn as though it were one of without
 	// actually joining the conversation.
-	if b.Len() > 0 {
-		b.WriteByte('\n')
+	if text != "" {
+		text += "\n"
 	}
 	// Through the same notice path a command's own answer draws through, styled
 	// in the accent that says "this went wrong" rather than as a bare line — the
 	// one place left where an error was drawn in no colour at all.
-	writeLine(&b, chat.Notice{
+	return text + chat.Notice{
 		Text:       "error: " + m.err.Error(),
 		Kind:       chat.NoticeError,
 		Background: m.background,
-	}.Render(m.width))
-	return b.String()
+	}.Render(m.width) + "\n"
 }
 
 // chrome is what is held against the bottom of the screen: the activity line,
@@ -779,18 +786,22 @@ func (m Model) chrome() string {
 // already fills it.
 //
 // It is what makes a session's first frame cover the window. rasp draws inline
-// rather than on the alternate screen, so a frame shorter than the terminal
-// leaves the shell's own output above it and the session opens in a band under
-// the prompt that started it; a full-height one scrolls that into scrollback.
+// rather than on the alternate screen, so a short frame leaves the shell's own
+// output above it and the session opens in a band under the prompt that started
+// it; a full-height one scrolls that into scrollback.
 //
 // Nothing is ever dropped to fit: past a screenful the frame is byte for byte
 // what it would be unpadded, because the terminal's scrollback is the only
 // history the conversation has, and lines trimmed here never reach it.
 func (m Model) gap(above, below string) string {
-	// above ends every line with a newline and below ends none, so the two counts
-	// and the last line are the frame's height. An unreported terminal size is a
-	// height of zero — shorter than any frame — which is where this stands down,
-	// as the rules and the hints do on an unknown width (input.go).
+	if m.leaving {
+		return ""
+	}
+	// The lines the two blocks make once concatenated — logical lines, which are
+	// rows too because the renderer cuts a line wider than the terminal rather
+	// than wrapping it. A terminal that has not reported a size is zero high, and
+	// so shorter than any frame: that is where this stands down, as the rules and
+	// the hints do on an unknown width (input.go).
 	drawn := strings.Count(above, "\n") + strings.Count(below, "\n") + 1
 	if drawn >= m.height {
 		return ""

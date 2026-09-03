@@ -174,6 +174,7 @@ func commandRow(c command, width int) string {
 // shuts the event loop down, and Run waits on it before returning (tui.go).
 func leave(m Model, _ string) (Model, tea.Cmd) {
 	m.interrupt()
+	m.leaving = true
 	return m, tea.Quit
 }
 

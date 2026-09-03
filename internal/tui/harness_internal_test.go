@@ -377,19 +377,38 @@ func TestViewGoldens(t *testing.T) {
 	}
 
 	drawn := make(map[string]string, len(states))
+	var short, full int
 	for _, state := range states {
 		t.Run(state.name, func(t *testing.T) {
-			frame := draw(t, state)
+			m := ended(t, state)
+			frame := m.View().Content
 			if strings.TrimSpace(frame) == "" {
 				t.Fatal("the state drew a blank frame, which every other state would match too")
 			}
 			drawn[state.name] = frame
 			golden.RequireEqual(t, frame)
+
+			// Checked here rather than in a walk of its own: the states are driven
+			// through a whole program, so a second pass over them would double the
+			// cost and prime the markdown memo this one is recorded through.
+			if padLines(t, m, frame) > 0 {
+				short++
+			} else {
+				full++
+			}
 		})
 	}
 
 	distinct(t, drawn)
 	recorded(t, states)
+	if short == 0 {
+		t.Error("no recorded state is shorter than the screen, so nothing above compared a padded " +
+			"frame with anything")
+	}
+	if full == 0 {
+		t.Error("no recorded state fills the screen on its own, so nothing above pinned a frame the " +
+			"padding has to leave alone")
+	}
 }
 
 // TestBannerGolden freezes the identity block Run appends ahead of the
@@ -448,16 +467,9 @@ func TestAResizeRedrawsTheConversationAtItsNewWidth(t *testing.T) {
 	}
 }
 
-// draw runs one state through a real Bubble Tea program and returns the frame it
-// ended on.
-func draw(t *testing.T, state snapshot) string {
-	t.Helper()
-	return ended(t, state).View().Content
-}
-
-// ended is that run handed back as the model it finished on, which is what a
-// test that wants the state drawn a second time at another size needs
-// (frame_internal_test.go).
+// ended runs one state through a real Bubble Tea program and hands back the
+// model it finished on. The model rather than the frame, so a caller can draw
+// the state a second time at another size (frame_internal_test.go).
 func ended(t *testing.T, state snapshot) Model {
 	t.Helper()
 
