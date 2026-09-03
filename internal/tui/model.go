@@ -143,6 +143,21 @@ type Model struct {
 	// nothing clears it when a turn ends the way finish clears armed.
 	quitArmed bool
 
+	// leaving is whether this is the session's last frame. Bubble Tea renders the
+	// model after every Update, so the frame drawn by the one that returns
+	// tea.Quit is the last thing painted and is what the shell prints its prompt
+	// under — padded, that is a screenful of blank rows beneath a dead input
+	// frame (frame.go gap). The graceful-shutdown render that follows is handed
+	// the same model and dropped as unchanged, so nothing rests on it.
+	//
+	// Only the routes out that Update sees can raise it, which is every one a user
+	// takes (quitting, below). A SIGTERM or an external Program.Quit is answered
+	// by Bubble Tea's own event loop before Update is called, and SIGINT stops the
+	// program without rendering again at all, so a session killed from outside
+	// still leaves a padded frame. There is no route from those back into the
+	// model, and this is the only place that says so.
+	leaving bool
+
 	// turns counts turn goroutines still running. Bubble Tea's own shutdown
 	// leaks a tea.Cmd goroutine rather than wait on one that can run as long as
 	// a turn does, so Run waits on this instead — what stops ctrl+c returning
@@ -433,6 +448,15 @@ func (m Model) ctrlC() (Model, tea.Cmd) {
 		m.quitArmed = true
 		return m, nil
 	}
+	return m.quitting()
+}
+
+// quitting is the only way this package ends a session: it marks the last frame
+// (leaving, above) in the same Update that asks for the quit, which is the
+// Update that draws it. A route returning tea.Quit on its own would put the
+// padding back, so a test reads the package's source for one.
+func (m Model) quitting() (Model, tea.Cmd) {
+	m.leaving = true
 	return m, tea.Quit
 }
 
@@ -702,60 +726,4 @@ func (m Model) settle() Model {
 	m.streaming = nil
 	m.replies++
 	return m
-}
-
-func (m Model) View() tea.View {
-	var b strings.Builder
-	b.WriteString(m.chat.Render(m.width))
-	if m.err != nil {
-		// Blank first, when there is a transcript above to hold apart from — the
-		// same one line of breathing room every item inside chat.View already gets
-		// (chat/view.go), which this notice is drawn as though it were one of
-		// without actually joining the conversation.
-		if b.Len() > 0 {
-			b.WriteByte('\n')
-		}
-		// Through the same notice path a command's own answer draws through,
-		// styled in the accent that says "this went wrong" rather than as a bare
-		// line — the one place left where an error was drawn in no colour at all.
-		writeLine(&b, chat.Notice{
-			Text:       "error: " + m.err.Error(),
-			Kind:       chat.NoticeError,
-			Background: m.background,
-		}.Render(m.width))
-	}
-	switch {
-	case m.busy:
-		writeLine(&b, m.activity(m.width))
-	case m.quitArmed:
-		// The one arm that outlives a turn: ctrl+c guards the session rather than
-		// what is running in it, so its hint has to be drawable with no activity
-		// line to hang off (model.go quitArmed).
-		writeLine(&b, hintQuit)
-	}
-
-	// The bottom chrome: the input inside its frame, and the footer under it.
-	// The activity line stays above the frame — it belongs to the turn that is
-	// running, not to the line the user is composing.
-	rule := m.rule()
-	writeLine(&b, rule)
-	writeLine(&b, m.typing())
-	writeLine(&b, m.menuView())
-	writeLine(&b, m.queued())
-	writeLine(&b, rule)
-	b.WriteString(m.status.Render(m.width, m.background))
-
-	v := tea.NewView(b.String())
-	if m.tty {
-		v.WindowTitle = m.windowTitle()
-	}
-	return v
-}
-
-func writeLine(b *strings.Builder, s string) {
-	if s == "" {
-		return
-	}
-	b.WriteString(s)
-	b.WriteString("\n")
 }

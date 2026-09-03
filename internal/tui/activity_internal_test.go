@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -265,14 +264,11 @@ func TestTheElapsedTimeAppearsOnlyOnceThereIsOneToShow(t *testing.T) {
 
 // busyModel is a turn that has started and produced nothing yet, with the clock
 // stopped where it began — so nothing below reads an elapsed time that depends
-// on the machine.
+// on the machine. The idle session it is built on stops the two drifting apart
+// (frame_internal_test.go).
 func busyModel(t *testing.T) Model {
 	t.Helper()
-
-	m := newModel(context.Background(), newTurner(nil), Config{})
-	m.now = newClock(goldenNow).read
-	m.width = goldenWidth
-	return m.busied()
+	return idleModel(t).busied()
 }
 
 // activityLine picks the line out of a frame, matched on the spinner rather

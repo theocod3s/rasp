@@ -377,19 +377,51 @@ func TestViewGoldens(t *testing.T) {
 	}
 
 	drawn := make(map[string]string, len(states))
+	var ran, short, full int
 	for _, state := range states {
 		t.Run(state.name, func(t *testing.T) {
-			frame := draw(t, state)
+			// Counted before anything can fail: a t.Fatal below ends this subtest
+			// where it stands, and counting after it would take the two checks at
+			// the end down with whichever state broke — silencing them exactly when
+			// there is something to say.
+			ran++
+
+			m := ended(t, state)
+			frame := m.View().Content
 			if strings.TrimSpace(frame) == "" {
 				t.Fatal("the state drew a blank frame, which every other state would match too")
 			}
 			drawn[state.name] = frame
 			golden.RequireEqual(t, frame)
+
+			// Checked here rather than in a walk of its own: the states are driven
+			// through a whole program, so a second pass over them would double the
+			// cost and prime the markdown memo this one is recorded through.
+			if padLines(t, m, frame) > 0 {
+				short++
+			} else {
+				full++
+			}
 		})
 	}
 
 	distinct(t, drawn)
 	recorded(t, states)
+
+	// Only when every state ran. These two are counts over the whole set, and a
+	// -run selecting one subtest — the way a single golden gets looked at — would
+	// otherwise fail with a complaint about states it never drew.
+	if ran < len(states) {
+		return
+	}
+	if short == 0 {
+		t.Error("no recorded state is shorter than the screen, so nothing above compared a padded " +
+			"frame with anything")
+	}
+	if full == 0 {
+		t.Error("no recorded state fills the screen on its own, so nothing above pinned a frame the " +
+			"padding has to leave alone")
+	}
 }
 
 // TestBannerGolden freezes the identity block Run appends ahead of the
@@ -399,12 +431,8 @@ func TestViewGoldens(t *testing.T) {
 // the cost of re-reviewing every one on a change to wording nothing else there
 // is about.
 func TestBannerGolden(t *testing.T) {
-	turner := newTurner(agent.ErrInterrupted)
-	m := newModel(t.Context(), turner, goldenConfig())
-	m.chat.Append(banner(goldenConfig()))
+	m := opened(t)
 	m.permissions = &answers{decided: true}
-	m.now = func() time.Time { return goldenNow }
-	m.status.branch = goldenBranch
 
 	tm := teatest.NewTestModel(t, m,
 		teatest.WithInitialTermSize(goldenWidth, goldenHeight),
@@ -448,9 +476,10 @@ func TestAResizeRedrawsTheConversationAtItsNewWidth(t *testing.T) {
 	}
 }
 
-// draw runs one state through a real Bubble Tea program and returns the frame it
-// ended on.
-func draw(t *testing.T, state snapshot) string {
+// ended runs one state through a real Bubble Tea program and hands back the
+// model it finished on. The model rather than the frame, so a caller can draw
+// the state a second time at another size (frame_internal_test.go).
+func ended(t *testing.T, state snapshot) Model {
 	t.Helper()
 
 	tm, turner, clock := program(t)
@@ -476,7 +505,7 @@ func draw(t *testing.T, state snapshot) string {
 		tm.Send(key)
 	}
 
-	return quit(t, tm).View().Content
+	return quit(t, tm)
 }
 
 // program starts the root model under teatest, with no terminal at either end.
@@ -512,6 +541,23 @@ func program(t *testing.T) (*teatest.TestModel, *turner, *clock) {
 	), turner, fake
 }
 
+// opened is the model a session opens with: the identity block ahead of the
+// conversation and the same configuration behind both it and the footer, which
+// is what a real first frame has — a banner naming one session over a status
+// line naming another is a frame nothing can produce.
+func opened(t *testing.T) Model {
+	t.Helper()
+
+	// One value behind both, rather than two calls that happen to agree: what the
+	// banner says and what the footer says are the same session by construction.
+	cfg := goldenConfig()
+	m := newModel(t.Context(), newTurner(nil), cfg)
+	m.chat.Append(banner(cfg))
+	m.now = newClock(goldenNow).read
+	m.status.branch = goldenBranch
+	return m
+}
+
 // clock is time a test moves by hand. Atomic because a snapshot moves it from
 // the test's own goroutine while a running program reads it on Bubble Tea's;
 // the tests that drive Update themselves never cross that line and pay nothing
@@ -542,6 +588,12 @@ func submit(t *testing.T, tm *teatest.TestModel, turn *turner, text string) {
 // quit stops the program and hands back the model it ended on. Quit travels the
 // same channel as everything sent before it, so the program stops having handled
 // all of it rather than at whatever point it had reached.
+//
+// It stops the program from outside, which Bubble Tea's event loop answers
+// without calling Update (model.go leaving) — so the model comes back with the
+// session still running as far as it knows, and its frame is the padded one
+// every state here is recorded at. A test about the frame a session *leaves*
+// has to reach tea.Quit through Update instead (frame_internal_test.go).
 func quit(t *testing.T, tm *teatest.TestModel) Model {
 	t.Helper()
 
