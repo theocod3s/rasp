@@ -144,15 +144,18 @@ type Model struct {
 	quitArmed bool
 
 	// leaving is whether this is the session's last frame. Bubble Tea renders the
-	// model once more after Update returns tea.Quit and leaves that frame on the
-	// screen, so a padded one would hand the shell back a screenful of blank rows
-	// under a dead input frame (gap).
+	// model after every Update, so the frame drawn by the one that returns
+	// tea.Quit is the last thing painted and is what the shell prints its prompt
+	// under — padded, that is a screenful of blank rows beneath a dead input
+	// frame (frame.go gap). The graceful-shutdown render that follows is handed
+	// the same model and dropped as unchanged, so nothing rests on it.
 	//
 	// Only the routes out that Update sees can raise it, which is every one a user
-	// takes (quitting, below). A SIGTERM or an external Program.Quit is answered by
-	// Bubble Tea's own event loop before Update is called, and SIGINT skips the
-	// final render altogether, so a session killed from outside still leaves a
-	// padded frame — there is no route from those back into the model to fix.
+	// takes (quitting, below). A SIGTERM or an external Program.Quit is answered
+	// by Bubble Tea's own event loop before Update is called, and SIGINT stops the
+	// program without rendering again at all, so a session killed from outside
+	// still leaves a padded frame. There is no route from those back into the
+	// model, and this is the only place that says so.
 	leaving bool
 
 	// turns counts turn goroutines still running. Bubble Tea's own shutdown
@@ -448,10 +451,10 @@ func (m Model) ctrlC() (Model, tea.Cmd) {
 	return m.quitting()
 }
 
-// quitting is the only way this package ends a session: it marks the frame
-// Bubble Tea leaves on the screen (leaving, above) before asking for the quit
-// that draws it. A route returning tea.Quit on its own would put the padding
-// back on the way out, so a test reads the package's source for one.
+// quitting is the only way this package ends a session: it marks the last frame
+// (leaving, above) in the same Update that asks for the quit, which is the
+// Update that draws it. A route returning tea.Quit on its own would put the
+// padding back, so a test reads the package's source for one.
 func (m Model) quitting() (Model, tea.Cmd) {
 	m.leaving = true
 	return m, tea.Quit
@@ -723,107 +726,4 @@ func (m Model) settle() Model {
 	m.streaming = nil
 	m.replies++
 	return m
-}
-
-// View draws the frame in two blocks — the conversation growing down from the
-// top, the chrome held against the bottom edge — with blank lines between them
-// while the two together are shorter than the terminal (gap, below).
-func (m Model) View() tea.View {
-	above, below := m.transcript(), m.chrome()
-
-	v := tea.NewView(above + m.gap(above, below) + below)
-	if m.tty {
-		v.WindowTitle = m.windowTitle()
-	}
-	return v
-}
-
-// transcript is the conversation and the failure notice under it: what reads as
-// history, and so stays with it when the gap opens underneath. A standing
-// permission question is in here too — it is set into the conversation where it
-// was asked (prompt.go), which is the whole of what makes it inline. Returned as
-// chat.View rendered it rather than accumulated through a builder of its own,
-// which cost the largest string the UI holds a second copy on every frame before
-// View concatenated it (internals §4.5).
-func (m Model) transcript() string {
-	text := m.chat.Render(m.width)
-	if m.err == nil {
-		return text
-	}
-
-	// Blank first, when there is a transcript above to hold apart from — the same
-	// one line of breathing room every item inside chat.View already gets
-	// (chat/view.go), which this notice is drawn as though it were one of without
-	// actually joining the conversation.
-	if text != "" {
-		text += "\n"
-	}
-	// Through the same notice path a command's own answer draws through, styled
-	// in the accent that says "this went wrong" rather than as a bare line — the
-	// one place left where an error was drawn in no colour at all.
-	return text + chat.Notice{
-		Text:       "error: " + m.err.Error(),
-		Kind:       chat.NoticeError,
-		Background: m.background,
-	}.Render(m.width) + "\n"
-}
-
-// chrome is what is held against the bottom of the screen. The activity line is
-// in this block, and above the input frame rather than inside it, because it is
-// about the turn running now: it belongs beside the keys that interrupt it, not
-// at the end of a history the gap has moved away from them.
-func (m Model) chrome() string {
-	var b strings.Builder
-	switch {
-	case m.busy:
-		writeLine(&b, m.activity(m.width))
-	case m.quitArmed:
-		// The one arm that outlives a turn: ctrl+c guards the session rather than
-		// what is running in it, so its hint has to be drawable with no activity
-		// line to hang off (model.go quitArmed).
-		writeLine(&b, hintQuit)
-	}
-
-	rule := m.rule()
-	writeLine(&b, rule)
-	writeLine(&b, m.typing())
-	writeLine(&b, m.menuView())
-	writeLine(&b, m.queued())
-	writeLine(&b, rule)
-	b.WriteString(m.status.Render(m.width, m.background))
-	return b.String()
-}
-
-// gap is the blank lines between the two blocks: as many as it takes for the
-// frame to be exactly as tall as the terminal, and none once what is drawn
-// already fills it.
-//
-// It is what makes a session's first frame cover the window: rasp draws inline
-// rather than on the alternate screen, so a short frame leaves the shell's own
-// output above it and a full-height one scrolls that into scrollback.
-//
-// Nothing is ever dropped to fit: past a screenful the frame is byte for byte
-// what it would be unpadded, because the terminal's scrollback is the only
-// history the conversation has, and lines trimmed here never reach it.
-func (m Model) gap(above, below string) string {
-	if m.leaving {
-		return ""
-	}
-	// The lines the two blocks make once concatenated — logical lines, which are
-	// rows too because the renderer cuts a line wider than the terminal rather
-	// than wrapping it. A terminal that has not reported a size is zero high and
-	// shorter than any frame, which is where this stands down (input.go).
-	drawn := strings.Count(above, "\n") + strings.Count(below, "\n") + 1
-	if drawn >= m.height {
-		return ""
-	}
-	return strings.Repeat("\n", m.height-drawn)
-}
-
-func writeLine(b *strings.Builder, s string) {
-	if s == "" {
-		return
-	}
-	b.WriteString(s)
-	b.WriteString("\n")
 }

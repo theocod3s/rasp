@@ -255,15 +255,13 @@ func TestAStandingQuestionStaysWithTheConversation(t *testing.T) {
 	}
 }
 
-// TestTheLastFrameGivesTheScreenBack. Bubble Tea renders the model once more
-// after Update has returned tea.Quit and leaves that frame on the screen, so a
-// session quit before it filled one would hand the shell back a screenful of
-// blank rows under a dead input frame — the same dead space the padding exists
-// to remove, after the session rather than before it.
+// TestTheLastFrameGivesTheScreenBack. The frame a session leaves behind is the
+// one the shell prints its prompt under, and a padded one puts a screenful of
+// blank rows there — the dead space this padding exists to remove, after the
+// session rather than before it (model.go leaving).
 //
-// Driven through a real program because the flag has to survive the route
-// Update takes to tea.Quit, and read off the model the program ended on, which
-// is the one that final render draws.
+// Driven through a real program because the mark has to survive the route Update
+// takes to tea.Quit, and read off the model the program ended on.
 func TestTheLastFrameGivesTheScreenBack(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -295,14 +293,17 @@ func TestTheLastFrameGivesTheScreenBack(t *testing.T) {
 	}
 }
 
-// TestTheLastFrameIsRepaintedOnTheWayOut is the half the test above cannot see.
-// It reads the model the program ended on, where what a user is left looking at
-// is a render Bubble Tea does after the event loop has stopped (tea.go) — drop
-// that render in a future version of the SDK and the flag would go on being set,
-// the frame above would go on being short, and the screen would stay full of
-// blank rows. So the renderer is left on here and the bytes are read back.
+// TestTheLastFrameIsRepaintedOnTheWayOut is the half the test above cannot see:
+// that the short frame is painted rather than only computed. The test above
+// reads a model, and a model nobody draws gives no screen back — so the renderer
+// is left on here and the bytes are read back.
 //
-// The invitation stands in for the whole frame: a repaint redraws every line,
+// Bubble Tea renders after every Update (tea.go), which is what makes the Update
+// that asks for the quit the one that paints the frame the session leaves. The
+// control is the same session stopped from outside: it reaches no Update, so
+// there is nothing after the first frame to find.
+//
+// The invitation stands in for the whole frame — the repaint redraws every line,
 // where the arming press before it changes one.
 func TestTheLastFrameIsRepaintedOnTheWayOut(t *testing.T) {
 	const invitation = "type /help for slash commands"
@@ -366,48 +367,80 @@ func TestTheLastFrameIsRepaintedOnTheWayOut(t *testing.T) {
 // leaves behind, and every test here would still pass. Only quitting() may name
 // it (model.go).
 func TestEveryQuitGoesThroughQuitting(t *testing.T) {
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(f os.FileInfo) bool {
-		return !strings.HasSuffix(f.Name(), "_test.go")
-	}, 0)
+	const bubbletea = `"charm.land/bubbletea/v2"`
+
+	entries, err := os.ReadDir(".")
 	if err != nil {
-		t.Fatalf("parsing the package: %v", err)
+		t.Fatalf("reading the package directory: %v", err)
 	}
 
-	var found int
-	for _, pkg := range pkgs {
-		for _, file := range pkg.Files {
-			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok {
-					continue
-				}
-				ast.Inspect(fn, func(n ast.Node) bool {
-					sel, ok := n.(*ast.SelectorExpr)
-					if !ok || sel.Sel.Name != "Quit" {
-						return true
-					}
-					if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != "tea" {
-						return true
-					}
-					found++
-					if fn.Name.Name != "quitting" {
-						t.Errorf("%s names tea.Quit at %s; the session's last frame is drawn by a "+
-							"model that was told it is leaving, so quitting() is the one place that "+
-							"may end a session", fn.Name.Name, fset.Position(sel.Pos()))
-					}
-					return true
-				})
+	fset := token.NewFileSet()
+	var allowed, scanned int
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", name, err)
+		}
+
+		// Whatever this file calls the package, since the name is the import's to
+		// choose: a file importing it as something else would otherwise be read as
+		// naming no quit at all.
+		local := ""
+		for _, imported := range file.Imports {
+			if imported.Path.Value != bubbletea {
+				continue
 			}
+			local = "tea"
+			if imported.Name != nil {
+				local = imported.Name.Name
+			}
+		}
+		if local == "" {
+			continue
+		}
+		scanned++
+
+		// Every declaration, not only the functions: a package-level var holding
+		// the command would end a session too, and sits outside any func body.
+		for _, decl := range file.Decls {
+			where := "the file's own declarations"
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				where = fn.Name.Name
+			}
+			ast.Inspect(decl, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "Quit" {
+					return true
+				}
+				if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != local {
+					return true
+				}
+				if where == "quitting" {
+					allowed++
+					return true
+				}
+				t.Errorf("%s names %s.Quit at %s; the session's last frame is drawn by the Update "+
+					"that asks for the quit, so quitting() — which marks it first — is the one "+
+					"place that may end a session", where, local, fset.Position(sel.Pos()))
+				return true
+			})
 		}
 	}
 
-	// Nothing matching is the failure this is most likely to have: a rename, an
-	// import under another name, a move out of this directory — each of which
-	// leaves the walk above examining nothing and reporting a pass.
-	if found == 0 {
-		t.Fatal("nothing in this package names tea.Quit, so this examined nothing; the session " +
-			"still has to end somewhere, and this check has stopped being able to see where")
+	// The two ways this stops being able to see anything, both of which would
+	// otherwise leave the walk reporting a pass: no file importing Bubble Tea at
+	// all, and quitting() no longer holding the quit this is written around.
+	switch {
+	case scanned == 0:
+		t.Fatalf("no file in this package imports %s, so this examined nothing; the session still "+
+			"has to end somewhere and this check has stopped being able to see where", bubbletea)
+	case allowed == 0:
+		t.Fatal("quitting() does not name the quit itself, so there is nothing here for the other " +
+			"declarations to be checked against")
 	}
 }
 

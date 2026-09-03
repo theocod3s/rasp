@@ -377,9 +377,15 @@ func TestViewGoldens(t *testing.T) {
 	}
 
 	drawn := make(map[string]string, len(states))
-	var short, full int
+	var ran, short, full int
 	for _, state := range states {
 		t.Run(state.name, func(t *testing.T) {
+			// Counted before anything can fail: a t.Fatal below ends this subtest
+			// where it stands, and counting after it would take the two checks at
+			// the end down with whichever state broke — silencing them exactly when
+			// there is something to say.
+			ran++
+
 			m := ended(t, state)
 			frame := m.View().Content
 			if strings.TrimSpace(frame) == "" {
@@ -405,7 +411,7 @@ func TestViewGoldens(t *testing.T) {
 	// Only when every state ran. These two are counts over the whole set, and a
 	// -run selecting one subtest — the way a single golden gets looked at — would
 	// otherwise fail with a complaint about states it never drew.
-	if short+full < len(states) {
+	if ran < len(states) {
 		return
 	}
 	if short == 0 {
@@ -542,8 +548,11 @@ func program(t *testing.T) (*teatest.TestModel, *turner, *clock) {
 func opened(t *testing.T) Model {
 	t.Helper()
 
-	m := newModel(t.Context(), newTurner(nil), goldenConfig())
-	m.chat.Append(banner(goldenConfig()))
+	// One value behind both, rather than two calls that happen to agree: what the
+	// banner says and what the footer says are the same session by construction.
+	cfg := goldenConfig()
+	m := newModel(t.Context(), newTurner(nil), cfg)
+	m.chat.Append(banner(cfg))
 	m.now = newClock(goldenNow).read
 	m.status.branch = goldenBranch
 	return m
@@ -581,10 +590,10 @@ func submit(t *testing.T, tm *teatest.TestModel, turn *turner, text string) {
 // all of it rather than at whatever point it had reached.
 //
 // It stops the program from outside, which Bubble Tea's event loop answers
-// without calling Update (tea.go) — so the model comes back with the session
-// still running as far as it knows, and its frame is the padded one every state
-// here is recorded at. A test about the frame a session *leaves* has to reach
-// tea.Quit through Update instead (frame_internal_test.go).
+// without calling Update (model.go leaving) — so the model comes back with the
+// session still running as far as it knows, and its frame is the padded one
+// every state here is recorded at. A test about the frame a session *leaves*
+// has to reach tea.Quit through Update instead (frame_internal_test.go).
 func quit(t *testing.T, tm *teatest.TestModel) Model {
 	t.Helper()
 
