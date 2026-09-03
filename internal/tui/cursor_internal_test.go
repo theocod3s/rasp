@@ -256,7 +256,7 @@ func TestTheCursorIsHiddenWhenTheInputIsNotWhereTheNextKeystrokeLands(t *testing
 // draft leaves the frame byte for byte what it was; the cursor travels on
 // tea.View rather than inside Content, so the recorded goldens cannot move with
 // it (the same claim terminal.go makes for the window title); and the cursor did
-// move, so neither of those holds because nothing happened.
+// move, so neither of the first two is true merely because nothing happened.
 func TestMovingTheCaretMovesNothingButTheCursor(t *testing.T) {
 	const back = 4
 
