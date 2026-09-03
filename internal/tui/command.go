@@ -71,15 +71,19 @@ func plain(r rune) bool {
 
 // submit is Enter: a command, or a prompt for the model.
 //
-// The fork sits ahead of begin's own guards because a command is not a turn.
-// /quit has to reach a running turn in order to stop it, and the rest have to
-// answer rather than be swallowed by the check that holds a second prompt back
-// until the first turn ends (turn.go).
+// The command fork sits ahead of everything else because a command is not a
+// message and is never queued. /quit has to reach a running turn in order to
+// stop it, and the rest have their own answer for one in flight — both of
+// which the queue would swallow, turning a command into something the model
+// reads out loud a turn later.
 func (m Model) submit() (Model, tea.Cmd) {
 	if name, args, ok := parseCommand(strings.TrimSpace(m.input.text)); ok {
 		m.input = draft{}
 		m = m.menuTracks()
 		return m.dispatch(name, args)
+	}
+	if m.midTurn() {
+		return m.enqueue(), nil
 	}
 	return m.begin()
 }

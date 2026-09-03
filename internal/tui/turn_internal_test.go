@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -190,7 +191,7 @@ func TestArmedClearsWhenTheTurnEndsOnItsOwn(t *testing.T) {
 
 	// Driven directly rather than through a real turnDone: what matters here is
 	// finish's own bookkeeping, and nothing about how its message arrived.
-	m = m.finish(turnDone{})
+	m, _ = m.finish(turnDone{})
 
 	if m.armed {
 		t.Error("the model is still armed after the turn it was armed against ended on its own")
@@ -496,10 +497,11 @@ func TestCtrlCThenEscDoesNotEntangleTheTwoArms(t *testing.T) {
 	}
 }
 
-// TestASecondPromptWhileATurnRunsIsNotSent. The agent refuses a second Send
-// while one is running, and that refusal is an error the user would meet as a
-// red line for pressing Enter twice.
-func TestASecondPromptWhileATurnRunsIsNotSent(t *testing.T) {
+// TestASecondPromptWhileATurnRunsIsQueuedRatherThanSent. The agent refuses a
+// second Send while one is running, so Enter cannot start a turn here — but the
+// line the user typed is theirs and has to survive the keystroke, which is what
+// the queue is for (queue.go).
+func TestASecondPromptWhileATurnRunsIsQueuedRatherThanSent(t *testing.T) {
 	turner := newTurner(nil)
 	m := typed(newModel(t.Context(), turner, Config{}), "first")
 
@@ -517,10 +519,16 @@ func TestASecondPromptWhileATurnRunsIsNotSent(t *testing.T) {
 	if m.chat.Len() != sent {
 		t.Errorf("the conversation grew to %d item(s); nothing was sent", m.chat.Len())
 	}
-	// And the text is still there to send once the turn ends, rather than eaten
-	// by a keystroke that did nothing.
-	if m.input.text != "second" {
-		t.Errorf("the input holds %q, want what the user typed and could not send yet", m.input.text)
+	if !slices.Equal(m.queue, []string{"second"}) {
+		t.Errorf("the queue holds %q, want the line Enter could not send", m.queue)
+	}
+	// Off the input line, because it is waiting rather than being composed — and
+	// the frame says so where the user can see it.
+	if m.input.text != "" {
+		t.Errorf("the input still holds %q after the line was queued", m.input.text)
+	}
+	if frame := words(m.View().Content); !strings.Contains(frame, "1 queued") {
+		t.Errorf("the frame does not show the queued line:\n%s", frame)
 	}
 }
 
@@ -671,20 +679,37 @@ func (b *blockingTool) Run(ctx context.Context, _ json.RawMessage) (tool.Result,
 }
 
 // turner is a Turner a test drives by hand: it publishes the context its turn
-// runs under and stays in Send until that context is cancelled.
+// runs under, keeps what it was asked to send, and stays in Send until that
+// context is cancelled.
 type turner struct {
 	started chan context.Context
 	err     error
+
+	// Guarded because Send runs on the turn's own goroutine while the test reads
+	// this from its own.
+	mu   sync.Mutex
+	sent []string
 }
 
 func newTurner(err error) *turner {
 	return &turner{started: make(chan context.Context, 1), err: err}
 }
 
-func (t *turner) Send(ctx context.Context, _ string) error {
+func (t *turner) Send(ctx context.Context, text string) error {
+	t.mu.Lock()
+	t.sent = append(t.sent, text)
+	t.mu.Unlock()
+
 	t.started <- ctx
 	<-ctx.Done()
 	return t.err
+}
+
+// texts is every prompt this turner was handed, in the order it got them.
+func (t *turner) texts() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.sent)
 }
 
 // promptTurner answers instantly, which is the turn nobody interrupts.

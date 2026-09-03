@@ -22,23 +22,29 @@ type Turner interface {
 
 type turnDone struct{ err error }
 
-// begin submits what the user typed. The turn goes back to Bubble Tea as a
-// tea.Cmd — its own goroutine, run after Update returns — because Send lasts as
-// long as the model takes and Update is where every keystroke and every frame
-// also has to be handled (design §6 rule 1, internals §4.3).
+// begin submits what the user typed. Enter reaches this only with the model
+// idle: a draft sent during a turn goes into the queue instead (command.go).
+func (m Model) begin() (Model, tea.Cmd) {
+	text := strings.TrimSpace(m.input.text)
+	if text == "" || m.midTurn() {
+		return m, nil
+	}
+	m.input = draft{}
+	m = m.menuTracks()
+	return m.send(text)
+}
+
+// send starts one turn, for a keystroke or for the queue draining (queue.go).
+// It goes back to Bubble Tea as a tea.Cmd — its own goroutine, run after Update
+// returns — because Send lasts as long as the model takes and Update is where
+// every keystroke and every frame also has to be handled (design §6 rule 1,
+// internals §4.3).
 //
 // The user's message is appended before the model has seen it, so the
 // conversation shows the prompt on the keystroke that sent it.
-func (m Model) begin() (Model, tea.Cmd) {
-	text := strings.TrimSpace(m.input.text)
-	if text == "" || m.busy {
-		return m, nil
-	}
-
+func (m Model) send(text string) (Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.cancel = cancel
-	m.input = draft{}
-	m = m.menuTracks()
 	m = m.busied()
 	m.err = nil
 	m.chat.Append(chat.Message{
@@ -75,7 +81,11 @@ func (m Model) interrupt() {
 
 // finish takes what Send reported, which is separate from the EventTurnEnd that
 // says what the transcript now holds.
-func (m Model) finish(done turnDone) Model {
+//
+// The queue drains from here, after the model is idle again and on this route
+// alone: turnDone is the message that says the agent has returned from Send, so
+// it is the only one a second turn can be started on (queue.go).
+func (m Model) finish(done turnDone) (Model, tea.Cmd) {
 	m.interrupt()
 	m.cancel = nil
 	m.busy = false
@@ -83,7 +93,7 @@ func (m Model) finish(done turnDone) Model {
 	// On both routes out of a turn, as busy and armed are: a question outliving
 	// the turn that asked it is one nothing can answer (prompt.go), and which of
 	// the two arrives first is not promised.
-	return m.dismissAll().report(done.err)
+	return m.dismissAll().report(done.err).drain(done.err)
 }
 
 // report keeps a failure for the frame to draw — except an interruption, which

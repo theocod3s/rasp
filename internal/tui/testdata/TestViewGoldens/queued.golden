@@ -1,0 +1,9 @@
+[38;2;192;132;252m▌[m › fix the failing auth test
+⠋ working[38;2;125;133;144m · esc esc to interrupt[m
+[38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
+› and this one is still being typed[7m [m                          [38;2;92;99;109m⇥ newline · ⏎ send[m
+[38;2;92;99;109m2 queued · ↑ to edit the first[m
+[38;2;92;99;109m  also update the README[m
+[38;2;92;99;109m  and re-run the failing test[m
+[38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
+[38;2;125;133;144m…p-demo (main)[m  manual[38;2;125;133;144m · ctx 0 · in 0 · out 0 · cost — · anthropic/claude-opus-5[m

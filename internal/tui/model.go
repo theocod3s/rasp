@@ -57,6 +57,12 @@ type Model struct {
 	// stands in it (draft.go).
 	input draft
 
+	// queue is what was typed and sent while a turn was already running, oldest
+	// first, waiting for the loop to be free (queue.go). Drafts rather than
+	// conversation: nothing here has been sent, and the head is one ↑ away from
+	// being back in the input.
+	queue []string
+
 	// menu is the slash-command completion overlay's sticky half: whether "/"
 	// on an empty line has opened it and Esc has not closed it again, and
 	// which filtered entry Tab or an arrow last moved to. Everything else
@@ -261,7 +267,7 @@ func (m Model) route(msg tea.Msg) (Model, tea.Cmd) {
 	case tickMsg:
 		return m.beat()
 	case turnDone:
-		return m.finish(msg), nil
+		return m.finish(msg)
 	}
 	return m, nil
 }
@@ -312,6 +318,8 @@ func (m Model) press(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		m.input = m.input.left()
 	case key.Code == tea.KeyRight:
 		m.input = m.input.right()
+	case key.Code == tea.KeyUp && m.recalls():
+		return m.recall(), nil
 	case key.Code == tea.KeyUp:
 		m.input = m.input.up()
 	case key.Code == tea.KeyDown:
@@ -733,6 +741,7 @@ func (m Model) View() tea.View {
 	writeLine(&b, rule)
 	writeLine(&b, m.typing())
 	writeLine(&b, m.menuView())
+	writeLine(&b, m.queued())
 	writeLine(&b, rule)
 	b.WriteString(m.status.Render(m.width, m.background))
 

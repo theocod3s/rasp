@@ -216,6 +216,16 @@ func snapshots() []snapshot {
 		// user and every guardrail being off, and because the badge is the whole
 		// of what design §7.8 asks the line to do while it is armed.
 		{name: "yolo", keys: append(typedLine("/yolo"), typedLine("/yolo "+yoloConfirm)...)},
+		// Two messages sent while the turn was still running, and a third still
+		// being typed. The one frame where the input frame holds something other
+		// than the draft, so it is where a queued block that stopped following
+		// the frame down, ate the line being composed, or lost the key that
+		// recalls it shows up (queue.go).
+		{name: "queued", prompt: prompt, keys: slices.Concat(
+			typedLine("also update the README"),
+			typedLine("and re-run the failing test"),
+			typedKeys("and this one is still being typed"),
+		)},
 		// The first Esc against a running turn, which arms rather than cancels
 		// (design §6 rule 7) — the arm taking the activity line's hint half is the
 		// only thing this state exists to draw.
