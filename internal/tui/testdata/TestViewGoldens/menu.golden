@@ -10,7 +10,7 @@
 
 
 [38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
-› /[7m [m                                         [38;2;92;99;109m↑↓⇥ select · ⏎ complete · esc close[m
+› /                                          [38;2;92;99;109m↑↓⇥ select · ⏎ complete · esc close[m
 > /model    show the model in use — switching needs the model catalog
   [38;2;92;99;109m/effort   how much depth a turn asks for — /effort <level> sets it[m
   [38;2;92;99;109m/new      clear the screen; a conversation that starts over needs sessions[m

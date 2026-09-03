@@ -17,7 +17,7 @@
 
 
 [38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
-› /c[7m [m                                        [38;2;92;99;109m↑↓⇥ select · ⏎ complete · esc close[m
+› /c                                         [38;2;92;99;109m↑↓⇥ select · ⏎ complete · esc close[m
 > /compact  summarize the conversation to free context — needs compaction
   [38;2;92;99;109m/clear    clear the conversation off the screen[m
 [38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m

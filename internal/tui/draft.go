@@ -97,17 +97,16 @@ func (d draft) end() draft {
 	return d
 }
 
-// split is the draft either side of the caret, and the one rune the caret is
-// over. A caret at the end of a line is over nothing — the end of the draft, or
-// the break that ends the line — and is given a space to stand on so the cell
-// can still be drawn.
-func (d draft) split() (before, under, after string) {
-	before, after = d.text[:d.at], d.text[d.at:]
-	if r, width := utf8.DecodeRuneInString(after); width > 0 && r != '\n' {
-		return before, after[:width], after[width:]
-	}
-	return before, " ", after
+// prefix is the caret's own line up to it. Measured in terminal cells that is
+// the column the cursor stands in, and the byte offset it is cut at is
+// something only this type holds (cursor.go).
+func (d draft) prefix() string {
+	start, _ := d.line()
+	return d.text[start:d.at]
 }
+
+// below is how many lines of the draft sit under the caret's own.
+func (d draft) below() int { return strings.Count(d.text[d.at:], "\n") }
 
 // line is the caret's own line: the offset of its first byte, and of the break
 // that ends it.

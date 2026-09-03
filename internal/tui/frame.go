@@ -12,9 +12,12 @@ import (
 // top, the chrome held against the bottom edge — with blank lines between them
 // while the two together are shorter than the terminal (gap, below).
 func (m Model) View() tea.View {
-	above, below := m.transcript(), m.chrome()
+	above := m.transcript()
+	below, under := m.chrome()
 
-	v := tea.NewView(above + m.gap(above, below) + below)
+	content := above + m.gap(above, below) + below
+	v := tea.NewView(content)
+	v.Cursor = m.cursor(content, under)
 	if m.tty {
 		v.WindowTitle = m.windowTitle()
 	}
@@ -53,11 +56,17 @@ func (m Model) transcript() string {
 	}.Render(m.width) + "\n"
 }
 
-// chrome is what is held against the bottom of the screen. The activity line is
-// in this block, and above the input frame rather than inside it, because it is
-// about the turn running now: it belongs beside the keys that interrupt it, not
-// at the end of a history the gap has moved away from them.
-func (m Model) chrome() string {
+// chrome is what is held against the bottom of the screen, and how many of its
+// rows sit under the line being typed on. The activity line is in this block,
+// and above the input frame rather than inside it, because it is about the turn
+// running now: it belongs beside the keys that interrupt it, not at the end of a
+// history the gap has moved away from them.
+//
+// The count is taken as the block is built rather than measured off the frame
+// afterward, because this is where those rows are decided. It is the distance
+// the terminal's cursor is placed up from the bottom edge, which is the one end
+// of the frame the padding above cannot move (cursor.go).
+func (m Model) chrome() (block string, under int) {
 	var b strings.Builder
 	switch {
 	case m.busy:
@@ -72,11 +81,15 @@ func (m Model) chrome() string {
 	rule := m.rule()
 	writeLine(&b, rule)
 	writeLine(&b, m.typing())
-	writeLine(&b, m.menuView())
-	writeLine(&b, m.queued())
+
+	menu, queued := m.menuView(), m.queued()
+	footer := m.status.Render(m.width, m.background)
+	writeLine(&b, menu)
+	writeLine(&b, queued)
 	writeLine(&b, rule)
-	b.WriteString(m.status.Render(m.width, m.background))
-	return b.String()
+	b.WriteString(footer)
+
+	return b.String(), rows(menu) + rows(queued) + rows(rule) + rows(footer)
 }
 
 // gap is the blank lines between the two blocks: as many as it takes for the
@@ -111,4 +124,13 @@ func writeLine(b *strings.Builder, s string) {
 	}
 	b.WriteString(s)
 	b.WriteString("\n")
+}
+
+// rows is how many lines of the frame s takes, and none for the empty string
+// writeLine drops rather than writing as a blank line.
+func rows(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
 }
