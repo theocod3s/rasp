@@ -366,14 +366,14 @@ func TestTheCaretMovesAroundTheDraftFromTheKeyboard(t *testing.T) {
 		t.Fatalf("the draft holds %q, want %q — the correction landed somewhere else", m.input.text, want)
 	}
 
-	// Home, and the caret is drawn on the first character of its own line rather
-	// than of the draft, which is the only thing on screen saying where the next
-	// keystroke lands.
+	// Home, and the cursor lands on the first character of its own line rather
+	// than of the draft — the only thing on screen saying where the next
+	// keystroke goes (cursor.go).
 	for _, press := range []tea.KeyPressMsg{key(tea.KeyDown), key(tea.KeyHome)} {
 		m, _ = m.press(press)
 	}
-	if want := cursorStyle.Render("t"); !strings.Contains(m.typing(), want) {
-		t.Errorf("the input area draws %q, and the caret is not on the head of the second line", m.typing())
+	if got, want := cursorCell(t, m), "t"; got != want {
+		t.Errorf("the cursor stands on %q, want %q — the head of the second line", got, want)
 	}
 
 	// Left off the front of a line lands on the end of the one above it, and left

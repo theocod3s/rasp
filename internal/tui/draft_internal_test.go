@@ -111,36 +111,49 @@ func TestADraftEditsWhereTheCaretIs(t *testing.T) {
 	}
 }
 
-// TestTheCaretAlwaysHasACellToStandOn. The caret is drawn by inverting one cell
-// (input.go), so split has to hand back a rune even where the text has none —
-// at the end of a line, and at the end of the draft.
-func TestTheCaretAlwaysHasACellToStandOn(t *testing.T) {
+// TestADraftReportsWhereTheCaretStandsInIt. prefix and below are what the
+// terminal's cursor is placed from (cursor.go), and both are byte-offset slices
+// of the same text every edit above moves — so a caret on a line of its own, on
+// the last line, and between two of them all have to come back whole.
+func TestADraftReportsWhereTheCaretStandsInIt(t *testing.T) {
 	for _, tc := range []struct {
-		name                 string
-		from                 draft
-		before, under, after string
+		name   string
+		from   draft
+		prefix string
+		below  int
 	}{
 		{
-			name:   "over a rune",
-			from:   draft{text: "one\ntwo", at: 4},
-			before: "one\n", under: "t", after: "wo",
+			name: "the front of the draft",
+			from: draft{text: "one\ntwo\nthree", at: 0},
+			// Two lines under the caret's own, which is what moves the cursor up
+			// off the bottom of the input frame.
+			prefix: "", below: 2,
 		}, {
-			// The break stays in the tail: it is what ends the line the caret is on,
-			// and swallowing it would join two lines into one on the screen.
-			name:   "at the end of a line",
-			from:   draft{text: "one\ntwo", at: 3},
-			before: "one", under: " ", after: "\ntwo",
+			name: "part way along a middle line",
+			from: draft{text: "one\ntwo\nthree", at: 5},
+			// The line's own text in front of the caret, not the draft's: a prefix
+			// counted from the start would put the cursor lines to the right.
+			prefix: "t", below: 1,
 		}, {
-			name:   "at the end of the draft",
-			from:   draft{text: "one", at: 3},
-			before: "one", under: " ", after: "",
+			name:   "the end of a middle line",
+			from:   draft{text: "one\ntwo\nthree", at: 7},
+			prefix: "two", below: 1,
+		}, {
+			name:   "the end of the draft",
+			from:   draft{text: "one\ntwo\nthree", at: 13},
+			prefix: "three", below: 0,
+		}, {
+			name:   "an empty draft",
+			from:   draft{},
+			prefix: "", below: 0,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			before, under, after := tc.from.split()
-			if before != tc.before || under != tc.under || after != tc.after {
-				t.Errorf("split gave (%q, %q, %q), want (%q, %q, %q)",
-					before, under, after, tc.before, tc.under, tc.after)
+			if got := tc.from.prefix(); got != tc.prefix {
+				t.Errorf("the caret's line reads %q in front of it, want %q", got, tc.prefix)
+			}
+			if got := tc.from.below(); got != tc.below {
+				t.Errorf("%d line(s) of the draft sit under the caret's own, want %d", got, tc.below)
 			}
 		})
 	}

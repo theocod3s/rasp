@@ -3,7 +3,6 @@ package tui
 import (
 	"strings"
 
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/theocod3s/rasp/internal/tui/styles"
@@ -30,12 +29,6 @@ const (
 	hintGap = 2
 )
 
-// cursorStyle draws the cell the caret is on. Inverse video for the reason
-// yoloStyle is (status.go) — legible on a terminal whose theme this build knows
-// nothing about — and it is the only mark saying where the next keystroke lands:
-// View leaves tea.View's own Cursor nil, which hides the terminal's.
-var cursorStyle = lipgloss.NewStyle().Reverse(true)
-
 // rule is one edge of the input frame, at the terminal's full width. A terminal
 // that has not reported a size has no width to draw across, and View drops the
 // empty line rather than leaving a gap where the rule would be.
@@ -60,6 +53,10 @@ func (m Model) rule() string {
 // as one string for View to write, so the frame's lower rule and the footer
 // under it move down as the draft grows and back up as it shrinks.
 //
+// Nothing painted here says where the next keystroke lands. The terminal's own
+// cursor is placed over that cell instead (cursor.go), which is what lets it
+// blink — a cell painted into the frame cannot.
+//
 // The placeholder is cut to the terminal rather than left to wrap, which would
 // grow the frame by a line for a string nobody is reading. What the user typed
 // is not, because it is theirs.
@@ -73,8 +70,7 @@ func (m Model) typing() string {
 		return m.hinted(line)
 	}
 
-	before, under, after := m.input.split()
-	lines := strings.Split(before+cursorStyle.Render(under)+after, "\n")
+	lines := strings.Split(m.input.text, "\n")
 	// Continuation lines are set in under the caret rather than against the left
 	// margin, so a draft of several lines reads as one block the caret opens.
 	indent := strings.Repeat(" ", ansi.StringWidth(caret))

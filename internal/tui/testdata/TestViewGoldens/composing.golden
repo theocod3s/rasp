@@ -19,6 +19,6 @@
 › why does this hunk fail to apply?
   --- a/auth.go
   +++ b/auth.go
-  @@ -12,5 +12,6 @@[7m [m                                          [38;2;92;99;109m⇥ newline · ⏎ send[m
+  @@ -12,5 +12,6 @@                                           [38;2;92;99;109m⇥ newline · ⏎ send[m
 [38;2;92;99;109m────────────────────────────────────────────────────────────────────────────────[m
 [38;2;125;133;144m…p-demo (main)[m  manual[38;2;125;133;144m · ctx 0 · in 0 · out 0 · cost — · anthropic/claude-opus-5[m
