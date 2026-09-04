@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bytes"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
@@ -57,6 +58,47 @@ func TestTheCursorIsTheTerminalsOwnAndBlinks(t *testing.T) {
 		t.Fatalf("quitting the program: %v", err)
 	}
 	tm.WaitFinished(t, teatest.WithFinalTimeout(settle))
+}
+
+// TestTheCursorStyleIsHandedBackOnTheWayOut is what the parting frame's hidden
+// cursor is really for, and it is not hiding: a session that never dropped the
+// cursor would leave the shell under it on rasp's blinking block for good.
+// Bubble Tea writes the style back to the terminal's default when a View stops
+// carrying a cursor, and its own shutdown does not do it for a style of 1 — so
+// the last frame going nil (model.go leaving) is the whole of what restores it,
+// and that is the claim here rather than an assumption.
+func TestTheCursorStyleIsHandedBackOnTheWayOut(t *testing.T) {
+	m := newModel(t.Context(), &promptTurner{}, Config{Mode: permission.ModeManual})
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(goldenWidth, goldenHeight))
+
+	// The session has to have been drawn once before it leaves. Bubble Tea
+	// renders the latest model rather than every one, so two keypresses sent at
+	// once reach the terminal as the parting frame alone — a session that never
+	// set the style, and nothing to say about giving it back.
+	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
+		return bytes.Contains(b, []byte(ansi.SetCursorStyle(blinkingBlock)))
+	}, teatest.WithDuration(settle))
+
+	// Through Update rather than from outside: a program stopped externally never
+	// reaches the route that marks the last frame (harness_internal_test.go quit),
+	// so it is the one way out that has nothing to hand the style back.
+	tm.Send(ctrlCKey)
+	tm.Send(ctrlCKey)
+
+	out, err := io.ReadAll(tm.FinalOutput(t, teatest.WithFinalTimeout(settle)))
+	if err != nil {
+		t.Fatalf("reading what the program drew on the way out: %v", err)
+	}
+
+	if dropped := bytes.LastIndex(out, []byte(ansi.SetCursorStyle(0))); dropped < 0 {
+		t.Errorf("the session ended with the terminal still on rasp's cursor style, which is what "+
+			"the shell under it then keeps:\n%q", out)
+	}
+	if last := bytes.LastIndex(out, []byte(ansi.SetModeTextCursorEnable)); last < bytes.LastIndex(out,
+		[]byte(ansi.ResetModeTextCursorEnable)) {
+		t.Errorf("the session ended with the cursor hidden, and the shell's own prompt draws under "+
+			"it:\n%q", out)
+	}
 }
 
 // TestTheCursorStandsOnTheCellTheCaretIsIn walks the places in a draft the
@@ -208,14 +250,23 @@ func TestTheCursorHoldsTheInputLineThroughEveryChromeState(t *testing.T) {
 // all would satisfy every other case here.
 func TestTheCursorIsHiddenWhenTheInputIsNotWhereTheNextKeystrokeLands(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		build func(*testing.T) Model
-		drawn bool
+		name   string
+		build  func(*testing.T) Model
+		height int
+		drawn  bool
 	}{
 		{
 			name:  "the input has the keyboard",
 			build: func(t *testing.T) Model { return typed(idleModel(t), "fix") },
 			drawn: true,
+		}, {
+			// Two rows for a frame whose lower rule and footer already take both.
+			// The input line is one of the rows scrolled off the top, and a cursor
+			// clamped to the terminal's first row would blink on somebody else's
+			// line rather than on a line of rasp's at all.
+			name:   "the terminal is too short for the chrome under the draft",
+			build:  func(t *testing.T) Model { return typed(idleModel(t), "fix") },
+			height: 2,
 		}, {
 			name: "a question stands",
 			build: func(t *testing.T) Model {
@@ -243,6 +294,9 @@ func TestTheCursorIsHiddenWhenTheInputIsNotWhereTheNextKeystrokeLands(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			m := tc.build(t)
 			m.height = goldenHeight
+			if tc.height > 0 {
+				m.height = tc.height
+			}
 
 			if drawn := m.View().Cursor != nil; drawn != tc.drawn {
 				t.Errorf("a cursor is drawn: %t, want %t:\n%s", drawn, tc.drawn, m.View().Content)
